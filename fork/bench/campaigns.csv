@@ -10335,3 +10335,4 @@ cuda_compat_once-q1-bpool32-pf12k1k,2026-11-19 11:10:54,bench /m/q/1/Qwen3.8-Fla
 bell_pool_pin-q1-bpool32-pf12k1k,2026-11-19 11:12:49,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds bell_pool_pin variants v test pf12k n=2,,
 cuda_compat_once-q1-bpool32-pf12k1k,2026-11-19 11:14:45,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_compat_once variants v test pf12k n=2,,
 dev_decode_sections-q1-steptime-pf12k1k,2026-11-19 11:18:48,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_decode_sections variants v test pf12k n=2,,
+dev_decode_sections2-q1-steptime-pf12k1k,2026-11-19 11:21:46,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_decode_sections2 variants v test pf12k n=2,,

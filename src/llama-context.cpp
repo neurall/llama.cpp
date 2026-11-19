@@ -3882,14 +3882,14 @@ g_st_m[1] = ggml_time_us();     auto * res = get_gf_res_prev();
     }
 g_st_m[3] = ggml_time_us();     const int64_t t_fill0 = ggml_time_us();   // fork: LLAMA_SPLIT_CTL_DEBUG=1 prints the steps between the built graph and its start
     moe_mirror_fill();   // fork: --moe mirror-pool: the dense split's copies, when the region lost them since they were last filled
-    const int64_t t_in0 = ggml_time_us();
+    const int64_t t_in0 = ggml_time_us(); g_st_m[4] = ggml_time_us();
 
     // set the input data for the input tensors
     {
         //const auto t_start_us = ggml_time_us();
 
         // FIXME this call causes a crash if any model inputs were not used in the graph and were therefore not allocated
-        res->set_inputs(&ubatch);
+        res->set_inputs(&ubatch); g_st_m[5] = ggml_time_us();
 
         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
     }
@@ -5294,8 +5294,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             if (g_st_n == 256) {
                 LLAMA_LOG_WARN("decode host: between calls %.0f us, entry to graph handed over %.0f us, scheduler launch call %.0f us (a call)\n",
                                g_st_s_gap / 256.0, g_st_s_prep / 256.0, g_st_s_sub / 256.0);
-                LLAMA_LOG_WARN("decode host sections (us a call): to process_ubatch %.0f, apply+kv tail %.0f, graph params+split %.0f, reuse/build %.0f, fill+inputs %.0f, freeze+verify %.0f\n",
-                               g_st_ms[0] / 256.0, g_st_ms[1] / 256.0, g_st_ms[2] / 256.0, g_st_ms[3] / 256.0, g_st_ms[4] / 256.0, g_st_ms[5] / 256.0);
+                LLAMA_LOG_WARN("decode host sections (us a call): to process_ubatch %.0f, apply+kv tail %.0f, graph params+split %.0f, reuse/build %.0f, mirror fill %.0f, set_inputs %.0f, idx check %.0f, freeze+verify %.0f\n",
+                               g_st_ms[0] / 256.0, g_st_ms[1] / 256.0, g_st_ms[2] / 256.0, g_st_ms[3] / 256.0, g_st_ms[4] / 256.0, g_st_ms[5] / 256.0, g_st_ms[6] / 256.0, g_st_ms[7] / 256.0);
                 for (auto & v : g_st_ms) { v = 0; }
                 g_st_s_gap = g_st_s_prep = g_st_s_sub = g_st_n = 0;
             }
