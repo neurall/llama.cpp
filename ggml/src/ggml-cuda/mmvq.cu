@@ -5,14 +5,11 @@
 
 #include <cstdint>
 #include <type_traits>
-#if defined(GGML_USE_HIP)
 #include <array>
 #include <cstdlib>
 #include <functional>
 #include <map>
 #include <mutex>
-
-#endif
 extern "C" void ggml_backend_fork_pool_access(const struct ggml_tensor * t, const void * ptr, size_t len, const char * op);   // ggml-backend.cpp: the pool guard (no header edit)
 void * ggml_cuda_q8_reuse_fork(int device, int lane, const void * src, const int64_t * ne, const int64_t * strides, size_t src_bytes, size_t q8_bytes, bool * hit);   // ggml-cuda.cu (fork, declared here: no header edit)
 
