@@ -175,3 +175,41 @@ the perplexity pairs.
 From here: one build (`prep_timers`), the frozen hot map of this (model, test) settled once (`-cs --hot-settle`), then one row a switch turned off
 (`q1-fuse0`, `q1-pick0`, `q1-spread0`, `q1-s2def`, `q1-s0def`, `q1-nopriodef`, `q1-iq0def`, `q1-alloff`) against `q1-def`, all with `-cs -gh`
 (memory: feedback_hot_maps_per_prompt, which I did not apply tonight).
+
+## 21:20: the gap is the token boundary (profile of the decode thread, build `prep_timers`)
+
+`perf record --call-graph dwarf` on the decode thread alone (attached from outside to a plain timer cell, 5 s), timers of the same cell, and the trace of
+`host_cut` read for the idle gap between tokens (`tokgap.py` in the job's scratch). One token is 13.0 to 13.3 ms; the thread spins on the bell 11.5 ms of it.
+
+After the last bell the card still runs about 615 us (the last layer's rest, the final norm, the output matrix). The cache step's own work (about 370 us:
+its scan of every block once a step 180, the rest 190) fits under that, with 245 us to spare (it waits in `step_graph_join`). So the step is not on the
+critical path, and neither was its slot pick: `q1-pick0` reads the same speed. What runs while the card is idle, per token:
+
+| work after the graph ends | us a token | in `prep_cut_dots` |
+|---|---|---|
+| device tables of the step, one blocking transfer each (8 to 12) | 116 | one transfer |
+| output fetch, decode() exit | 80 | |
+| sampling and the server loop | 66 to 85 | |
+| k-pool stamps refilled on fresh pages (the memory context dies with its batch) | 74 | kept per thread |
+| KV zone check: every block of the card, five times a token | 53 | by index, once a call |
+| split decision's look at the cards (sysfs reads, a device query) | 67 to 80 | once a second |
+| per-layer token embedding rows (16 a token, 0.5 to 0.6 MB): staging vector, rows read from the SSD when not in RAM, blocking upload | 84 to 265 | staging buffer kept |
+| memory apply, the rest of decode()'s entry | about 110 | |
+| launch: driver calls (graph chunks, copies) | 138 | |
+| launch: look at every node of the graph (is there a mul_mat_id that synchronizes) | 70 | kept under the graph's uid |
+
+Sum about 0.9 to 1.1 ms; the trace of `host_cut` shows the same from the card's side (the largest gap of a token: median 607, mean 815 us, plus 239 us in
+gaps between the small input copies). The gap to Strata's exact mode is 1.1 ms a token. Strata's own boundary gap reads 2.2 to 2.7 ms in its trace, which
+says only that its tracer cost lands there.
+
+Pinned one-switch rows on `prep_timers` (`-cs -gh`, decode t/s, runs 1 and 2 of a cell): default 75.97 / 74.80 and 75.58 / 75.69; no streams 69.49 /
+69.84; everything off 59.46 / 59.98; HC fuse off 73.59 / 74.19; allocator spread off 73.56 / 73.99; 2 streams 74.89 / 75.73; no priority 75.23 / 76.08;
+slot order off 74.23 / 76.18; backend's IQ2_S dot 76.04 / 77.00. A cell's value moves by about 0.6 t/s. Stands: the stream plan +5.8 t/s, the HC fuse and
+the allocator spread about +1.6 each, defaults against everything off +15.8. No difference in t/s: 4 against 2 streams, the priority, the slot order
+(hidden under the graph's tail), my IQ2_S dot (if anything slower than the backend's).
+
+Found beside it: the first request of a server zero-fills the graph result's buffer (`llm_graph_result`, about 300 MB at this row's node budget) for
+250 ms, once per result object (three exist): first-answer time and 0.9 GB of RAM, not decode speed.
+
+Left after `prep_cut_dots`: the 245 us the host waits in `step_graph_join` could hold the next token's token-independent preparation; the embedding rows
+could go up from pinned memory without a blocking call; fewer, larger graph chunks mean fewer launch calls.
