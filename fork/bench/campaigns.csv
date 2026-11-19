@@ -10295,3 +10295,7 @@ cuda_routed_streams-q1-routed-pf12k1k,2026-11-19 09:10:37,bench /m/q/1/Qwen3.8-F
 strata-0.2.15-plain-q1-strata-pf12k1k,2026-11-19 09:12:34,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds strata-0.2.15-plain variants v test pf12k n=2,,
 strata-0.2.15-plain-q1-stratak-pf12k1k,2026-11-19 09:14:05,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds strata-0.2.15-plain variants v test pf12k n=2,,
 cuda_routed_streams-q1-bestk-pf12k1k,2026-11-19 09:16:23,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_routed_streams variants v test pf12k n=2,,
+strata-0.2.15-nsys-q1-stratak-pf12k1k,2026-11-19 09:19:27,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds strata-0.2.15-nsys variants v test pf12k n=2,,
+cuda_routed_streams-q1-bestc-pf12k1k,2026-11-19 09:21:35,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_routed_streams variants v test pf12k n=2,,
+cuda_routed_streams-q1-bestc-pf12k1k,2026-11-19 09:23:45,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_routed_streams variants v test pf12k n=2,,
+dev_step_time-q1-steptime-pf12k1k,2026-11-19 09:27:53,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_step_time variants v test pf12k n=2,,

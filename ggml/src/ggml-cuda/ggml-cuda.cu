@@ -6986,6 +6986,21 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
     ggml_tensor * node = cgraph->nodes[i];
 
+    // fork, dev: GGML_CUDA_FUSE_DUMP=N prints the ops around the first N matmuls of a graph of one token, to see which fusion a pattern misses and why
+    static const int fuse_dump = getenv("GGML_CUDA_FUSE_DUMP") ? atoi(getenv("GGML_CUDA_FUSE_DUMP")) : 0;
+    if (fuse_dump > 0 && (node->op == GGML_OP_MUL_MAT || node->op == GGML_OP_MUL_MAT_ID) && node->src[1] && node->src[1]->ne[1] == 1 && node->src[1]->ne[2] <= 1) {
+        static int said = 0;
+        if (said < fuse_dump) {
+            ++said;
+            std::string l;
+            for (int k = i; k < std::min(cgraph->n_nodes, i + 7); ++k) {
+                const ggml_tensor * t = cgraph->nodes[k];
+                l += std::string(k == i ? "" : " | ") + ggml_op_desc(t) + "(" + t->name + " src0=" + (t->src[0] ? t->src[0]->name : "-") + " src1=" + (t->src[1] ? t->src[1]->name : "-") + ")";
+            }
+            GGML_LOG_WARN("fuse dump %d: %s\n", i, l.c_str());
+        }
+    }
+
     // fork, --moe fuse-off=GLU+MUL: the fusions that start at these ops stay apart, to name the one a bug needs (GGML_CUDA_DISABLE_FUSION parts all of them and changes the allocation too)
     static const std::string fuse_off = [] { const char * e = getenv("GGML_CUDA_FUSE_OFF"); return e ? "+" + std::string(e) + "+" : std::string(); }();
     if (!fuse_off.empty() && fuse_off.find("+" + std::string(ggml_op_name(node->op)) + "+") != std::string::npos) {
