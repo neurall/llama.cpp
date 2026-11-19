@@ -80,3 +80,4 @@ q1-s2def,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA
 q1-s0def,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-nopriodef,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS_PRIO=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-iq0def,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_BELL_IQ2S=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-dots0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_BELL_DOTS=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
