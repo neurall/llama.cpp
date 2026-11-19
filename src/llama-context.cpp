@@ -58,6 +58,11 @@ extern "C" {
 // check that each folded weight in the graph gets its Hadamard transform, and each latent lookup gets the inverse
 // without this check, an arch that skips the transform helpers loads and computes wrong results
 static uint32_t g_decode_n_tokens = 0;   // tokens of the decode call in progress, for the stats of llama_process
+// fork: where the decode token of the pass that just ran sits (the main context's one-token passes): the token after it gets its lazy-table rows read
+// ahead when its candidates arrive (llama_context::synchronize)
+static bool         g_row_cand_ok  = false;
+static llama_pos    g_row_cand_pos = 0;
+static llama_seq_id g_row_cand_seq = 0;
 void llama_moe_token_time_fork(double ms);   // src/llama-moestate-fork.cpp
 void llama_moe_prompt_done_fork(uint32_t n_tokens, double ms);
 void llama_moe_prompt_begin_fork(uint32_t n_tokens, uint32_t ubatch);
@@ -70,6 +75,7 @@ void     llama_moe_cache_alias_refused_fork(uint32_t n_tokens);                 
 bool     llama_moe_cache_pp_short_fork();
 void     llama_moe_cache_pp_freeze_fork();
 void     llama_rowread_ahead_ubatch_fork(int arch, const llama_model & model, llama_memory_context_i * mctx, const llama_ubatch & ubatch);   // llama-rowread-fork.cpp
+void     llama_rowread_next_fork(int arch, const llama_model & model, llama_memory_i * mem, const llama_ubatch & nxt);   // llama-rowread-fork.cpp: rows of tokens not decoded yet
 void     llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens);
 void     llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max);
 void     llama_moe_cache_pp_repass_fork(uint32_t n_tokens, uint32_t ub);   // the pass size decided after the path: the path's features follow it
@@ -2187,6 +2193,46 @@ void llama_context::synchronize() {
         }
         thread_tune_feed(ggml_time_us() - t_compute_start_us);
         n_eval++;
+        // fork: the rows the NEXT token gathers from lazy row tables (Qwen3.8's PLE n-grams: 16 rows of a 27 GB table, read by O_DIRECT on this thread in
+        // set_inputs with the card idle, 80 to 610 us a token in a clean-state cell) are read on the row reader from here, while the caller samples and the
+        // next call sets up: for the token the backend sampler picked, else for the 4 candidates with the highest logits. The next pass's fill takes what the
+        // job holds and reads the rest as before; rows of candidates that were not picked are dropped with the job. LLAMA_ROWREAD_CAND=0: off (A/B).
+        // shortcut: only with backend sampling (-bs: the candidates are on the host); from host logits when a helper thread finds the top ones
+        static const bool cand_on = !getenv("LLAMA_ROWREAD_CAND") || atoi(getenv("LLAMA_ROWREAD_CAND")) != 0;
+        if (cand_on && g_row_cand_ok && !cparams.ctx_other && memory && n_outputs == 1 && !sampling.samplers.empty()) {
+            g_row_cand_ok = false;
+            llama_token cand[4];
+            uint32_t    n_cand = 0;
+            if (sampling.sampled.has_data() && sampling.sampled.size >= 1 && sampling.sampled.data[0] >= 0) {
+                cand[n_cand++] = sampling.sampled.data[0];
+            } else if (sampling.candidates.has_data() && !sampling.candidates_count.empty() && sampling.candidates_count[0] > 0) {
+                const uint32_t nc = sampling.candidates_count[0];
+                const llama_token * ids = sampling.candidates.data;
+                const float * lg = sampling.logits.has_data() && !sampling.logits_count.empty() && sampling.logits_count[0] == nc ? sampling.logits.data : nullptr;
+                float best[4];
+                for (uint32_t k = 0; k < nc; ++k) {
+                    if (ids[k] < 0) { continue; }
+                    const float v = lg ? lg[k] : -(float) k;   // no logits beside them: the order they came in
+                    uint32_t at = n_cand;
+                    while (at > 0 && best[at - 1] < v) { --at; }
+                    if (at >= 4) { continue; }
+                    for (uint32_t m = std::min<uint32_t>(n_cand, 3); m > at; --m) { best[m] = best[m - 1]; cand[m] = cand[m - 1]; }
+                    best[at] = v; cand[at] = ids[k];
+                    n_cand = std::min<uint32_t>(n_cand + 1, 4);
+                }
+            }
+            if (n_cand > 0) {
+                llama_pos      pos[4];
+                int32_t        nsi[4];
+                llama_seq_id   sid[4];
+                llama_seq_id * sidp[4];
+                for (uint32_t k = 0; k < n_cand; ++k) { pos[k] = g_row_cand_pos + 1; nsi[k] = 1; sid[k] = g_row_cand_seq; sidp[k] = &sid[k]; }
+                llama_ubatch nxt = {};
+                nxt.b_equal_seqs = 1; nxt.n_tokens = n_cand; nxt.n_seq_tokens = n_cand; nxt.n_seqs = 1; nxt.n_seqs_unq = 1; nxt.n_pos = 1;
+                nxt.token = cand; nxt.pos = pos; nxt.n_seq_id = nsi; nxt.seq_id = sidp;
+                llama_rowread_next_fork((int) model.arch, model, memory.get(), nxt);
+            }
+        }
     } else if (n_queued_tokens > 1) {
         g_thr_cpu_bytes = -1;   // a prompt call's bytes are no decode token's work: the next token starts the thread search's byte counts afresh
         if (!cparams.no_perf) {
@@ -3716,6 +3762,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // fork: the rows this pass gathers from lazy row tables (PLE, Engram) are read on the row reader from here, beside the graph build, the KV moves and the copy
     // fill (llama-rowread-fork.cpp); the cells hold this ubatch now, so the hashes see its tokens' predecessors
     if (mctx && ubatch.token && ubatch.n_tokens > 1) { llama_rowread_ahead_ubatch_fork((int) model.arch, model, mctx, ubatch); }
+    if (!cparams.ctx_other) {
+        g_row_cand_ok = mctx && ubatch.token && !ubatch.is_mixed() && ubatch.n_tokens == 1 && ubatch.n_seq_id[0] == 1;
+        if (g_row_cand_ok) { g_row_cand_pos = ubatch.pos[0]; g_row_cand_seq = ubatch.seq_id[0][0]; }
+    }
 
     // fork: --moe kv-tail: the KV zone of each card grows (cells past half of it) and makes room for the lend a graph of this size needed before, BEFORE the graph
     // is built: a graph never points at rows that move (a move changes the reuse epoch below)

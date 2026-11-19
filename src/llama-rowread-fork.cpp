@@ -225,6 +225,21 @@ void llama_rowread_ahead_ubatch_fork(int arch, const llama_model & model, llama_
     for (const auto & f : ahead_fns()) { if (f.first == arch) { f.second(model, mctx, ubatch); } }
 }
 
+// The same for tokens that are not decoded yet (the candidates of the next token; llama_context::synchronize asks while the caller samples). No pass, so no
+// memory context: the architecture's function names the rows from the memory itself, with the hash its pass uses, and asks for them as gather part 0.
+struct llama_memory_i;
+using llama_rowread_next_fn = void (*)(const llama_model & model, llama_memory_i * mem, const llama_ubatch & nxt);
+static std::vector<std::pair<int, llama_rowread_next_fn>> & next_fns() { static std::vector<std::pair<int, llama_rowread_next_fn>> v; return v; }
+
+bool llama_rowread_next_register_fork(int arch, llama_rowread_next_fn fn) {
+    next_fns().emplace_back(arch, fn);
+    return true;
+}
+
+void llama_rowread_next_fork(int arch, const llama_model & model, llama_memory_i * mem, const llama_ubatch & nxt) {
+    for (const auto & f : next_fns()) { if (f.first == arch) { f.second(model, mem, nxt); } }
+}
+
 // Rows u[0..nu) of t (ascending, distinct) into dst, row k at dst + k*row size: each read from the file (a failed read: from the mapping, logged once). Rows in RAM
 // come from the pool, rows a read-ahead of (t, part) holds from it (its newest job, waited for), the rest are read now. False: a read failed.
 bool llama_rowread_fill_rows_fork(const ggml_tensor * t, int part, const int32_t * u, size_t nu, uint8_t * dst) {
