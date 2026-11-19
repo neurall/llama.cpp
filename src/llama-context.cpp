@@ -5268,10 +5268,23 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     static const bool mc_sync = !moe_opt("sync") || atoi(moe_opt("sync")) != 0;
     // only the context that owns the cache steps it (not e.g. an MTP draft context)
     if (cparams.moe_cache) {
+        static const bool step_time = getenv("LLAMA_STEP_TIME") != nullptr;   // dev only: where the host time between decode tokens goes
+        const int64_t t_a = step_time ? ggml_time_us() : 0;
         if (mc_sync && llama_moe_cache_active_fork()) {
             ggml_backend_sched_synchronize(sched.get());
         }
+        const int64_t t_b = step_time ? ggml_time_us() : 0;
         llama_moe_cache_step_fork();
+        if (step_time) {
+            static int64_t s_sync = 0, s_step = 0, s_out = 0, n = 0, t_last = 0;
+            const int64_t t_c = ggml_time_us();
+            s_sync += t_b - t_a; s_step += t_c - t_b; s_out += t_last > 0 ? t_a - t_last : 0; t_last = t_c;
+            if (++n % 256 == 0) {
+                LLAMA_LOG_WARN("step time: %lld calls, sync wait %.0f us, cache step %.0f us, decode() up to the wait %.0f us a call\n", (long long) n,
+                               (double) s_sync / 256, (double) s_step / 256, (double) s_out / 256);
+                s_sync = s_step = s_out = 0;
+            }
+        }
     }
 
     return 0;
