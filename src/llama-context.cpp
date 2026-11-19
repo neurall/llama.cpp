@@ -5271,7 +5271,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
 
     // apply throttled MoE expert-cache updates between graph executions; wait for
     // the GPU first so no queued read of a slot races the worker refilling it
-    static const bool mc_sync = !moe_opt("sync") || atoi(moe_opt("sync")) != 0;
+    static const bool mc_sync = moe_opt("sync") && atoi(moe_opt("sync")) != 0;   // the step beside the graph's tail unless --moe sync=1 (2026-11-19)
     // only the context that owns the cache steps it (not e.g. an MTP draft context)
     if (cparams.moe_cache) {
         static const bool step_time = getenv("LLAMA_STEP_TIME") != nullptr;   // dev only: where the host time between decode tokens goes

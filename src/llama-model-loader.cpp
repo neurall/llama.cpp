@@ -1450,7 +1450,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         return nullptr;
     }
     {   // fork: --moe hc-q8=1 (llama-hcq8-fork.h): this BF16 matrix becomes Q8_0 in its device buffer; load_all_data converts the file's bytes
-        static const bool hc_on = [] { const char * e = llama_moe_get_opt("hc-q8"); return e && atoi(e) != 0; }();
+        static const bool hc_on = [] { const char * e = llama_moe_get_opt("hc-q8"); return !e || atoi(e) != 0; }();   // on unless --moe hc-q8=0 (2026-11-19)
         if (llama_hcq8_wanted_fork(hc_on, tn.str().c_str(), t_meta.type == GGML_TYPE_BF16, t_meta.ne[0], ggml_backend_buft_is_host(buft))) {
             t_meta.type  = GGML_TYPE_Q8_0;
             t_meta.nb[0] = ggml_type_size(GGML_TYPE_Q8_0);

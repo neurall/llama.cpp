@@ -18327,7 +18327,7 @@ static uint64_t g_bell_n_graphs = 0, g_bell_n_layers = 0, g_bell_n_wait = 0, g_b
 static bool     g_bell_on = false;   // the scheduler has the callback
 
 static bool bell_opt() {
-    static const bool on = [] { const char * e = moe_opt("bell"); return e && atoi(e) != 0; }();
+    static const bool on = [] { const char * e = moe_opt("bell"); return !e || atoi(e) != 0; }();   // on unless --moe bell=0 (2026-11-19)
     return on;
 }
 
@@ -18351,8 +18351,14 @@ static void bell_need(const llama_moe_cache_layer_fork * pub, const int32_t * mi
 
 #include "llama-bellpool-fork.h"
 
-static int bell_pool_n() {   // --moe bell-pool=N: the bell's CPU experts on a pool of N workers (0: the scheduler's CPU graph)
-    static const int n = [] { const char * e = moe_opt("bell-pool"); return e ? atoi(e) : 0; }();
+static int bell_pool_n() {   // --moe bell-pool=N: the bell's CPU experts on a pool of N workers (0: the scheduler's CPU graph); unset: a worker a physical core
+    static const int n = [] {
+        const char * e = moe_opt("bell-pool");
+        if (e) { return atoi(e); }
+        int phys = 0;
+        for (const auto & d : l3_domain_cores()) { phys += (int) d.size(); }
+        return phys > 0 ? phys : std::max(1, (int) std::thread::hardware_concurrency() / 2);
+    }();
     return n;
 }
 static bellpool * bell_pool() {

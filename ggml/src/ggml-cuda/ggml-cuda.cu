@@ -5585,9 +5585,9 @@ static bool ggml_cuda_is_view_or_noop(const ggml_tensor * t) {
            t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_NONE;
 }
 
-// fork: two streams for a card's part of a decode graph (ggml-streams-fork.h): GGML_CUDA_STREAMS=2. Off until the rows say it wins.
+// fork: the streams for a card's part of a decode graph (ggml-streams-fork.h): GGML_CUDA_STREAMS=2..4, 4 unless set.
 static int ggml_cuda_streams_fork() {
-    static const int n = [] { const char * e = getenv("GGML_CUDA_STREAMS"); return e ? atoi(e) : 0; }();
+    static const int n = [] { const char * e = getenv("GGML_CUDA_STREAMS"); return e ? atoi(e) : 4; }();   // on by default (2026-11-19), GGML_CUDA_STREAMS=0 turns it off
     return n >= 2 ? std::min(n, GGML_STREAMS_MAX) : 0;   // the main stream and n - 1 beside it
 }
 
