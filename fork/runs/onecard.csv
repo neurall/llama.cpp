@@ -68,3 +68,5 @@ p1-plandef,qwen38,1,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CU
 p1-allkdef,qwen38,1,pf12k1k,512,"-bs","--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none --delay=27 --duration=5 --kill=none -o /p/bw/data/nsys/allk-%p --force-overwrite=true'"
 q1-stepdef,qwen38,1,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 p1-perfdef,qwen38,1,pf12k1k,512,"-bs","--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'perf record -F 1999 -o /p/bw/data/perf/q1.data'"
+q1-s8,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=8 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+p1-plan8,qwen38,1,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=8 --env GGML_CUDA_STREAMS_DEBUG=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38

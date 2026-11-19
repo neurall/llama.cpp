@@ -17,7 +17,7 @@
 #include "ggml-streams-fork.h"
 #include "ggml-cuda/q8reuse-fork.h"
 extern "C" { GGML_API void ggml_gallocr_set_spread_fork(int n_nodes, size_t max_node_bytes, bool host_too); }   // ggml-alloc.c (fork, declared here: no header edit)
-static constexpr int    Q8R_LANES = 4, Q8R_SLOTS = 8;   // a lane per stream of the plan (GGML_STREAMS_MAX, ggml-streams-fork.h)
+static constexpr int    Q8R_LANES = 8, Q8R_SLOTS = 8;   // a lane per stream of the plan (GGML_STREAMS_MAX, ggml-streams-fork.h)
 static constexpr size_t Q8R_SLOT_BYTES = 16384;
 static bool ggml_cuda_q8_reuse_on() { static const bool on = !getenv("GGML_CUDA_Q8_REUSE") || atoi(getenv("GGML_CUDA_Q8_REUSE")) != 0; return on; }   // on unless GGML_CUDA_Q8_REUSE=0 (2026-11-19: with the hc fuse +2 t/s Qwen3.8 decode)
 #include "ggml-cuda/acc.cuh"
@@ -8132,7 +8132,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 }
                 std::string waits;
                 for (int x : sp.plan.wait[k]) { if (x >= 0) { waits += (waits.empty() ? ", waits for " : " ") + std::to_string(x); } }
-                const char * where[GGML_STREAMS_MAX] = { "main", "SIDE1", "SIDE2", "SIDE3" };
+                const char * where[GGML_STREAMS_MAX] = { "main", "SIDE1", "SIDE2", "SIDE3", "SIDE4", "SIDE5", "SIDE6", "SIDE7" };
                 GGML_LOG_WARN("CUDA%d streams: %3zu %-5s %-14s %-28s %6.1f us%s%s  after %d (%s)%s\n", cuda_ctx->device, k, where[sp.plan.stream[k]], ggml_op_name(t->op), t->name,
                         units[k].cost, units[k].movable ? "" : " fixed", units[k].fills ? " fills" : "", dep, dep >= 0 ? cgraph->nodes[units[dep].leader]->name : "-", waits.c_str());
             }

@@ -121,11 +121,12 @@ int main() {
         }
         printf("delta-net layer, %d streams: %d units beside the main chain, estimate %.1f -> %.1f\n", k, p.n_side, p.t_serial, p.t_plan);
     }
-    {   // the count is picked from the estimate: the delta-net layer takes all four, the shared expert beside the routed chain one side stream
+    {   // the count is picked from the estimate: the delta-net layer takes four or more, the shared expert beside the routed chain one side stream
         const std::vector<ggml_stream_unit> g = gdn(), l = layer(5);
         std::vector<uint8_t> cg(g.size(), 0), cl(l.size(), 0);
         const ggml_stream_plan pg = ggml_stream_plan_pick(g, cg, sw, GGML_STREAMS_MAX), pl = ggml_stream_plan_pick(l, cl, sw, GGML_STREAMS_MAX);
-        assert(pg.n_streams == 4 && pg.t_plan == ggml_stream_plan_make(g, cg, sw, 4).t_plan && ggml_stream_plan_check(g, cg, pg));
+        assert(pg.n_streams >= 4 && pg.t_plan == ggml_stream_plan_make(g, cg, sw, GGML_STREAMS_MAX).t_plan && ggml_stream_plan_check(g, cg, pg));
+        assert(ggml_stream_plan_make(g, cg, sw, pg.n_streams - 1).t_plan > pg.t_plan);   // one stream fewer is slower by the estimate
         assert(pl.n_streams == 2 && pl.t_plan == 37 && ggml_stream_plan_check(l, cl, pl));
     }
     {   // more streams never make this layer's estimate longer
@@ -158,7 +159,8 @@ int main() {
             const ggml_stream_plan p = ggml_stream_plan_make(u, cut, sw, k);
             assert(ggml_stream_plan_check(u, cut, p));
             assert(p.t_plan <= p.t_serial + 1e-3f);
-            int prev[GGML_STREAMS_MAX] = { -1, -1, -1, -1 };
+            int prev[GGML_STREAMS_MAX];
+            for (int & x : prev) { x = -1; }
             for (int i = 0; i < n; ++i) {
                 if (cut[i]) { for (int & x : prev) { x = -1; } }
                 const int s = p.stream[i], h = prev[s];

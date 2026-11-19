@@ -24,7 +24,7 @@
 #include <cstdint>
 #include <vector>
 
-#define GGML_STREAMS_MAX 4   // the main stream and up to three beside it
+#define GGML_STREAMS_MAX 8   // the main stream and up to seven beside it (the CUDA backend holds 8 streams a card)
 
 struct ggml_stream_range {
     uintptr_t lo, hi;   // [lo, hi)
@@ -161,7 +161,8 @@ static inline bool ggml_stream_plan_check(const std::vector<ggml_stream_unit> & 
     const int K = std::max(1, std::min(p.n_streams, GGML_STREAMS_MAX));
     ggml_stream_ids none; none.fill(-1);
     std::vector<ggml_stream_ids> known(n, none);
-    int last[GGML_STREAMS_MAX] = { -1, -1, -1, -1 };
+    int last[GGML_STREAMS_MAX];
+    for (int & l : last) { l = -1; }
     int first = 0;
     for (int u = 0; u < n; ++u) {
         if (u == 0 || (u < (int) cut.size() && cut[u])) {
