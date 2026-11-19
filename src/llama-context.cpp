@@ -1636,12 +1636,43 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
     return tier | 256;
 }
 
+// fork: what the scheduler was last reserved with, per context: the kinds of its backend samplers (each adds its own nodes to the graph)
+struct sampler_reserve_fork {
+    bool        dirty = false;   // a sampler was attached or dropped since
+    std::string reserved;        // sampler_sig_fork at the last reserve
+};
+static std::map<const llama_context *, sampler_reserve_fork> g_sampler_reserve_fork;
+static std::string sampler_sig_fork(const std::map<llama_seq_id, llama_sampler *> & samplers) {
+    std::string sig;
+    for (const auto & [seq_id, smpl] : samplers) {
+        sig += std::to_string(seq_id) + ":";
+        const int32_t n = llama_sampler_chain_n(smpl);
+        for (int32_t i = 0; i < n; ++i) { sig += llama_sampler_name(llama_sampler_chain_get(smpl, i)); sig += ","; }
+        sig += ";";
+    }
+    return sig;
+}
+
 void llama_context::sched_reserve() {
+    sampler_reserve_fork & sr = g_sampler_reserve_fork[this];
+    if (!sched_need_reserve && sr.dirty) {
+        // fork: only the backend samplers changed. The server attaches a new chain at every request and drops it at the end, and each change asked for a
+        // whole reserve: the worst-case graphs again (754k nodes on Qwen3.8 at a 16384-token micro-batch), a new scheduler, the graph buffers zero-filled:
+        // 0.7 s before every request's first pass (one RTX 3090, 2026-11-19), the decode graph built and captured again. A set of the same kinds builds the
+        // graph the scheduler was reserved with; a graph that needs more (a larger top-k) is placed as any graph is.
+        sr.dirty = false;
+        if (sampler_sig_fork(sampling.samplers) == sr.reserved) {
+            return;
+        }
+        sched_need_reserve = true;
+    }
     if (!sched_need_reserve) {
         return;
     }
 
     sched_need_reserve = false;
+    sr.dirty    = false;
+    sr.reserved = sampler_sig_fork(sampling.samplers);
 
     LLAMA_LOG_INFO("%s: reserving ...\n", __func__);
 
@@ -3351,7 +3382,7 @@ bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
             warned = true;
         }
         if (sampling.samplers.count(seq_id) > 0) {
-            sched_need_reserve = true;
+            g_sampler_reserve_fork[this].dirty = true;   // fork: reserved only if the kinds of samplers change (sched_reserve)
         }
         sampling.samplers.erase(seq_id);
         return false;
@@ -3370,7 +3401,7 @@ bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
 
         sampling.samplers[seq_id] = sampler;
 
-        sched_need_reserve = true;
+        g_sampler_reserve_fork[this].dirty = true;   // fork: reserved only if the kinds of samplers change (sched_reserve)
 
         return true;
     }
@@ -3379,7 +3410,7 @@ bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
         LLAMA_LOG_WARN("%s: sampler '%s' for seq_id = %d, cannot be offloaded to the backend\n", __func__, llama_sampler_name(sampler), seq_id);
 
         if (sampling.samplers.count(seq_id) > 0) {
-            sched_need_reserve = true;
+            g_sampler_reserve_fork[this].dirty = true;   // fork: reserved only if the kinds of samplers change (sched_reserve)
         }
 
         sampling.samplers.erase(seq_id);
@@ -3389,7 +3420,7 @@ bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
 
     sampling.samplers.erase(seq_id);
 
-    sched_need_reserve = true;
+    g_sampler_reserve_fork[this].dirty = true;   // fork: reserved only if the kinds of samplers change (sched_reserve)
 
     return true;
 }
@@ -4665,6 +4696,10 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     }
     embd_seq.clear();
 
+    // fork: before this call's tokens are counted (as encode does): the reserve synchronizes, and a synchronize after the count reported this call as a
+    // prompt call done in ~12 us (the pass planner and the dense split learned 341 million tokens a second) and the real call afterwards not at all
+    sched_reserve();
+
     if (t_compute_start_us == 0) {
         t_compute_start_us = ggml_time_us();
     }
@@ -4681,8 +4716,6 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     mtp_dsa_sel_seq.clear();
     mtp_dsa_sel.clear();
     mtp_dsa_sel_width = 0;
-
-    sched_reserve();
 
     bool did_optimize = false;
     bool did_retier   = false;
