@@ -10300,3 +10300,7 @@ cuda_routed_streams-q1-bestc-pf12k1k,2026-11-19 09:21:35,bench /m/q/1/Qwen3.8-Fl
 cuda_routed_streams-q1-bestc-pf12k1k,2026-11-19 09:23:45,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_routed_streams variants v test pf12k n=2,,
 dev_step_time-q1-steptime-pf12k1k,2026-11-19 09:27:53,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_step_time variants v test pf12k n=2,,
 dev_fuse_dump-q1-fusedump-pf12k1k,2026-11-19 09:33:39,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_fuse_dump variants v test pf12k n=2,,
+cuda_q8_reuse-q1-best-pf12k1k,2026-11-19 09:44:23,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_q8_reuse variants v test pf12k n=2,,
+cuda_q8_reuse-q1-q8r-pf12k1k,2026-11-19 09:45:45,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_q8_reuse variants v test pf12k n=2,,
+cuda_q8_reuse2-q1-best-pf12k1k,2026-11-19 09:50:37,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_q8_reuse2 variants v test pf12k n=2,,
+cuda_q8_reuse2-q1-q8r-pf12k1k,2026-11-19 09:52:01,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_q8_reuse2 variants v test pf12k n=2,,

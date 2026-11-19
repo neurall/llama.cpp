@@ -7963,11 +7963,17 @@ void * ggml_cuda_q8_reuse_fork(int device, int lane, const void * src, const int
     for (int j = 0; j < 4; ++j) { k.ne[j] = ne[j]; }
     for (int j = 0; j < 3; ++j) { k.s[j] = strides[j]; }
     const int slot = g_q8r[device].lookup_or_claim(lane, k, (uintptr_t) src, (uintptr_t) src + src_bytes, *hit);
+    static const bool count = getenv("GGML_CUDA_Q8_REUSE_LOG") != nullptr;   // dev: how many quantizes the slots saved
+    if (count) {
+        static uint64_t n_hit = 0, n_all = 0;
+        n_hit += *hit; ++n_all;
+        if (n_all % 20000 == 0) { GGML_LOG_WARN("q8 reuse: %llu of %llu matvec inputs reused\n", (unsigned long long) n_hit, (unsigned long long) n_all); }
+    }
     return g_q8r_buf[device] + ((size_t) lane * Q8R_SLOTS + slot) * Q8R_SLOT_BYTES;
 }
 
 static void ggml_cuda_q8_written_fork(int device, const ggml_tensor * t) {
-    if (g_q8r_buf[device] != nullptr && t->data != nullptr) {
+    if (g_q8r_buf[device] != nullptr && t->data != nullptr && !ggml_cuda_is_view_or_noop(t)) {   // a view or reshape shares its source's bytes and writes none
         g_q8r[device].written((uintptr_t) t->data, (uintptr_t) t->data + ggml_nbytes(t));
     }
 }
