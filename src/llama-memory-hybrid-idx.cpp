@@ -374,7 +374,6 @@ struct llama_memory_hybrid_idx::kpool_layout {
 // Which pools of the layout the current ubatch must re-pool, in the layout's pool order.
 struct llama_memory_hybrid_idx_context::kpool_state {
     std::vector<uint32_t> is_new;
-    std::vector<uint32_t> rep_gen; // per global cell, the generation that last marked a pool with that rep
     uint32_t generation = 0;
 
     uint32_t n_pool_real = 0;
@@ -677,11 +676,21 @@ void llama_memory_hybrid_idx_context::kpool_build_state(const llama_ubatch & uba
     st.n_new       = 0;
     if (++st.generation == 0) {
         std::fill(st.is_new.begin(),  st.is_new.end(),  0);
-        std::fill(st.rep_gen.begin(), st.rep_gen.end(), 0);
         st.generation = 1;
     }
     st.is_new.resize(lay.n_pool_real, 0);
-    st.rep_gen.resize((size_t) kv_size*idx->get_n_stream(), 0);
+    // fork: per global cell, the generation that last marked a pool with that rep. It lived in the state, which dies with its context, and a decode call makes
+    // a new context: every token filled kv_size words on fresh pages (74 us, perf, Qwen3.8, 2026-11-19). The stamps live per thread instead: a call takes a
+    // generation no stamp holds, so what other calls and contexts left matches nothing.
+    static thread_local std::vector<uint32_t> rep_gen;
+    static thread_local uint32_t rep_generation = 0;
+    if (++rep_generation == 0) {
+        std::fill(rep_gen.begin(), rep_gen.end(), 0);
+        rep_generation = 1;
+    }
+    if (rep_gen.size() < (size_t) kv_size*idx->get_n_stream()) {
+        rep_gen.resize((size_t) kv_size*idx->get_n_stream(), 0);
+    }
 
     std::array<uint32_t, LLAMA_MAX_SEQ> pool_start;
 
@@ -690,8 +699,8 @@ void llama_memory_hybrid_idx_context::kpool_build_state(const llama_ubatch & uba
     auto mark = [&](llama_seq_id s, size_t k) {
         const auto & sq  = lay.seqs[s];
         const size_t rep = (size_t) sq.strm*kv_size + sq.cells[sq.pools[k] + kpool - 1].second;
-        if (st.rep_gen[rep] != st.generation) {
-            st.rep_gen[rep] = st.generation;
+        if (rep_gen[rep] != rep_generation) {
+            rep_gen[rep] = rep_generation;
             st.is_new[pool_start[s] + k] = st.generation;
             ++st.n_new;
         }

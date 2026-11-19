@@ -3701,7 +3701,8 @@ struct st_piece {
 };
 static int64_t g_st_m[8] = {0}, g_st_ms[8] = {0};   // dev: marks inside process_ubatch (entry, after apply+tail, graph decided, reuse/build done, inputs set, freeze/verify done)
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
-    llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads g_st_m[0] = ggml_time_us();
+    llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads
+    g_st_m[0] = ggml_time_us();
     bool applied = true;
     if (mctx) { st_piece sp(0); applied = mctx->apply(); }
     if (!applied) {

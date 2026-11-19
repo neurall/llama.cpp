@@ -5693,6 +5693,13 @@ static bool ggml_cuda_graph_debug_enabled() {
 }
 
 static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
+    // fork: the answer of a graph is kept under its uid (a reused ggml graph keeps its uid and its nodes): the look at every node below was 70 us of every
+    // decode token before the launch (perf, Qwen3.8, 3,000 nodes, 2026-11-19). A few graphs alternate (a draft, the splits of a token): 8 answers a thread
+    static thread_local struct { uint64_t uid; bool ok; } seen[8] = {};
+    static thread_local int seen_next = 0;
+    if (cgraph->uid != 0) {
+        for (const auto & e : seen) { if (e.uid == (uint64_t) cgraph->uid) { return e.ok; } }
+    }
 
     bool use_cuda_graph = true;
     // Loop over nodes in GGML graph to obtain info needed for CUDA graph
@@ -5722,6 +5729,10 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
         }
     }
 
+    if (cgraph->uid != 0) {
+        seen[seen_next] = { (uint64_t) cgraph->uid, use_cuda_graph };
+        seen_next = (seen_next + 1) % 8;
+    }
     return use_cuda_graph;
 }
 

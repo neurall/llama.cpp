@@ -314,7 +314,10 @@ std::vector<int32_t> llama_rowread_fill_fork(const ggml_tensor * t, ggml_tensor 
     GGML_ASSERT((int64_t) u.size() <= tab->ne[1]);
     const size_t rs = ggml_row_size(tab->type, tab->ne[0]);
     const bool host = ggml_backend_buffer_is_host(tab->buffer);
-    std::vector<uint8_t> tmp(host ? 0 : u.size()*rs);
+    // kept per thread, never zeroed: a decode token stages 16 rows (0.5 to 0.6 MB on Qwen3.8) and a new vector was that many bytes of fresh, zero-filled pages
+    // on the thread the card waits for; every byte sent below is written by the fill first
+    static thread_local std::vector<uint8_t> tmp;
+    if (!host && tmp.size() < u.size()*rs) { tmp.resize(u.size()*rs); }
     uint8_t * dst = host ? (uint8_t *) tab->data : tmp.data();
     llama_rowread_fill_rows_fork(t, 0, u.data(), u.size(), dst);
     if (!host) { ggml_backend_tensor_set(tab, tmp.data(), 0, u.size()*rs); }
