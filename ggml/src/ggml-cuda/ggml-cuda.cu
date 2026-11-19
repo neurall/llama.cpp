@@ -7010,6 +7010,14 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         }
     }
 
+    if (node->op == GGML_OP_MUL_MAT) {   // fork: the hyper-connection mix of one token in two kernels (hcmix-fork.cu, GGML_CUDA_HC_FUSE=1)
+        extern int ggml_cuda_try_fuse_hc_mix_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i);
+        if (const int n = ggml_cuda_try_fuse_hc_mix_fork(*cuda_ctx, cgraph, i)) {
+            return n;
+        }
+    }
+
+
     // fork, --moe fuse-off=GLU+MUL: the fusions that start at these ops stay apart, to name the one a bug needs (GGML_CUDA_DISABLE_FUSION parts all of them and changes the allocation too)
     static const std::string fuse_off = [] { const char * e = getenv("GGML_CUDA_FUSE_OFF"); return e ? "+" + std::string(e) + "+" : std::string(); }();
     if (!fuse_off.empty() && fuse_off.find("+" + std::string(ggml_op_name(node->op)) + "+") != std::string::npos) {

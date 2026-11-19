@@ -30,3 +30,4 @@ p1-allk,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs","--e
 t1-all,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-q8all,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_Q8_REUSE=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-tune,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1,mmvq-tune=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-hcfuse,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --env GGML_CUDA_HC_FUSE=1
