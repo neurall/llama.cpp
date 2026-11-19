@@ -4197,3 +4197,12 @@ ts,commit,line
 2026-11-19 15:08:03,d77b84655b,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
 2026-11-19 15:08:03,d77b84655b,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:17.96 1:15.86 -> 1 (not sure: the value in use stays, 8 slices each)"
 2026-11-19 15:08:03,d77b84655b,"moe-cache: self-tune: SWAP_LEAD ms/token 0:15.91 -2:37.58 -> 0 (not sure: the value in use stays, 8 slices each)"
+2026-11-19 15:22:42,d77b84655b,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
+2026-11-19 15:22:55,d77b84655b,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
+2026-11-19 15:22:55,d77b84655b,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:32.20 1:13.95 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-19 15:24:40,1d2d13fa39,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
+2026-11-19 15:24:52,1d2d13fa39,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
+2026-11-19 15:24:52,1d2d13fa39,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:32.34 1:14.30 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-19 15:26:37,d77b84655b,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
+2026-11-19 15:26:50,d77b84655b,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
+2026-11-19 15:26:50,d77b84655b,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:32.93 1:13.86 -> 1 (not sure: the value in use stays, 8 slices each)"
