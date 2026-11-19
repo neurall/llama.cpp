@@ -13,6 +13,7 @@
 #include "ggml-alloc.h"
 #include "ggml-rampool-fork.h"
 #include "ggml-sched-fork.h"
+#include "ggml-sched-reset-fork.h"
 #include "ggml-bell-fork.h"
 #include "ggml-impl.h"
 
@@ -5292,6 +5293,10 @@ ggml_backend_sched_t ggml_backend_sched_new(
     sched->hv_tensor_backend_ids = (int *) malloc(sched->hash_set.size * sizeof(sched->hv_tensor_backend_ids[0]));
     sched->hv_tensor_copies      = (ggml_tensor **) malloc(sched->hash_set.size * sched->n_backends * sched->n_copies * sizeof(struct ggml_tensor *));
     sched->hv_tensor_used        = (bool *) malloc(sched->hash_set.size * sizeof(sched->hv_tensor_used[0]));
+    // fork: cleared whole once, here; between graphs only the slots a graph marked (ggml_backend_sched_reset, ggml-sched-reset-fork.h)
+    memset(sched->hv_tensor_backend_ids, -1, sched->hash_set.size * sizeof(sched->hv_tensor_backend_ids[0]));
+    memset(sched->hv_tensor_copies,       0, sched->hash_set.size * sched->n_backends * sched->n_copies * sizeof(struct ggml_tensor *));
+    memset(sched->hv_tensor_used,         0, sched->hash_set.size * sizeof(sched->hv_tensor_used[0]));
 
     // At most one split per node is the proof-safe bound, but it costs ~21 KB per node (30 inputs x 2 tensors per split, plus the id arrays): at the 575k-node graph
     // of a 14336-token micro-batch that is 12 GB, committed at once. Linux overcommits it unseen; Windows refuses ("GGML_ASSERT(ctx->mem_buffer != NULL)" in ggml_init
@@ -5528,10 +5533,9 @@ void ggml_backend_sched_reset(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
     // reset state for the next run
     if (!sched->is_reset) {
-        ggml_hash_set_reset(&sched->hash_set);
-        memset(sched->hv_tensor_backend_ids, -1, sched->hash_set.size * sizeof(sched->hv_tensor_backend_ids[0]));
-        memset(sched->hv_tensor_copies,       0, sched->hash_set.size * sched->n_backends * sched->n_copies * sizeof(struct ggml_tensor *));
-        memset(sched->hv_tensor_used,         0, sched->hash_set.size * sizeof(sched->hv_tensor_used[0]));
+        // fork: only the slots the last graph marked, then the marks (the whole tables were 11 ms of memset before every rebuilt decode graph)
+        ggml_sched_reset_used_fork(sched->hash_set.used, sched->hash_set.size, sched->hv_tensor_backend_ids, (void **) sched->hv_tensor_copies,
+                (size_t) sched->n_backends * sched->n_copies, sched->hv_tensor_used);
         sched->is_reset = true;
     }
     sched->is_alloc = false;
