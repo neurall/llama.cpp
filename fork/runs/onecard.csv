@@ -83,3 +83,4 @@ q1-iq0def,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_BE
 q1-dots0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_BELL_DOTS=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-pad0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_KV_DECODE_PAD=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-cand0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_ROWREAD_CAND=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-nobs,qwen38,2,pf12k1k,512,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
