@@ -5568,8 +5568,20 @@ static std::vector<cudaEvent_t> g_cuda_stream_events[GGML_CUDA_MAX_DEVICES];   /
 // may this node run beside the main chain? A pure op that writes memory of its own. Everything else stays on the main stream: an op that writes into a state
 // tensor or in place (a view), one that meets the host (the bell), one with a hook of the expert cache (MUL_MAT_ID), the attention kernels and their indexers.
 static bool ggml_cuda_stream_movable_fork(const ggml_tensor * t) {
+    static const bool routed = [] { const char * e = getenv("GGML_CUDA_STREAMS_ROUTED"); return e && atoi(e) != 0; }();
+    if (routed && t->op == GGML_OP_MOE_ROWS) {
+        return true;   // writes the rows of its own `down` in place (a view of it): the unit's write range is that tensor, the plan orders it
+    }
     if (t->view_src != nullptr) {
         return false;
+    }
+    if (routed) {   // GGML_CUDA_STREAMS_ROUTED=1: the routed experts beside the shared expert and the dense work, as Strata runs them (trace 2026-11-19: its biggest overlap)
+        switch (t->op) {
+            case GGML_OP_MUL_MAT_ID: case GGML_OP_MOE_BELL: case GGML_OP_SOFT_MAX: case GGML_OP_ARGSORT: case GGML_OP_TOP_K:
+                return true;
+            default:
+                break;
+        }
     }
     switch (t->op) {
         case GGML_OP_MUL_MAT: case GGML_OP_ADD: case GGML_OP_SUB: case GGML_OP_MUL: case GGML_OP_DIV: case GGML_OP_SCALE: case GGML_OP_UNARY: case GGML_OP_GLU:

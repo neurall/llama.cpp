@@ -24,3 +24,6 @@ qni3-sdbg,qwen38,1,pf1k,8,"--moe bell=1",--env GGML_CUDA_STREAMS=2 --env GGML_CU
 qni3-sw4,qwen38,1,pfbest1k,1024,"--moe bell=1",--env GGML_CUDA_STREAMS=2 --env GGML_CUDA_STREAMS_SWITCH_US=4
 qni3-sw10,qwen38,1,pfbest1k,1024,"--moe bell=1",--env GGML_CUDA_STREAMS=2 --env GGML_CUDA_STREAMS_SWITCH_US=10
 qni3-sw30,qwen38,1,pfbest1k,1024,"--moe bell=1",--env GGML_CUDA_STREAMS=2 --env GGML_CUDA_STREAMS_SWITCH_US=30
+qni3-c0,qwen38,2,pfbest1k,1024,"--moe bell=1 -bs",--env GGML_CUDA_STREAMS=2 --env GGML_CUDA_GRAPH_CHUNK_SIZE=0
+qni4-s2bs,qn_iq4xs,2,pfbest1k,1024,"--moe bell=1 -bs",--env GGML_CUDA_STREAMS=2
+qni4-c0,qn_iq4xs,2,pfbest1k,1024,"--moe bell=1 -bs",--env GGML_CUDA_STREAMS=2 --env GGML_CUDA_GRAPH_CHUNK_SIZE=0
