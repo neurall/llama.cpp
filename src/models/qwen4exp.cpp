@@ -716,6 +716,15 @@ llama_model_qwen4exp::graph::graph(const llm_graph_params & params) :
                         beta[r] = ggml_sigmoid(ctx0, ggml_reshape_4d(ctx0, build_lora_mm(L[r].ssm_beta, cr[r], L[r].ssm_beta_s), 1, num_v_heads, nr, 1));
                         ggml_tensor * alpha = ggml_reshape_3d(ctx0, build_lora_mm(L[r].ssm_alpha, cr[r], L[r].ssm_alpha_s), num_v_heads, nr, 1);
                         gate[r] = ggml_reshape_4d(ctx0, ggml_mul(ctx0, ggml_softplus(ctx0, ggml_add(ctx0, alpha, L[r].ssm_dt)), L[r].ssm_a), 1, num_v_heads, nr, 1);
+                        if (ggml_nbytes(z[r]) <= ((size_t) 4 << 20)) {
+                            // a decode-sized graph (the CUDA two-stream planner takes graphs whose nodes are all within 4 MiB): the projections enter the graph
+                            // here, ahead of the conv chain, so z's matmul (20 us on Qwen3.8 IQ3_S) runs beside the chain's small kernels. In the order the
+                            // output pulls them in it came after the delta net, and the gated norm waited for it (2026-11-19 trace)
+                            ggml_build_forward_expand(gf, qkv[r]);
+                            ggml_build_forward_expand(gf, z[r]);
+                            ggml_build_forward_expand(gf, beta[r]);
+                            ggml_build_forward_expand(gf, gate[r]);
+                        }
                         ds_pin(ds_r[r].b);
                     }
                     // the conv window chain (ds_conv_chain), with the last range's write to the memory issued at the end of the layer: issued here it pulls
