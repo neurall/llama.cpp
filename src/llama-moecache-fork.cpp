@@ -15686,6 +15686,9 @@ void llama_moe_cache_step_fork() {
         g_rp.t_end = ggml_time_us();
     }
     step_mark(4);
+    // per pool class: its weakest cached expert's score this step (the shortcut below)
+    std::vector<double>   cls_min(mc->pool.size(), 0.0);
+    std::vector<uint64_t> cls_min_step(mc->pool.size(), UINT64_MAX);
     // 2) schedule new uploads: evict at a sync point (clear the victim's table
     //    entry now), then hand the slice copies to the worker
     const size_t n_layers = mc->layers.size();
@@ -15727,7 +15730,24 @@ void llama_moe_cache_step_fork() {
             // layers whose experts score highest; without the pool: of this layer)
             double best;
             static const bool own_layer = [] { const char * e = moe_opt("own-layer"); return e && atoi(e) != 0; }();   // --moe own-layer=1: a layer evicts only its own experts between tokens too
-            const slot_pick pk = pick_slot(mc, li, [&](layer_state & lo, size_t o, int32_t e) { return (own_layer && o != li) || pinned(mc, lo, e) ? -1.0 : xscore(mc, lo, e); }, best);
+            const auto rank = [&](layer_state & lo, size_t o, int32_t e) { return (own_layer && o != li) || pinned(mc, lo, e) ? -1.0 : xscore(mc, lo, e); };
+            // the class's weakest cached expert, scanned once a step (not once a layer: 48 scans of every block were 0.4 ms of a 15 ms token, 2026-11-19).
+            // Within the step the weakest score only rises (blocks taken here leave the scan), so a candidate below it breaks here exactly where the
+            // full scan would break it. Not with own-layer or big: their victim depends on the candidate.
+            if (ls.pcls >= 0 && !own_layer && knobs().big == 0) {
+                if (cls_min_step[ls.pcls] != mc->n_steps) {
+                    double b0 = 0;
+                    const slot_pick p0 = pick_slot(mc, li, rank, b0);
+                    const int32_t v0 = p0.slot >= 0 && p0.owner >= 0 ? mc->layers[p0.owner].slot_expert[p0.slot] : -1;
+                    cls_min[ls.pcls]      = v0 >= 0 ? xscore(mc, mc->layers[p0.owner], v0) : -1e300;   // a free block (or none in reach): no shortcut
+                    cls_min_step[ls.pcls] = mc->n_steps;
+                }
+                if (xscore(mc, ls, id) < cls_min[ls.pcls] + pay_back(link_margin[ls.link])) {
+                    mc->pr[7] += ls.pending.end() - it;
+                    break;
+                }
+            }
+            const slot_pick pk = pick_slot(mc, li, rank, best);
             const int32_t slot = pk.slot;
             if (slot < 0) {
                 mc->pr[9] += ls.pending.end() - it;
