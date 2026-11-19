@@ -4058,3 +4058,6 @@ ts,commit,line
 2026-11-19 10:53:38,9a4fd09b62,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
 2026-11-19 10:53:52,9a4fd09b62,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
 2026-11-19 10:53:52,9a4fd09b62,"[1/1] [==========49%               ] bpk-1676270.nsys-rep0.38.792.581 W moe-cache: self-tune: WAIT_SWAPS ms/token 0:17.60 1:16.26 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-19 10:57:06,3bb80e0f28,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
+2026-11-19 10:57:20,3bb80e0f28,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
+2026-11-19 10:57:20,3bb80e0f28,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:34.36 1:15.48 -> 1 (not sure: the value in use stays, 8 slices each)"

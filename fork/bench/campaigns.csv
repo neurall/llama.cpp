@@ -10325,3 +10325,4 @@ bell_pool-q1-bpool16-pf12k1k,2026-11-19 10:44:45,bench /m/q/1/Qwen3.8-Flash-Next
 bell_pool_pin-q1-bpin32-pf12k1k,2026-11-19 10:48:09,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds bell_pool_pin variants v test pf12k n=2,,
 bell_pool_pin-q1-bpool32-pf12k1k,2026-11-19 10:50:05,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds bell_pool_pin variants v test pf12k n=2,,
 bell_pool_pin-p1-bpoolk-pf12k1k,2026-11-19 10:52:58,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds bell_pool_pin variants v test pf12k n=2,,
+dev_decode_host-q1-steptime-pf12k1k,2026-11-19 10:56:29,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_decode_host variants v test pf12k n=2,,

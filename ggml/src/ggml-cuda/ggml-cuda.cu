@@ -5649,6 +5649,7 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
 
     bool use_cuda_graph = true;
     // Loop over nodes in GGML graph to obtain info needed for CUDA graph
+    const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;   // fork: once, not per node (cudaGetDevice per MUL_MAT_ID showed in decode host samples)
 
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
@@ -5659,7 +5660,6 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
 
         // [TAG_MUL_MAT_ID_CUDA_GRAPHS]
         if (node->op == GGML_OP_MUL_MAT_ID) {
-            const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
             if (ggml_cuda_mul_mat_id_needs_sync(node, cc)) {
                 // the mul_mat_id fallback path synchronizes the stream, so we cannot use CUDA graphs
                 // ref: https://github.com/ggml-org/llama.cpp/pull/18958
@@ -8560,7 +8560,21 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
     if (graph->is_enabled() && !ggml_cuda_graph_oom_disabled(graph_key)) {   // fork: not one whose instantiation ran out of VRAM (ggml_cuda_oom_recover)
-        const bool graph_compatible = ggml_cuda_graph_check_compability(cgraph);
+        // fork: a reused ggml graph (same uid, the same nodes and shapes) has the verdict of its last check; the walk over ~3000 nodes cost
+        // ~0.1 ms a decode token on the host (2026-11-19 samples: ggml_is_empty, needs_sync, cudaGetDevice)
+        static std::mutex compat_mtx;
+        static std::unordered_map<const ggml_cuda_graph *, std::pair<uint64_t, bool>> compat_seen;
+        bool graph_compatible;
+        {
+            std::lock_guard<std::mutex> lk(compat_mtx);
+            auto it = compat_seen.find(graph);
+            if (cgraph->uid != 0 && it != compat_seen.end() && it->second.first == cgraph->uid) {
+                graph_compatible = it->second.second;
+            } else {
+                graph_compatible = ggml_cuda_graph_check_compability(cgraph);
+                compat_seen[graph] = { cgraph->uid, graph_compatible };
+            }
+        }
         if (graph_compatible) {
             const bool properties_changed = ggml_cuda_graph_update_required(cuda_ctx, cgraph);
 
