@@ -3689,7 +3689,7 @@ void tokheat_dump() {
 // the server calls it when a request ends (llama_moe_request_end_fork)
 void llama_tokheat_dump_fork(void) { tokheat_dump(); }
 
-static int64_t g_st_m[6] = {0}, g_st_ms[6] = {0};   // dev: marks inside process_ubatch (entry, after apply+tail, graph decided, reuse/build done, inputs set, freeze/verify done)
+static int64_t g_st_m[8] = {0}, g_st_ms[8] = {0};   // dev: marks inside process_ubatch (entry, after apply+tail, graph decided, reuse/build done, inputs set, freeze/verify done)
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads g_st_m[0] = ggml_time_us();
     if (mctx && !mctx->apply()) {
@@ -3901,7 +3901,7 @@ g_st_m[3] = ggml_time_us();     const int64_t t_fill0 = ggml_time_us();   // for
         fork_idx_check(sched.get(), res->get_gf(), cparams.ctx_other ? "draft" : "target", n_graphs[this]++);
     }
 
-    const int64_t t_fz0 = ggml_time_us(); g_st_m[4] = ggml_time_us();
+    const int64_t t_fz0 = ggml_time_us(); g_st_m[6] = ggml_time_us();
     llama_moe_cache_pp_freeze_fork();   // a graph of the prompt mix: both cards' view of the home card's experts is fixed for the pass
     {
         static const bool dbg = getenv("LLAMA_SPLIT_CTL_DEBUG") != nullptr;
@@ -3912,7 +3912,7 @@ g_st_m[3] = ggml_time_us();     const int64_t t_fill0 = ggml_time_us();   // for
         }
     }
     if (cparams.moe_cache) { llama_moe_cache_verify_fork(sched.get(), (int32_t) ubatch.n_tokens); }   // --moe verify: the cached experts against the host's copy
-g_st_m[5] = ggml_time_us();     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
+g_st_m[7] = ggml_time_us();     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
         ret = status;
@@ -5288,7 +5288,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             if (g_st_ret > 0 && g_st_submit > 0) {
                 g_st_s_gap += g_st_entry - g_st_ret; g_st_s_prep += g_st_submit - g_st_entry; g_st_s_sub += g_st_back - g_st_submit; g_st_n++;
                 int64_t prev = g_st_entry;
-                for (int k = 0; k < 6; ++k) { if (g_st_m[k] >= prev) { g_st_ms[k] += g_st_m[k] - prev; prev = g_st_m[k]; } }
+                for (int k = 0; k < 8; ++k) { if (g_st_m[k] >= prev) { g_st_ms[k] += g_st_m[k] - prev; prev = g_st_m[k]; } }
             }
             g_st_ret = t_c;
             if (g_st_n == 256) {
