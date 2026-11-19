@@ -4,6 +4,9 @@
 #include "llama-memory-recurrent.h"
 #include "../llama-dsplit-fork.h"
 
+// fork (llama-graph.cpp): a decode state read in place when its cell already holds it; nullptr = the gather as before
+llm_graph_get_rows_fn llama_rs_inplace_getter_fork(llm_graph_input_rs * inp, const llama_ubatch & ub, uint32_t n_rs_seq);
+
 #include <algorithm>
 #include <cinttypes>
 
@@ -594,7 +597,7 @@ llama_model_qwen4exp::graph::graph(const llm_graph_params & params) :
                 auto it = rs_rows.find(states_all);
                 if (it == rs_rows.end()) {
                     ds_skip();
-                    it = rs_rows.emplace(states_all, build_rs(inp_rs, states_all, states_all->ne[0], 1)).first;
+                    it = rs_rows.emplace(states_all, build_rs(inp_rs, states_all, states_all->ne[0], 1, llama_rs_inplace_getter_fork(inp_rs, ubatch, cparams.n_rs_seq))).first;
                     ds_skip();   // the memory reads run where the memory is
                 }
                 return it->second;
@@ -749,7 +752,7 @@ llama_model_qwen4exp::graph::graph(const llm_graph_params & params) :
                         }
                     }
                     ds_skip();
-                    ggml_tensor * state = ggml_reshape_4d(ctx0, build_rs(inp_rs, ssm_all, hparams.n_embd_s(), 1), head_v_dim, head_v_dim, num_v_heads, 1);
+                    ggml_tensor * state = ggml_reshape_4d(ctx0, build_rs(inp_rs, ssm_all, hparams.n_embd_s(), 1, llama_rs_inplace_getter_fork(inp_rs, ubatch, cparams.n_rs_seq)), head_v_dim, head_v_dim, num_v_heads, 1);
                     ds_skip();   // the memory read runs where the memory is
                     for (size_t r = 0; r < NR; ++r) {
                         const int64_t nr = n_of(r);

@@ -918,6 +918,8 @@ void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
     }
 }
 
+bool llama_rs_inplace_fork(const llama_memory_recurrent_context * mctx, const llama_ubatch & ub, uint32_t n_rs_seq);   // fork, below
+
 bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
     const auto * mctx = static_cast<const llama_memory_recurrent_context *>(params.mctx);
 
@@ -931,6 +933,10 @@ bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
 
     res &= head == mctx->get_head();
     res &= rs_z == mctx->get_rs_z();
+
+    if (strcmp(s_copy->name, "rs_s_copy_ip") == 0) {   // fork: built reading the states in place (llama_rs_inplace_fork)
+        res &= llama_rs_inplace_fork(mctx, params.ubatch, params.cparams.n_rs_seq);
+    }
 
     return res;
 }
@@ -5703,6 +5709,26 @@ llm_graph_input_rs * llm_graph_context::build_rs_inp() const {
     auto inp = build_rs_inp_impl(ctx0, ubatch, mctx_cur);
 
     return (llm_graph_input_rs *) res->add_input(std::move(inp));
+}
+
+// fork: a decode ubatch (one token, one sequence) whose cell already holds its state (the copy is the identity: s_copy(0) == head) reads that state where it
+// is, through a view, instead of a gather of the whole state per layer and token (2 MB in each GDN layer of Qwen3.8, 2026-11-19). Only callers whose
+// consumer reads each state element before it writes it back may ask (qwen4exp's GDN and conv rows). A graph built so names its s_copy "rs_s_copy_ip";
+// llm_graph_input_rs::can_reuse keeps it only while the copy stays the identity. LLAMA_RS_INPLACE=0 turns it off.
+bool llama_rs_inplace_fork(const llama_memory_recurrent_context * mctx, const llama_ubatch & ub, uint32_t n_rs_seq) {
+    static const bool on = !getenv("LLAMA_RS_INPLACE") || atoi(getenv("LLAMA_RS_INPLACE")) != 0;
+    return on && mctx != nullptr && n_rs_seq == 0 && ub.n_seqs == 1 && ub.n_tokens == 1 && mctx->get_n_rs() == 1 && mctx->s_copy(0) == (int32_t) mctx->get_head();
+}
+
+llm_graph_get_rows_fn llama_rs_inplace_getter_fork(llm_graph_input_rs * inp, const llama_ubatch & ub, uint32_t n_rs_seq) {
+    if (!llama_rs_inplace_fork(inp->mctx, ub, n_rs_seq)) {
+        return nullptr;
+    }
+    ggml_set_name(inp->s_copy, "rs_s_copy_ip");
+    const size_t head = inp->mctx->get_head();
+    return [head](ggml_context * ctx, ggml_tensor * states, ggml_tensor * ids) {
+        return ggml_view_2d(ctx, states, states->ne[0], ids->ne[0], states->nb[1], head * states->nb[1]);
+    };
 }
 
 ggml_tensor * llm_graph_context::build_rs(
