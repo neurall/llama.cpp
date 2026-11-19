@@ -10347,3 +10347,7 @@ step_overlap-q1-ovl-pf12k1k,2026-11-19 11:46:38,bench /m/q/1/Qwen3.8-Flash-Next-
 step_overlap-q1-ovlvf-pf12k1k,2026-11-19 11:47:59,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds step_overlap variants v test pf12k n=2,,
 step_overlap-q1-bpool32-pf12k1k,2026-11-19 11:50:22,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds step_overlap variants v test pf12k n=2,,
 step_overlap-q1-ovlvf-pf12k1k,2026-11-19 11:52:17,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds step_overlap variants v test pf12k n=2,,
+step_overlap-q1-hcq8-pf12k1k,2026-11-19 12:53:04,bench /dev/shm/q38hc/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds step_overlap variants v test pf12k n=2,,
+step_overlap-q1-ovl-pf12k1k,2026-11-19 12:54:55,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds step_overlap variants v test pf12k n=2,,
+step_overlap-q1-hcq8-pf12k1k,2026-11-19 12:56:52,bench /dev/shm/q38hc/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds step_overlap variants v test pf12k n=2,,
+step_overlap-q1-ovl-pf12k1k,2026-11-19 12:58:40,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds step_overlap variants v test pf12k n=2,,
