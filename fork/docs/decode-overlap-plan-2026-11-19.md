@@ -115,3 +115,32 @@ pair before it becomes a default. Fusion decisions by measured time per launch (
 - A new build's prompt planner tries `k x1` .. `k x32` once each (3 to 6% slower prompt on those calls). Compare prompt speed on `stream` calls only.
 - Decode speed of one cell varies about 1% run to run: decide by trace plus two pairs.
 - The trace cell's server exits late: the list's pool unmount met "target is busy" (run.py now waits for the server).
+
+## Results, 18:45 (build `side_prio`: main stream at the highest priority, graphs with node priority, z right behind qkv, no bus rule, HC fuse off)
+
+| per token, us | `gdn_z_bus` | `side_prio` | Strata |
+|---|---|---|---|
+| wall | 15,370 | 15,084 | 14,878 |
+| work kernels, summed | 12,956 | 13,756 | 12,944 |
+| card busy with work | 12,119 | 11,903 | 11,207 |
+| work running in parallel | 836 | 1,853 | 1,737 |
+| no work running | 3,251 | 3,181 | 3,671 |
+
+(Token window by the top-k kernel here; the first table's window was keyed on an HC fuse kernel.)
+
+| decode, run 2, t/s | pair 1 | pair 2 |
+|---|---|---|
+| `gdn_z_bus` q1-hcload | 72.48 | 72.55 |
+| `side_prio` q1-hcload | 71.40 | 71.94 |
+| `side_prio` q1-noprio (`GGML_CUDA_STREAMS_PRIO=0`) | 70.09 | 70.53 |
+
+- Priority works: +1.9% on the same build. In the trace z starts when the input projection hands out its last wave and the main chain's small kernels
+  run during z, each about one wave late (concat 5.5 us instead of 2.4). The delta net starts 12.5 us earlier in a layer.
+- The plan dump confirmed item 1's fourth point: with one side stream the k norm and the beta projection were planned behind z, and the gate chain
+  stayed in the main chain. Also seen there: waits that are no data dependency (beta's projection waits for alpha's add, the shared expert's down
+  projection for an HC product) because the allocator handed a buffer out twice. Item 1.4 stands.
+- The HC fuse is worth 9 us a layer (unfused: two quantizes, scale, unary and two products, 25.1 us a stage against 20.6): 0.43 ms a token. My note
+  "no speed gain" was wrong, it came from t/s while the token was host-bound. Rows `pd-bf16` (HC weights unquantized, the reference) and `pd-fuse`
+  decide whether the fused kernel or the unfused graph is the one that is off.
+- Done after this: planner with up to three side streams and the hold rule (`ggml-streams-fork.h`, test passes for 2, 3 and 4 streams), the scratch
+  region safe for several side streams, a q8 reuse lane per stream. Build `multi_side`, rows `p1-plan4`, `p1-allk4`, `q1-s3`, `q1-s4`, `pd-s4`.
