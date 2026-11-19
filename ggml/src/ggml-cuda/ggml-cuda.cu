@@ -7965,6 +7965,9 @@ void * ggml_cuda_q8_reuse_fork(int device, int lane, const void * src, const int
     const int slot = g_q8r[device].lookup_or_claim(lane, k, (uintptr_t) src, (uintptr_t) src + src_bytes, *hit);
     static const bool count = getenv("GGML_CUDA_Q8_REUSE_LOG") != nullptr;   // dev: how many quantizes the slots saved
     if (count) {
+        static int said = 0;
+        if (said < 400) { ++said; GGML_LOG_WARN("q8 reuse %s lane %d slot %d src %p ne %lld %lld %lld s %lld %lld %lld\n", *hit ? "HIT " : "miss", lane, slot, src,
+                (long long) ne[0], (long long) ne[1], (long long) ne[2], (long long) strides[0], (long long) strides[1], (long long) strides[2]); }
         static uint64_t n_hit = 0, n_all = 0;
         n_hit += *hit; ++n_all;
         if (n_all % 20000 == 0) { GGML_LOG_WARN("q8 reuse: %llu of %llu matvec inputs reused\n", (unsigned long long) n_hit, (unsigned long long) n_all); }

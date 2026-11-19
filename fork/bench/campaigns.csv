@@ -10306,3 +10306,4 @@ cuda_q8_reuse2-q1-best-pf12k1k,2026-11-19 09:50:37,bench /m/q/1/Qwen3.8-Flash-Ne
 cuda_q8_reuse2-q1-q8r-pf12k1k,2026-11-19 09:52:01,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_q8_reuse2 variants v test pf12k n=2,,
 cuda_q8_reuse3-q1-best-pf12k1k,2026-11-19 09:55:37,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_q8_reuse3 variants v test pf12k n=2,,
 cuda_q8_reuse3-q1-q8r-pf12k1k,2026-11-19 09:57:00,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_q8_reuse3 variants v test pf12k n=2,,
+cuda_q8_reuse3-p1-q8rk-pf12k1k,2026-11-19 09:59:09,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_q8_reuse3 variants v test pf12k n=2,,
