@@ -18,7 +18,7 @@
 #include "ggml-cuda/q8reuse-fork.h"
 static constexpr int    Q8R_LANES = 2, Q8R_SLOTS = 8;
 static constexpr size_t Q8R_SLOT_BYTES = 16384;
-static bool ggml_cuda_q8_reuse_on() { static const bool on = getenv("GGML_CUDA_Q8_REUSE") && atoi(getenv("GGML_CUDA_Q8_REUSE")) != 0; return on; }
+static bool ggml_cuda_q8_reuse_on() { static const bool on = !getenv("GGML_CUDA_Q8_REUSE") || atoi(getenv("GGML_CUDA_Q8_REUSE")) != 0; return on; }   // on unless GGML_CUDA_Q8_REUSE=0 (2026-11-19: with the hc fuse +2 t/s Qwen3.8 decode)
 #include "ggml-cuda/acc.cuh"
 #include "ggml-cuda/add-id.cuh"
 #include "ggml-cuda/arange.cuh"
