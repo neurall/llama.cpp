@@ -5280,7 +5280,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             ggml_backend_sched_synchronize(sched.get());
         }
         const int64_t t_b = step_time ? ggml_time_us() : 0;
-        llama_moe_cache_step_fork();
+        if (mc_sync || !llama_moe_cache_active_fork()) { llama_moe_cache_step_fork(); }
+        else { extern void llama_moe_cache_step_overlap_fork(); llama_moe_cache_step_overlap_fork(); }   // --moe sync=0: the step beside the graph's tail, its writes wait for it
         if (step_time) {
             static int64_t s_sync = 0, s_step = 0, s_out = 0, n = 0, t_last = 0;
             const int64_t t_c = ggml_time_us();

@@ -533,6 +533,10 @@ struct moe_cache {
     int64_t                  stbl_used[MAX_LINKS] = {}; // its int32 entries handed out
     ggml_backend_t           link_be[MAX_LINKS]  = {}; // its compute backend (seen at the split callback): JIT uploads go on its stream
     ggml_backend_t           ring_be[MAX_LINKS]  = {}; // pp-ahead: its upload stream, beside the compute stream (ring_backend)
+    // --moe sync=0: the decode step runs while the graph's tail still computes. graph_ev[k]: recorded on link k's compute stream at the step's start; while
+    // graph_wait is set every upload worker waits for it before it writes a block, and the step waits for it before the device tables are written
+    ggml_backend_event_t     graph_ev[MAX_LINKS] = {};
+    std::atomic<bool>        graph_wait{false};
     // --moe pp-path=cstream (cs_begin, cs_layer): the running graph's cstream layers in order, layer -> position (-1 none), model layer number -> layer; per link the
     // positions below cs_done[link] have their done event recorded (a card's compute stream runs only its own layers: one done chain per card), cs_next[link] the next
     // position of that card's layers to upload for (each card's ring runs ahead on its own: its blocks are its own); the pass number; per link the compute stream at
@@ -11416,6 +11420,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     mc->dcv.notify_all();
                     continue;
                 }
+                if (mc->graph_wait.load(std::memory_order_acquire) && mc->graph_ev[ls.link]) { ggml_backend_event_synchronize(mc->graph_ev[ls.link]); }   // a block the running graph may still read
                 race_stress_sleep();   // --moe race-stress: an upload starts late (a lend or a zone change may happen meanwhile)
                 const int64_t t0 = ggml_time_us();
                 led_upload(mc, "up-start", j.layer_idx, j.expert, j.slot, j.bg);
@@ -15154,6 +15159,26 @@ static void tables_check(moe_cache * mc) {
     }
 }
 
+// the step waits for the graph before anything a kernel reads changes on the card
+static void step_graph_join(moe_cache * mc) {
+    if (!mc->graph_wait.load()) { return; }
+    for (int k = 0; k < MAX_LINKS; ++k) { if (mc->graph_ev[k]) { ggml_backend_event_synchronize(mc->graph_ev[k]); } }
+    mc->graph_wait.store(false, std::memory_order_release);
+}
+void llama_moe_cache_step_overlap_fork() {
+    moe_cache * mc = g_cache;
+    if (mc) {
+        for (int k = 0; k < MAX_LINKS; ++k) {
+            if (!mc->link_be[k]) { continue; }
+            if (!mc->graph_ev[k]) { mc->graph_ev[k] = ggml_backend_event_new(ggml_backend_get_device(mc->link_be[k])); }
+            if (mc->graph_ev[k]) { ggml_backend_event_record(mc->graph_ev[k], mc->link_be[k]); }
+        }
+        mc->graph_wait.store(true, std::memory_order_release);
+    }
+    llama_moe_cache_step_fork();
+    if (mc) { step_graph_join(mc); }   // a step that returned early
+}
+
 void llama_moe_cache_step_fork() {
     moe_cache * mc = g_cache;
     if (!mc) {
@@ -15192,7 +15217,7 @@ void llama_moe_cache_step_fork() {
             if (ap.want_b > 0) { led_line(led_card(ap), "graph-done", 0, ap.want_b, tr_fmt("graph %d tokens", (int) mc->graph_tokens_last)); }
         }
     }
-    struct flush_at_exit { ~flush_at_exit() { flush_tables(); } } flush_guard; // table changes reach the GPU before the next graph
+    struct flush_at_exit { moe_cache * mc; ~flush_at_exit() { step_graph_join(mc); flush_tables(); } } flush_guard { mc }; // table changes reach the GPU before the next graph (after the running one)
     {   // stats.log: decode speed and hit rate per 256 steps. Prompt calls count no hits and take long, so a window with one in it says little: read it next to the call lines
         static const bool on = llama_moe_log_profile_fork("planner");
         static int64_t t0 = 0, n0 = 0;
