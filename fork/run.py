@@ -1497,7 +1497,7 @@ def stop(p):
         p.wait()
 
 
-POWER_DAY, POWER_NIGHT = (220, 280), (200, 200)   # W per GPU (GPU0 = x4 card, GPU1 = x16): 07:00-23:50 and 23:50-07:00 (user 2026-10-18; the x4 card's small fan is loud at night)
+POWER_DAY, POWER_NIGHT = (280, 280), (280, 280)   # user 2026-11-19: "stay 280 280" (one-card decode campaign; was day 220/280, night 200/200). W per GPU (GPU0 = x4 card, GPU1 = x16)
 
 
 def power_schedule(now=None):

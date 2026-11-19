@@ -3,6 +3,6 @@ q1-off,qwen38,2,pf12k1k,512,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 -
 q1-bell,qwen38,2,pf12k1k,512,"--moe bell=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-best,qwen38,2,pf12k1k,512,"--moe bell=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-strata,qwen38,2,pf12k1k,512,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
-q1-bestk,qwen38,1,pf12k1k,512,"--moe bell=1 -bs","--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none --delay=45 --duration=8 --kill=none -o /p/bw/data/nsys/q1bk-%p --force-overwrite=true'"
+q1-bestk,qwen38,1,pf12k1k,512,"--moe bell=1 -bs","--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none --delay=27 --duration=5 --kill=none -o /p/bw/data/nsys/q1bk-%p --force-overwrite=true'"
 q1-stratak,qwen38,1,pf12k1k,512,,"--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --env STRATA_NSYS_DELAY=60 --env STRATA_NSYS_S=8"
 q1-routed,qwen38,2,pf12k1k,512,"--moe bell=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_STREAMS_ROUTED=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
