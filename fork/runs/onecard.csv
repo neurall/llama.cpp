@@ -70,3 +70,5 @@ q1-stepdef,qwen38,1,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_S
 p1-perfdef,qwen38,1,pf12k1k,512,"-bs","--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'perf record -F 1999 --switch-output=10s -o /p/bw/data/perf/q1.data'"
 q1-s8,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=8 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 p1-plan8,qwen38,1,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=8 --env GGML_CUDA_STREAMS_DEBUG=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bp48,qwen38,2,pf12k1k,512,"--moe bell-pool=48 -bs",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bp64,qwen38,2,pf12k1k,512,"--moe bell-pool=64 -bs",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
