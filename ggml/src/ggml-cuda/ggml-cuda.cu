@@ -16,6 +16,9 @@
 #include "ggml-cuda/common.cuh"
 #include "ggml-streams-fork.h"
 #include "ggml-cuda/q8reuse-fork.h"
+static constexpr int    Q8R_LANES = 2, Q8R_SLOTS = 8;
+static constexpr size_t Q8R_SLOT_BYTES = 16384;
+static bool ggml_cuda_q8_reuse_on() { static const bool on = getenv("GGML_CUDA_Q8_REUSE") && atoi(getenv("GGML_CUDA_Q8_REUSE")) != 0; return on; }
 #include "ggml-cuda/acc.cuh"
 #include "ggml-cuda/add-id.cuh"
 #include "ggml-cuda/arange.cuh"
@@ -4687,6 +4690,11 @@ static size_t ggml_backend_cuda_nodes_scratch_fork(int device, const ggml_tensor
     if (prev >= 0) {
         ggml_cuda_set_device(prev);
     }
+    bool has_mm = false;
+    for (int i = 0; i < n && !has_mm; ++i) { has_mm = nodes[i]->op == GGML_OP_MUL_MAT || nodes[i]->op == GGML_OP_MUL_MAT_ID; }
+    if (has_mm && ggml_cuda_q8_reuse_on()) {
+        need += GGML_PAD((size_t) Q8R_LANES * Q8R_SLOTS * Q8R_SLOT_BYTES, 256);   // the q8 reuse slots stay taken under every node of the graph
+    }
     return need;
 }
 static size_t ggml_backend_cuda_node_scratch_fork(int device, const ggml_tensor * node) {
@@ -7941,11 +7949,8 @@ struct ggml_cuda_op_prof {
 };
 
 // fork: GGML_CUDA_Q8_REUSE=1, one quantized copy of a matvec input for all matvecs of the graph that read it (q8reuse-fork.h; mmvq.cu asks here)
-static constexpr int    Q8R_LANES = 2, Q8R_SLOTS = 8;
-static constexpr size_t Q8R_SLOT_BYTES = 16384;
 static q8_reuse_cache<Q8R_LANES, Q8R_SLOTS> g_q8r[GGML_CUDA_MAX_DEVICES];
 static char * g_q8r_buf[GGML_CUDA_MAX_DEVICES] = {};
-static bool ggml_cuda_q8_reuse_on() { static const bool on = getenv("GGML_CUDA_Q8_REUSE") && atoi(getenv("GGML_CUDA_Q8_REUSE")) != 0; return on; }
 
 // the slot for this input (nullptr: no reuse, quantize into a buffer of your own); *hit: it holds the quantized input already
 void * ggml_cuda_q8_reuse_fork(int device, int lane, const void * src, const int64_t * ne, const int64_t * strides, size_t src_bytes, size_t q8_bytes, bool * hit) {
@@ -8225,7 +8230,9 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
             // fork: q8 reuse slots live for this graph only (the pool hands out the same bytes on every capture, so a captured graph replays them)
             ggml_cuda_pool_alloc<char> q8r_alloc(cuda_ctx->pool());
             struct q8r_guard { int d; ~q8r_guard() { g_q8r_buf[d] = nullptr; } } q8r_g { cuda_ctx->device };
-            if (ggml_cuda_q8_reuse_on()) {
+            bool q8r_mm = false;
+            for (int k = 0; k < cgraph->n_nodes && !q8r_mm; ++k) { q8r_mm = cgraph->nodes[k]->op == GGML_OP_MUL_MAT || cgraph->nodes[k]->op == GGML_OP_MUL_MAT_ID; }
+            if (q8r_mm && ggml_cuda_q8_reuse_on()) {   // the same test as the scratch mirror (ggml_backend_cuda_nodes_scratch_fork), so the region holds it
                 g_q8r_buf[cuda_ctx->device] = q8r_alloc.alloc((size_t) Q8R_LANES * Q8R_SLOTS * Q8R_SLOT_BYTES);
                 g_q8r[cuda_ctx->device].reset();
             }
