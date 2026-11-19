@@ -18499,18 +18499,20 @@ static bellpool_dot2_t bell_dot2_pick(ggml_type type, const bellpool_type & ty, 
     std::vector<uint8_t> q(ty.q_row);
     ty.quant(xf.data(), q.data(), n_in);
     int64_t t1 = INT64_MAX, t2 = INT64_MAX;
-    float sink = 0.0f;
+    float s1[64], s2[64];
     for (int round = 0; round < 5; ++round) {
         int64_t a = bellpool::now_ns();
-        for (int r = 0; r < nr; ++r) { float v = 0.0f; ty.dot(n_in, &v, 0, rows + (size_t) r * ty.w_row, 0, q.data(), 0, 1); sink += v; }
+        for (int r = 0; r < nr; ++r) { ty.dot(n_in, &s1[r], 0, rows + (size_t) r * ty.w_row, 0, q.data(), 0, 1); }
         t1 = std::min(t1, bellpool::now_ns() - a);
         a = bellpool::now_ns();
-        for (int r = 0; r < nr; r += 2) { float v0 = 0.0f, v1 = 0.0f; d2(n_in, &v0, &v1, rows + (size_t) r * ty.w_row, rows + (size_t) (r + 1) * ty.w_row, q.data()); sink += v0 + v1; }
+        for (int r = 0; r < nr; r += 2) { d2(n_in, &s2[r], &s2[r + 1], rows + (size_t) r * ty.w_row, rows + (size_t) (r + 1) * ty.w_row, q.data()); }
         t2 = std::min(t2, bellpool::now_ns() - a);
     }
-    p.fn = t2 * 100 < t1 * 97 ? d2 : nullptr;   // 3% or more quicker
-    LLAMA_LOG_WARN("moe-cache: bell pool: %s rows of %d: in pairs %.0f ns a row, one by one %.0f ns: %s%s\n", ggml_type_name(type), n_in, (double) t2 / nr, (double) t1 / nr,
-            p.fn ? "pairs" : "one by one", sink == 12345.0f ? "!" : "");
+    double diff = 0.0;   // the sums against the one-row dot's, by the backend's rule for its own forms (as bell_dot1_pick): a kernel that is off on this CPU never runs
+    for (int r = 0; r < nr; ++r) { diff = std::max(diff, std::fabs((double) s1[r] - (double) s2[r]) / (std::fabs((double) s1[r]) + 1e-3)); }
+    p.fn = diff <= 2e-5 && t2 * 100 < t1 * 97 ? d2 : nullptr;   // the same sums and 3% or more quicker
+    LLAMA_LOG_WARN("moe-cache: bell pool: %s rows of %d: in pairs %.0f ns a row, one by one %.0f ns, sums differ by %.0e: %s\n", ggml_type_name(type), n_in, (double) t2 / nr,
+            (double) t1 / nr, diff, p.fn ? "pairs" : "one by one");
     return p.fn;
 }
 static bool bell_pool_type(const ggml_tensor * w, int64_t n_in, bellpool_type & ty) {
