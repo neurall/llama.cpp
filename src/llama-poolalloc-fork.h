@@ -313,15 +313,19 @@ static inline size_t poolx_room_give_back_chunks(size_t room_lo, size_t first_un
     }
     return e;
 }
-// After a call: a shape class lent the whole tail area (not seen yet) counts the call and is seen after its second, when its CUDA graphs exist too (ggml
-// instantiates a graph's CUDA graph at the graph's second call). The room gives back only when no class is mid-warmup (returns true): a give-back after the
-// first call measured CUDA's use before the graphs existed (GLM 3.0, build room_tag_fix 2026-11-16: 346 -> 189 MiB after the first decode token, 1 MiB
-// free, all 42 decode graphs of the two cards ran out of VRAM at the second token and ran without CUDA graphs from then on).
+// After a call: a shape class lent the whole tail area (not seen yet) counts its own passes (`ran`: the class of every pass the call ran) and is seen after
+// its second, when its CUDA graphs exist too (ggml instantiates a graph's CUDA graph at the graph's second call). Until it is seen, each of its passes gets
+// the whole tail area again at its lend (room_lend), before anything of it runs, so the room may give back after any call. GLM 3.0 (build room_tag_fix
+// 2026-11-16: all 42 decode graphs ran out of VRAM at the second token) had its shape seen after its FIRST call; until 2026-11-19 every call counted for
+// every pending class and the room gave back only with nothing pending: a prompt's shapes were seen two decode tokens later, their second calls (the next
+// request) got no room at the lend and found 15 MiB free, the kernel-load guard tripped in the middle of a prompt, and a recurrent model cannot take that
+// call back (Qwen3.8 on two cards, verify list, HTTP 500 on every second request). Returns true when no class is pending.
 struct poolx_room_lent { int64_t cls; int calls; };
-static inline bool poolx_room_after_call(std::vector<poolx_room_lent> & pending, std::vector<int64_t> & seen) {
+static inline bool poolx_room_after_call(std::vector<poolx_room_lent> & pending, std::vector<int64_t> & seen, const std::vector<int64_t> & ran) {
     size_t k = 0;
     for (poolx_room_lent p : pending) {
-        if (++p.calls >= 2) { seen.push_back(p.cls); } else { pending[k++] = p; }
+        p.calls += (int) std::count(ran.begin(), ran.end(), p.cls);
+        if (p.calls >= 2) { seen.push_back(p.cls); } else { pending[k++] = p; }
     }
     pending.resize(k);
     return pending.empty();

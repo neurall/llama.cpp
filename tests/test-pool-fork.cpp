@@ -1149,13 +1149,13 @@ static void test_regress_room_graph_warmup() {
             if (use > room && oom_at < 0) { oom_at = (int64_t) i; }
             bool give;
             if (pol == 0) { for (auto & p : pend) { seen.push_back(p.cls); } pend.clear(); give = true; }
-            else          { give = poolx_room_after_call(pend, seen); }
+            else          { (void) poolx_room_after_call(pend, seen, { s.cls }); give = true; }   // a class not seen yet gets the whole area again at its next lend
             if (give) { room = (int64_t) poolx_room_give_back((size_t) room, (size_t) std::max<int64_t>(0, room - use), 0, (size_t) step); }
         }
         if (pol == 0) { report("old rule: the second decode token runs out (the regression)", oom_at == 3, fmt("first out-of-memory at call %lld", (long long) oom_at)); }
         else {
             report("new rule: no call runs out", oom_at < 0, fmt("first out-of-memory at call %lld", (long long) oom_at));
-            report("new rule: the room ends at CUDA's use in whole blocks, nothing kept beyond", room >= use && room - use < step && pend.empty(),
+            report("new rule: the room ends at CUDA's use in whole blocks, nothing kept beyond", room >= use && room - use < step,
                    fmt("room %lld MiB for a use of %lld", (long long) room, (long long) use));
         }
     }
@@ -1179,6 +1179,47 @@ static void test_regress_pool_buffer_limits() {
     report("CUDA (no limit): one buffer, ring on", !cu.split && cu.ring_ok, "");
 }
 
+static void test_regress_room_own_calls() {
+    printf("Testing [bug: Qwen3.8 on two cards, verify list 2026-11-19: every second request failed] a pending shape counts its own calls only:\n");
+    // The same CUDA use model as test_regress_room_graph_warmup (kernels at a shape's first call, its CUDA graphs at its second). Two requests: a 142-token
+    // prompt (class 256), its last 4 tokens (class 4), 7 decode tokens. The prompt shapes' second calls come with the next request. When every call counted for
+    // every pending class, both prompt shapes were seen after the first two decode tokens, the room went back to CUDA's use during the decode, and the
+    // next request's prompt captures found no room: in the engine the kernel-load guard tripped mid-prompt (15 MiB free) and the recurrent model's call failed.
+    const int64_t step = 8, room_max = 176, tables = 4;
+    struct shape { int64_t cls, kern, graphs; };
+    std::vector<shape> calls;
+    for (int r = 0; r < 2; ++r) {
+        calls.push_back({ 256, 8, 16 });
+        calls.push_back({ 4, 4, 16 });
+        for (int t = 0; t < 7; ++t) { calls.push_back({ 1, 2, 40 }); }
+    }
+    for (int pol = 0; pol < 2; ++pol) {   // 0: every call counts for every pending class (the bug), 1: poolx_room_after_call with the classes the call ran
+        std::vector<int64_t> seen; std::vector<poolx_room_lent> pend; std::map<int64_t, int> ran;
+        int64_t room = 8, oom_at = -1, use = tables;
+        for (size_t i = 0; i < calls.size(); ++i) {
+            const shape & s = calls[i];
+            if (std::find(seen.begin(), seen.end(), s.cls) == seen.end()) {
+                room = room_max;
+                bool in = false; for (auto & p : pend) { in = in || p.cls == s.cls; }
+                if (!in) { pend.push_back({ s.cls, 0 }); }
+            }
+            const int n = ++ran[s.cls];
+            use += (n == 1 ? s.kern : 0) + (n == 2 ? s.graphs : 0);
+            if (use > room && oom_at < 0) { oom_at = (int64_t) i; }
+            std::vector<int64_t> this_call = { s.cls };
+            if (pol == 0) { this_call.clear(); for (auto & p : pend) { this_call.push_back(p.cls); } }
+            const bool settled = poolx_room_after_call(pend, seen, this_call);
+            const bool give = pol == 0 ? settled : true;   // the old engine gave back only with nothing pending; now a class not seen yet gets the whole area at its lend
+            if (give) { room = (int64_t) poolx_room_give_back((size_t) room, (size_t) std::max<int64_t>(0, room - use), 0, (size_t) step); }
+        }
+        if (pol == 0) { report("every call counted for every pending class: the next request's prompt runs out (the regression)", oom_at == 9, fmt("first out-of-memory at call %lld", (long long) oom_at)); }
+        else {
+            report("a class counts its own calls: no call runs out", oom_at < 0, fmt("first out-of-memory at call %lld", (long long) oom_at));
+            report("a class counts its own calls: the room ends at CUDA's use once every shape has its CUDA graphs", room >= use && room - use < step && pend.empty(),
+                   fmt("room %lld MiB for a use of %lld", (long long) room, (long long) use));
+        }
+    }
+}
 static void test_regress_room_give_back_chunks() {
     printf("Testing [bug: a block given back with a chunk the driver could not back, Qwen3.8 IQ4_XS room_graphs_clear 2026-11-16] the room's give-back in whole chunks:\n");
     // blocks of 2.24 MiB, chunks of 2 MiB; the room's first unmapped byte 1000 bytes above its first block: giving that block back needs two chunks. The log:
@@ -1242,6 +1283,7 @@ int main(int argc, char ** argv) {
     test_regress_pool_start_pins();
     test_regress_room_shadow_tags();
     test_regress_room_graph_warmup();
+    test_regress_room_own_calls();
     test_regress_room_give_back_chunks();
     test_regress_pool_buffer_limits();
     if (n_failed > 0) {

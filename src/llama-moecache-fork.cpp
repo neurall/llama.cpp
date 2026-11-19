@@ -7403,6 +7403,7 @@ static moe_cache::alias_pool * room_ap(moe_cache * mc, ggml_backend_dev_t dev) {
 }
 static std::vector<int64_t>   g_room_seen;      // shape classes (poolx_room_class) that ran through once this session: their kernels are loaded
 static std::vector<poolx_room_lent> g_room_pending;   // classes lent the whole tail area, seen after their second call (poolx_room_after_call)
+static std::vector<int64_t>   g_room_ran;       // the classes of the passes of the call in flight that were not seen yet: each counts its own calls
 static std::atomic<uint64_t>  g_room_gen{0};    // bumped by every room_apply (a grow of the RAM pool waits for the room it asked for)
 static bool                   g_room_check = false;   // the room changed: the next VRAM watch looks, also on a decode token
 typedef size_t (*room_set_t)(ggml_backend_buffer_t, size_t);
@@ -7446,6 +7447,7 @@ static void room_lend(moe_cache * mc, ggml_backend_sched_t sched, bool synced, i
     if (std::find(g_room_seen.begin(), g_room_seen.end(), cls) == g_room_seen.end()) {
         for (auto & ap : mc->alias) { if (ap.room_max > 0) { ap.room_lo_want = std::min(ap.room_lo_want, room_edge_down(ap, ap.tail_real - ap.room_max)); } }
         if (std::none_of(g_room_pending.begin(), g_room_pending.end(), [&](const poolx_room_lent & p) { return p.cls == cls; })) { g_room_pending.push_back({ cls, 0 }); }
+        g_room_ran.push_back(cls);   // this pass counts for its own class only, after the call (llama_moe_cache_vram_watch_fork)
     }
     room_apply(mc, sched, synced);
 }
@@ -10204,10 +10206,12 @@ static size_t vram_margin(ggml_backend_dev_t dev, const std::string & section, b
 void llama_moe_cache_vram_watch_fork(bool prompt) {
     static std::atomic<uint32_t> n_calls{0};
     const uint32_t k = ++n_calls;
+    std::vector<int64_t> ran;   // the passes of this call whose class was not seen yet (room_lend)
+    ran.swap(g_room_ran);
     if (!prompt && (k & 31) != 0 && !g_room_check && g_room_pending.empty()) {
         return;
     }
-    const bool settled = poolx_room_after_call(g_room_pending, g_room_seen);   // no class mid-warmup: its kernels and CUDA graphs exist
+    (void) poolx_room_after_call(g_room_pending, g_room_seen, ran);   // a class not seen yet gets the whole tail area again at its next lend (room_lend)
     g_room_check = false;
     std::lock_guard<std::mutex> lk(g_vram_mtx);
     for (auto & d : g_vram) {
@@ -10218,7 +10222,7 @@ void llama_moe_cache_vram_watch_fork(bool prompt) {
         const int64_t outside = (int64_t) d.free_at_size - (int64_t) d.pool + (int64_t) (rap ? rap->room_unmapped : 0) - (int64_t) f;
         d.grow_max = std::max<int64_t>(d.grow_max, outside - d.u_prev);
         d.u_prev   = outside;
-        if (rap && settled && !g_rp_growing.load() && rap->room_lo_want >= rap->room_lo) {   // whole free blocks of the room go back at once; a RAM pool pinning keeps its page tables' room
+        if (rap && !g_rp_growing.load() && rap->room_lo_want >= rap->room_lo) {   // whole free blocks of the room go back at once; a RAM pool pinning keeps its page tables' room
             // pins the loader has not made yet keep their page tables' share (the warmup can run before the last reads end)
             typedef size_t (*pending_t)(void);
             auto pend = (pending_t) llama_fork_proc_dev(d.dev, "ggml_backend_fork_pins_pending_fork");
