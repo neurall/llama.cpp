@@ -5594,7 +5594,7 @@ static ggml_stream_unit ggml_cuda_stream_unit_fork(const ggml_cgraph * cgraph, i
         double bytes = 0.0;
         if (t->data != nullptr) {
             u.writes.push_back({ (uintptr_t) t->data, (uintptr_t) t->data + ggml_nbytes(t) });
-            bytes = (double) ggml_nbytes(t);
+            bytes = t->view_src ? 0.0 : (double) ggml_nbytes(t);   // a node that writes into another tensor (a KV row) has that tensor's size, not its work's
         }
         for (int j = 0; j < GGML_MAX_SRC; ++j) {
             const ggml_tensor * s = t->src[j];
@@ -7989,6 +7989,21 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
             for (int w : sp.plan.wait) { n_wait += w >= 0; }
             GGML_LOG_WARN("CUDA%d streams: chunk of %zu launches from node %d: %d beside the main chain, %d waits, estimated %.0f -> %.0f us\n", cuda_ctx->device,
                     units.size(), i_from, sp.plan.n_side, n_wait, sp.plan.t_serial, sp.plan.t_plan);
+        }
+        // GGML_CUDA_STREAMS_DEBUG=1: the plan of each card's first chunks, launch by launch (which launch each one waits for, and what keeps it on the main chain)
+        static const bool dump = getenv("GGML_CUDA_STREAMS_DEBUG") != nullptr;
+        static std::atomic<int> dumped{0};
+        if (dump && dumped.fetch_add(1) < 4) {
+            for (size_t k = 0; k < units.size(); ++k) {
+                const ggml_tensor * t = cgraph->nodes[units[k].leader];
+                int dep = -1;   // the latest earlier launch it shares memory with
+                for (int v = (int) k - 1; v >= 0 && dep < 0; --v) {
+                    if (ggml_stream_conflict(units[v], units[k])) { dep = v; }
+                }
+                GGML_LOG_WARN("CUDA%d streams: %3zu %s %-14s %-28s %6.1f us%s  after %d (%s)%s\n", cuda_ctx->device, k, sp.plan.stream[k] ? "SIDE" : "main", ggml_op_name(t->op), t->name,
+                        units[k].cost, units[k].movable ? "" : " fixed", dep, dep >= 0 ? cgraph->nodes[units[dep].leader]->name : "-",
+                        sp.plan.wait[k] >= 0 ? (std::string(", waits for ") + std::to_string(sp.plan.wait[k])).c_str() : "");
+            }
         }
         CUDA_CHECK(cudaEventRecord(sp_event(0), cuda_ctx->stream(cuda_ctx->device, 0)));   // what the side stream starts behind in this chunk
     };

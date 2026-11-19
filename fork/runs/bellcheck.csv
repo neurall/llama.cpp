@@ -20,3 +20,4 @@ qni3-s2d,qwen38,2,pfbest1k,1024,,--env GGML_CUDA_STREAMS=2
 qni4-s2,qn_iq4xs,2,pfbest1k,1024,"--moe bell=1",--env GGML_CUDA_STREAMS=2
 qni3-bs,qwen38,2,pfbest1k,1024,"--moe bell=1 -bs",
 qni3-s2bs,qwen38,2,pfbest1k,1024,"--moe bell=1 -bs",--env GGML_CUDA_STREAMS=2
+qni3-sdbg,qwen38,1,pf1k,8,"--moe bell=1",--env GGML_CUDA_STREAMS=2 --env GGML_CUDA_STREAMS_DEBUG=1
