@@ -25,6 +25,7 @@
 #include "../ggml/src/ggml-bell-fork.h"
 
 #include <algorithm>
+#include <functional>
 #include <atomic>
 #include <cinttypes>
 #include <climits>
@@ -15158,6 +15159,27 @@ void llama_moe_cache_step_fork() {
     if (!mc) {
         return;
     }
+    // dev: LLAMA_STEP_TIME=1 splits the step's time by section (llama-context.cpp logs the whole step)
+    static const bool st_on = getenv("LLAMA_STEP_TIME") != nullptr;
+    static int64_t st_sum[8] = {0};
+    static int64_t st_n = 0;
+    int64_t st_last = st_on ? ggml_time_us() : 0;
+    int st_cur = -1;
+    auto step_mark = [&](int k) {
+        if (!st_on) { return; }
+        const int64_t t = ggml_time_us();
+        st_sum[st_cur + 1] += t - st_last;
+        st_last = t; st_cur = k;
+    };
+    struct st_end_t { std::function<void()> f; ~st_end_t() { f(); } } st_end { [&] {
+        if (!st_on) { return; }
+        st_sum[st_cur + 1] += ggml_time_us() - st_last;
+        if (++st_n % 256 == 0) {
+            LLAMA_LOG_WARN("step sections (us a step): head %.0f, publish %.0f, promote %.0f, tune %.0f, prefetch %.0f, schedule+rest %.0f\n",
+                st_sum[0] / 256.0, st_sum[1] / 256.0, st_sum[2] / 256.0, st_sum[3] / 256.0, st_sum[4] / 256.0, st_sum[5] / 256.0);
+            for (auto & v : st_sum) { v = 0; }
+        }
+    } };
     if (led_on() || poison_on() || mc->n_steps % 64 == 0) {
         tables_check(mc);
     }
@@ -15215,6 +15237,7 @@ void llama_moe_cache_step_fork() {
     // fixed-text decode +16%, hit rate 66% -> 77%
     const bool wait_publish = det || knobs().wait != 0; // LLAMA_MOE_CACHE_WAIT_SWAPS / ctl WAIT
 
+    step_mark(0);
     // 1) publish completed uploads (sync point: no graph is executing)
     {
         std::unique_lock<std::mutex> wlk(mc->wmtx);
@@ -15481,6 +15504,7 @@ void llama_moe_cache_step_fork() {
         }
     }
 
+    step_mark(1);
     // 1b) promotion: a streamed expert that was used and outscores the weakest evictable cached expert takes its
     //     place by swapping the two slots' roles (no copy): its slot joins the cache, the victim's becomes a stream slot
     for (auto & ls : mc->layers) {
@@ -15527,6 +15551,7 @@ void llama_moe_cache_step_fork() {
         ls.stream_hit.clear();
     }
 
+    step_mark(2);
     // 1c) stream self-tuning per link, every 64 steps: lead from the late share, candidates from the precision
     if (knobs().auto_tune == 1 && knobs().stream > 0 && mc->n_steps % 64 == 0) {
         for (int k = 0; k < mc->n_links; ++k) {
@@ -15556,6 +15581,7 @@ void llama_moe_cache_step_fork() {
         }
     }
 
+    step_mark(3);
     // 1d) token-boundary prefetch: the first MoE layers' misses of the token that just ended go to stream slots now,
     //     while the output head, sampling and the dense layers leave DDR idle; consecutive tokens share many experts
     if (knobs().tbp > 0 && knobs().stream > 0) {
@@ -15659,6 +15685,7 @@ void llama_moe_cache_step_fork() {
         for (auto & ls : mc->layers) { ls.pending.clear(); }
         g_rp.t_end = ggml_time_us();
     }
+    step_mark(4);
     // 2) schedule new uploads: evict at a sync point (clear the victim's table
     //    entry now), then hand the slice copies to the worker
     const size_t n_layers = mc->layers.size();
