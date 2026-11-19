@@ -11,6 +11,7 @@ void llama_moe_set_opt(const char * key, const char * value);
 #include "llama-moecache-fork.h"
 #include "llama-dsplit-fork.h"
 #include "llama-estimate-fork.h"   // thread_search: the decode thread search's rule
+#include "llama-kvpad-fork.h"      // the pad of a decode pass from what a rebuild costs
 #include "llama-kv-cache.h"
 #include "llama-moestate-fork.h"
 
@@ -3699,6 +3700,8 @@ struct st_piece {
     static bool on() { static const bool v = getenv("LLAMA_STEP_TIME") != nullptr; return v; }
     ~st_piece() { if (t0) { g_st_pu[k] += ggml_time_us() - t0; } }
 };
+void     llama_kv_decode_pad_set_fork(uint32_t pad);   // llama-kv-cache.cpp (declared here, no header edit)
+uint32_t llama_kv_decode_pad_get_fork(void);
 static int64_t g_st_m[8] = {0}, g_st_ms[8] = {0};   // dev: marks inside process_ubatch (entry, after apply+tail, graph decided, reuse/build done, inputs set, freeze/verify done)
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads
@@ -3935,6 +3938,35 @@ g_st_m[7] = ggml_time_us();     const auto status = graph_compute(res->get_gf(),
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
         ret = status;
         return nullptr;
+    }
+    // fork: what building a decode graph again costs against a token; the next decode graphs read cells that far ahead (llama-kvpad-fork.h). A rebuilt pass
+    // is weighed once 8 reused ones followed it; the cheapest rebuild seen counts (the first of a request also pays for the prompt's leftovers), so the pad
+    // only ever narrows after its first value: a pad that moved both ways would build the graph again at every move.
+    static const bool decode_pad_on = !getenv("LLAMA_KV_DECODE_PAD") || atoi(getenv("LLAMA_KV_DECODE_PAD")) != 0;   // =0: every pass rounds up to 256 (the A/B switch)
+    if (decode_pad_on && ubatch.n_tokens == 1 && !cparams.ctx_other) {
+        static double  tok_us = 0.0, reb_us = 0.0;
+        static int64_t pend_us = 0;
+        static int     n_since = 0;
+        static bool    set = false;
+        const int64_t t_call = ggml_time_us() - g_st_m[0];
+        if (graph_rebuilt) {
+            pend_us = t_call;
+            n_since = 0;
+        } else {
+            tok_us = tok_us > 0.0 ? 0.9 * tok_us + 0.1 * (double) t_call : (double) t_call;
+            if (pend_us > 0 && ++n_since >= 8) {
+                const double r = std::max(0.0, (double) pend_us - tok_us);
+                reb_us  = reb_us > 0.0 ? std::min(reb_us, r) : r;
+                pend_us = 0;
+                const uint32_t was = llama_kv_decode_pad_get_fork(), pad = llama_kv_decode_pad_fork(reb_us, tok_us);
+                if (set ? pad < was : pad != was) {
+                    LLAMA_LOG_WARN("%s: building a decode graph again costs %.1f ms against %.2f ms a token: decode passes read the cells in use rounded up to %u (was %u), a rebuild at most every %u tokens\n",
+                            __func__, reb_us / 1e3, tok_us / 1e3, pad, was, pad);
+                    llama_kv_decode_pad_set_fork(pad);
+                }
+                set = true;
+            }
+        }
     }
     if (want_key) {
         dynkey_fetch(sched.get(), res->get_gf());

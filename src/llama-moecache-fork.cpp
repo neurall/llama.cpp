@@ -6074,11 +6074,13 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
 // request start. Until 2026-10-17 it kept TWICE the cells in use: at a 255k-token MiMo prompt 4.7 GB of the two pools sat under empty rows (about 550 expert
 // blocks); until 2026-11-11 it grew in steps of 2048 or 10240 cells, half a step ahead (GLM 3.5: up to 193 MiB of empty rows, 19 expert blocks).
 // The lend in front of it is the most a graph of this size needed before (moe_alias remembers it), so a known size never moves the zone after its graph is built.
+uint32_t llama_kv_decode_pad_get_fork(void);   // llama-kv-cache.cpp: the pad of a one-token pass (declared here, no header edit)
 static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, bool allow_shrink, int32_t n_tokens, bool dry) {
     bool any = false;
     for (auto & ap : mc->alias) {
         if (ap.kvt.empty() || ap.kv_row == 0) { continue; }
         size_t eff = 0, cells = 0, cells_max = 0, pad_g = 1;   // cells_max: the most cells of any growing record (a compressed cache's fewer rows never cap the others)
+        size_t wide = 0;   // a one-token call: the cells its graph reads when they are backed (llama-kvpad-fork.h), past the pad every call gets
         for (auto & r : ap.kvt) {
             if (r.fixed) { continue; }   // laid out at full size
             pad_g = std::max<size_t>(pad_g, r.pad);
@@ -6089,6 +6091,7 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
             }
             const size_t plan = !dry ? r.plan : (plan_extra > 0 ? c + plan_extra : (reset_plan ? 0 : r.plan));
             size_t e = std::max(c, plan);
+            if (plan_extra == 1) { wide = std::max(wide, kvz_read_cells(e, std::max<size_t>(r.pad, llama_kv_decode_pad_get_fork()))); }
             e = kvz_read_cells(e, r.pad);
             eff = std::max(eff, e);
             cells = std::max(cells, c);
@@ -6122,6 +6125,14 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
         const size_t hard = fe > lr + ap.kv_fixed ? (fe - lr - ap.kv_fixed) / ap.kv_row : 0;
         const size_t room = hard;   // the zone may take every expert block behind the lend down to the floor (KV and micro-batch first, the cache gets what is left)
         h = std::min({ h, cells_max, std::max(room, eff), hard });
+        // a decode graph keeps its cells for a whole decode pad of tokens when the zone backs them (otherwise it is built again every 256 tokens, 62 ms on
+        // Qwen3.8): as many of those rows as fit in front of the experts' floor; the next call that is not a one-token call plans without them
+        // Only where the zone keeps its start: rows that would move it (a copy of every row in use) cost more than the rebuilds they save.
+        if (wide > eff) {
+            const size_t hw = std::max(h, std::min({ wide, cells_max, hard }));
+            const size_t l_r = kv_lend_round(ap, lr), lm_r = std::min(l_r, kv_lend_round(ap, lend_min)), bm = std::max<size_t>(1, kv_bmax(ap));   // as kv_layout rounds them
+            if (hw > h && kv_gap_place(ap, bm, lm_r, l_r, kvz_bytes(ap, hw)) == kv_gap_place(ap, bm, lm_r, l_r, kvz_bytes(ap, h))) { h = hw; }
+        }
         if (eff > room && !dry) {
             LLAMA_LOG_WARN("moe-cache: kv-tail %s: %zu cells do not fit behind a lend of %.1f MiB in front of the experts' floor (room for %zu): the cache refuses the cells past it\n",
                     ggml_backend_dev_name(ap.dev), eff, lr / 1048576.0, hard);
@@ -7091,6 +7102,28 @@ bool llama_moe_cache_kv_ram_fork(ggml_backend_sched_t sched, size_t n_cells, cha
 
 // find_slot's limit: the tokens the zone may hold. The KV may take the whole expert cache except what a decode graph borrows and two blocks (starved experts are
 // streamed experts, still faster than a starved KV): a context that would take more is "full" for the cache, the server stops the answer or refuses the prompt.
+// The cells every growing KV record backs with finite rows now, the least over the cards (llama-kvpad-fork.h: a decode pass reads up to there instead of the
+// cells in use rounded up to 256). A pool's zone: its horizon (kv_tail_pad_zero keeps every row past the cells in use zero); an arena: its whole pads (cleared
+// when made); layers in host memory: their arrays. A record laid out whole (a sliding-window ring) limits nobody: its cache stops at its own size. One number
+// for every cache of the process, so the caches of one context keep reading the same cells (a hybrid memory's index cache points at the attention's rows).
+// shortcut: a draft context's arena limits the target too, per-context numbers when a draft model's decode matters
+uint64_t llama_moe_cache_kv_backed_fork(void) {
+    uint64_t res = (uint64_t) -1;
+    for (auto & ar : g_kv_arena) {
+        for (auto & q : ar.runs) { if (!q.fixed) { res = std::min<uint64_t>(res, std::min(kv_arena_cells(ar), q.cells_max)); } }
+    }
+    moe_cache * mc = g_cache;
+    if (!mc) { return res; }
+    for (auto & ap : mc->alias) {
+        if (ap.kv_row == 0) { continue; }
+        for (auto & r : ap.kvt) {
+            if (r.fixed) { continue; }
+            res = std::min<uint64_t>(res, kv_any_out(ap) ? std::min(ap.kv_h, ap.host_cells) : ap.kv_h);
+        }
+    }
+    return res;
+}
+
 size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
     size_t res = (size_t) -1;   // the least over every card the cache has records on: arenas (dense cards) and pools alike, a cell is written on all of them
     for (auto & ar : g_kv_arena) {
