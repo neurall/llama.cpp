@@ -18434,6 +18434,22 @@ static bool bell_pool_serve(bell_chain & c, const int32_t * miss, int n) {
     return true;
 }
 
+// --moe tail-skip=R (0 = off, the default; changes the output): a missed pick at router rank R or lower (ranks count from 0, the picks come
+// sorted by weight, so these are the smallest weights of the top-k) is not computed; its row is zero, the other picks keep their weights.
+// The host then computes only a layer's heavy misses and the card rarely waits for it. Idea from Strata's route tail skip; our own code.
+static uint64_t g_bell_n_skip = 0;
+static int bell_tail_skip(ggml_bell * b, int32_t * miss) {
+    static const int R = [] { const char * e = moe_opt("tail-skip"); const int r = e ? atoi(e) : 0; return r > 0 ? r : 0; }();
+    if (R <= 0) { return 0; }
+    const size_t row = sizeof(float) * (size_t) b->n_embd;
+    int k = 0;
+    for (int i = R; i < b->n_used; ++i) {
+        if (miss[i] >= 0) { miss[i] = -1; memset((char *) ggml_bell_rows(b) + (size_t) i * row, 0, row); ++k; }
+    }
+    g_bell_n_skip += (uint64_t) k;
+    return k;
+}
+
 static void bell_serve(bell_chain & c) {
     bell_layer & bl = g_bell_layers[c.pub];
     ggml_bell * b = c.b;
@@ -18450,16 +18466,17 @@ static void bell_serve(bell_chain & c) {
     bl.seen = b->seq;
     int32_t miss[GGML_BELL_MAX_USED];
     const int n = ggml_bell_host_misses(b, miss);
-    memcpy(c.ids->data, miss, sizeof(int32_t) * (size_t) b->n_used);
     memcpy(c.ids_all->data, b->ids, sizeof(int32_t) * (size_t) b->n_used);
     if (n > 0) {
         memcpy(c.x->data, ggml_bell_x(b), sizeof(float) * (size_t) b->n_embd);
-        bell_need(c.pub, miss, b->n_used);
+        bell_need(c.pub, miss, b->n_used);   // every miss, the skipped ones too: the cache still learns what the token wanted
     }
+    const int n_run = n - bell_tail_skip(b, miss);
+    memcpy(c.ids->data, miss, sizeof(int32_t) * (size_t) b->n_used);
     // the host chain, as the scheduler ran it: its gate op shows the cache every pick, its products compute the missing ones (none: one thread zeroes the rows)
     static const bool bt_on = getenv("LLAMA_BELL_TIME") != nullptr;   // dev: where a layer's host time goes
     const int64_t bt0 = bt_on ? ggml_time_us() : 0;
-    const bool pooled = bell_pool_serve(c, miss, n);   // the rows straight into the bell's memory
+    const bool pooled = bell_pool_serve(c, miss, n_run);   // the rows straight into the bell's memory
     if (!pooled && ggml_backend_graph_compute(c.cpu, c.g) != GGML_STATUS_SUCCESS) { GGML_ABORT("moe-cache: bell: the host chain failed"); }
     const int64_t bt1 = bt_on ? ggml_time_us() : 0;
     g_bell_n_layers++;
@@ -18471,7 +18488,7 @@ static void bell_serve(bell_chain & c) {
         ggml_bell_host_done(b, bl.seen);
         if (bt_on) {
             static int64_t s_comp = 0, s_copy = 0, s_miss = 0, s_n = 0, s_hist[5] = {0};
-            s_comp += bt1 - bt0; s_copy += ggml_time_us() - bt1; s_miss += n; ++s_n;
+            s_comp += bt1 - bt0; s_copy += ggml_time_us() - bt1; s_miss += n_run; ++s_n;
             const int64_t us = bt1 - bt0; s_hist[us < 20 ? 0 : us < 50 ? 1 : us < 100 ? 2 : us < 200 ? 3 : 4]++;
             if (s_n % 4096 == 0) {
                 LLAMA_LOG_WARN("bell time: %lld layers with misses, %.2f misses each, host chain %.1f us, rows copy %.1f us; chain <20 %lld, <50 %lld, <100 %lld, <200 %lld, more %lld\n",
@@ -18481,7 +18498,7 @@ static void bell_serve(bell_chain & c) {
             }
         }
         g_bell_n_wait++;
-        g_bell_n_miss += (uint64_t) n;
+        g_bell_n_miss += (uint64_t) n_run;
     }
 }
 
@@ -18574,8 +18591,8 @@ static void bell_free_all() {
     ggml_backend_set_split_bell_callback(nullptr, nullptr);
     g_bell_on = false;   // a model loaded later in this process sets it again
     if (g_bell_n_graphs > 0) {
-        LLAMA_LOG_WARN("moe-cache: bell: %" PRIu64 " card graphs, %" PRIu64 " layers served, %" PRIu64 " waited for the host (%" PRIu64 " experts computed there)\n",
-                       g_bell_n_graphs, g_bell_n_layers, g_bell_n_wait, g_bell_n_miss);
+        LLAMA_LOG_WARN("moe-cache: bell: %" PRIu64 " card graphs, %" PRIu64 " layers served, %" PRIu64 " waited for the host (%" PRIu64 " experts computed there, %" PRIu64 " tail picks skipped)\n",
+                       g_bell_n_graphs, g_bell_n_layers, g_bell_n_wait, g_bell_n_miss, g_bell_n_skip);
     }
     llama_moe_cache_bell_begin_fork();
     if (g_bell_ga) { ggml_gallocr_free(g_bell_ga); g_bell_ga = nullptr; }
@@ -18584,7 +18601,7 @@ static void bell_free_all() {
         if (kv.second.tctx) { ggml_free(kv.second.tctx); }
     }
     g_bell_layers.clear();
-    g_bell_n_graphs = g_bell_n_layers = g_bell_n_wait = g_bell_n_miss = 0;
+    g_bell_n_graphs = g_bell_n_layers = g_bell_n_wait = g_bell_n_miss = g_bell_n_skip = 0;
 }
 
 void llama_moe_cache_graph_built_fork() {

@@ -5632,6 +5632,13 @@ static ggml_stream_unit ggml_cuda_stream_unit_fork(const ggml_cgraph * cgraph, i
             u.reads.push_back({ (uintptr_t) s->data, (uintptr_t) s->data + ggml_nbytes(s) });
         }
         u.cost += 1.5f + (float) (bytes / 836e3);   // microseconds: a kernel's own latency, and the bytes it moves at a card's 836 GB/s
+        if (t->op == GGML_OP_MOE_ROWS) {
+            // the launch waits for the host's rows (bell). Costed at 1.5 us the plan kept the shared expert's tail (swiglu, down, gate, mul) behind
+            // that wait (trace 2026-11-19: 30 us mean, p90 81 us); Strata runs its shared expert inside it.
+            // shortcut: one fixed estimate (GGML_CUDA_STREAMS_ROWS_US, default 30 us), upgrade to the bell's measured wait per layer
+            static const float rows_us = [] { const char * e = getenv("GGML_CUDA_STREAMS_ROWS_US"); return e ? (float) atof(e) : 30.0f; }();
+            u.cost += rows_us;
+        }
     }
     if (u.writes.empty()) {
         u.movable = false;
