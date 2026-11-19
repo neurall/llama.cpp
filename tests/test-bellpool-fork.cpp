@@ -95,6 +95,38 @@ int main() {
             for (int i = 0; i < n_embd; ++i) { assert(a[i] == b[i]); }
         }
     }
-    printf("ok: bell pool, 1/3/8 workers, 50 layers each, float and quantized input, wake after sleep, up and gate in one pass\n");
+    {   // two neighbouring down rows in one pass give what two dots give: odd row count, two experts, shares that end inside a pair
+        const int n_embd = 63, n_ff = 48;
+        std::mt19937 rng(12);
+        std::uniform_real_distribution<float> U(-1.0f, 1.0f);
+        std::vector<float> x(n_embd), wu((size_t) n_ff * n_embd), wg((size_t) n_ff * n_embd), wd[2], a[2], b[2];
+        for (auto * v : { &x, &wu, &wg }) { for (float & f : *v) { f = U(rng); } }
+        for (auto & v : wd) { v.resize((size_t) n_embd * n_ff); for (float & f : v) { f = U(rng); } }
+        static std::atomic<int> pairs; static size_t row_bytes; row_bytes = (size_t) n_ff * 4;
+        for (int workers : { 1, 3, 4 }) {
+            for (int two = 0; two < 2; ++two) {
+                bellpool pool(workers);
+                bellpool_layer L;
+                L.n_embd = n_embd; L.n_ff = n_ff; L.n = 2; L.x = x.data();
+                L.up = L.gate = { dot_f32, nullptr, (size_t) n_embd * 4, (size_t) n_embd * 4 };
+                L.down = { dot_f32, quant_x2, (size_t) n_ff * 4, (size_t) n_ff * 4 };
+                if (two) {
+                    pairs = 0;
+                    L.down2 = [](int n, float * s_a, float * s_b, const void * xa, const void * xb, const void * y) {
+                        assert((const char *) xb == (const char *) xa + row_bytes && s_b == s_a + 1);   // the next row of the same matrix, the next output
+                        pairs++; dot_f32(n, s_a, 0, xa, 0, y, 0, 1); dot_f32(n, s_b, 0, xb, 0, y, 0, 1);
+                    };
+                }
+                for (int e = 0; e < 2; ++e) {
+                    (two ? b : a)[e].assign(n_embd, -7.0f);
+                    L.w_up[e] = (const char *) wu.data(); L.w_gate[e] = (const char *) wg.data(); L.w_down[e] = (const char *) wd[e].data(); L.out[e] = (two ? b : a)[e].data();
+                }
+                pool.run(L);
+                if (two) { assert(pairs.load() >= 2 * (n_embd / 2) - workers); }   // at most one unpaired row a share beyond the experts' odd ends
+            }
+            for (int e = 0; e < 2; ++e) { for (int i = 0; i < n_embd; ++i) { assert(a[e][i] == b[e][i] && a[e][i] != -7.0f); } }
+        }
+    }
+    printf("ok: bell pool, 1/3/8 workers, 50 layers each, float and quantized input, wake after sleep, up and gate in one pass, down rows in pairs\n");
     return 0;
 }

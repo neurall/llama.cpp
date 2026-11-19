@@ -43,6 +43,7 @@ struct bellpool_layer {   // one layer's missing experts for one token
     int n_embd = 0, n_ff = 0;
     bellpool_type up, gate, down;
     bellpool_dot2_t upgate2 = nullptr;            // an up row and a gate row against the same quantized input in one pass (the input's bytes loaded once)
+    bellpool_dot2_t down2   = nullptr;            // two neighbouring down rows of an expert against its hidden vector in one pass
     int n = 0;                                    // missing experts
     const char * w_up[16], * w_gate[16], * w_down[16];   // expert matrices: row r at w + r * w_row
     float * out[16];                              // n_embd floats each
@@ -122,12 +123,19 @@ struct bellpool {
         if (L.down.quant) {
             for (int e = (int) (lo / L.n_embd); e <= (int) ((hi - 1) / L.n_embd); ++e) { L.down.quant(hu.data() + (size_t) e * L.n_ff, qb + (size_t) e * L.down.q_row, L.n_ff); }
         }
-        for (int64_t t = lo; t < hi; ++t) {
+        for (int64_t t = lo; t < hi; ) {
             const int e = (int) (t / L.n_embd), r = (int) (t % L.n_embd);
             const void * q = L.down.quant ? (const void *) (qb + (size_t) e * L.down.q_row) : (const void *) (hu.data() + (size_t) e * L.n_ff);
-            float s = 0.0f;
-            L.down.dot(L.n_ff, &s, 0, L.w_down[e] + (size_t) r * L.down.w_row, 0, q, 0, 1);
-            L.out[e][r] = s;
+            const char * wr = L.w_down[e] + (size_t) r * L.down.w_row;
+            if (L.down2 != nullptr && t + 1 < hi && r + 1 < L.n_embd) {   // the next row is this worker's and this expert's
+                L.down2(L.n_ff, &L.out[e][r], &L.out[e][r + 1], wr, wr + L.down.w_row, q);
+                t += 2;
+            } else {
+                float s = 0.0f;
+                L.down.dot(L.n_ff, &s, 0, wr, 0, q, 0, 1);
+                L.out[e][r] = s;
+                t += 1;
+            }
         }
     }
 

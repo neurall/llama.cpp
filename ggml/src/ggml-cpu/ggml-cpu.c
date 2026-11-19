@@ -3061,7 +3061,13 @@ void ggml_threadpool_resume(struct ggml_threadpool * threadpool) {
     void ggml_vec_dot_##f##_vbmi(int, float *, size_t, const void *, size_t, const void *, size_t, int);
 GGML_FORM_DOTS(GGML_FORM_DECL)
 
-enum { GGML_FORM_DEFAULT, GGML_FORM_AVX2, GGML_FORM_VNNI, GGML_FORM_AVX512, GGML_FORM_VBMI, GGML_FORM_COUNT };
+enum { GGML_FORM_DEFAULT, GGML_FORM_AVX2, GGML_FORM_VNNI, GGML_FORM_AVX512, GGML_FORM_VBMI, GGML_FORM_EXTRA, GGML_FORM_COUNT };
+// one more form a type from outside this library (ggml_cpu_set_extra_vec_dot, before the type is first multiplied): libllama's own AVX2 kernels
+// (src/llama-belldots-avx2-fork.cpp). Timed and checked against the default like the others, so it runs only where it is the quickest and gives the same sums
+static ggml_vec_dot_t g_form_extra[GGML_TYPE_COUNT];
+void ggml_cpu_set_extra_vec_dot(enum ggml_type type, ggml_vec_dot_t f) {
+    if (type >= 0 && type < GGML_TYPE_COUNT) { g_form_extra[type] = f; }
+}
 // the name of the default form says what this library was compiled with, so a log line shows which code actually runs
 #if defined(__AVX512VNNI__) && defined(__AVX512VL__)
 #define GGML_DEFAULT_ISA "default(avx512+vnni build)"
@@ -3074,9 +3080,9 @@ enum { GGML_FORM_DEFAULT, GGML_FORM_AVX2, GGML_FORM_VNNI, GGML_FORM_AVX512, GGML
 #else
 #define GGML_DEFAULT_ISA "default"
 #endif
-static const char * const g_form_names[GGML_FORM_COUNT] = { GGML_DEFAULT_ISA, "avx2", "vnni", "avx512", "vbmi" };
+static const char * const g_form_names[GGML_FORM_COUNT] = { GGML_DEFAULT_ISA, "avx2", "vnni", "avx512", "vbmi", "extra" };
 static const struct { enum ggml_type type; ggml_vec_dot_t form[GGML_FORM_COUNT]; } g_form_dots[] = {
-#define GGML_FORM_ROW(T, f) { GGML_TYPE_##T, { NULL, ggml_vec_dot_##f##_avx2, ggml_vec_dot_##f##_vnni, ggml_vec_dot_##f##_avx512, ggml_vec_dot_##f##_vbmi } },
+#define GGML_FORM_ROW(T, f) { GGML_TYPE_##T, { NULL, ggml_vec_dot_##f##_avx2, ggml_vec_dot_##f##_vnni, ggml_vec_dot_##f##_avx512, ggml_vec_dot_##f##_vbmi, NULL } },
     GGML_FORM_DOTS(GGML_FORM_ROW)
 };
 
@@ -3119,8 +3125,9 @@ void ggml_cpu_tune_vec_dot(enum ggml_type type) {
     bool any = false;
     for (size_t i = 0; i < sizeof(g_form_dots) / sizeof(g_form_dots[0]); ++i) {
         if (g_form_dots[i].type != type) { continue; }
-        for (int k = GGML_FORM_AVX2; k < GGML_FORM_COUNT; ++k) { if (ggml_cpu_form_runs(k)) { f[k] = g_form_dots[i].form[k]; any = true; } }
+        for (int k = GGML_FORM_AVX2; k < GGML_FORM_EXTRA; ++k) { if (ggml_cpu_form_runs(k)) { f[k] = g_form_dots[i].form[k]; any = true; } }
     }
+    if (g_form_extra[type] && ggml_cpu_form_runs(GGML_FORM_AVX2)) { f[GGML_FORM_EXTRA] = g_form_extra[type]; any = true; }   // its setter's kernels are AVX2 + FMA + F16C
     const enum ggml_type vt = type_traits_cpu[type].vec_dot_type;
     if (!any || !f[0] || type_traits_cpu[vt].from_float == NULL) { return; }
     // GGML_CPU_KERNEL_FORM=default|avx2|vnni|avx512|vbmi forces one form for every type that has it (perplexity and correctness runs per kernel): no timing, no fallback
@@ -3194,6 +3201,7 @@ void ggml_cpu_tune_vec_dot(enum ggml_type type) {
 }
 #else
 void ggml_cpu_tune_vec_dot(enum ggml_type type) { (void) type; }
+void ggml_cpu_set_extra_vec_dot(enum ggml_type type, ggml_vec_dot_t f) { (void) type; (void) f; }
 #endif
 
 struct ggml_cplan ggml_graph_plan(

@@ -646,6 +646,7 @@ void ggml_backend_tensor_get_2d_async(ggml_backend_t backend, const struct ggml_
 // token on Qwen3.8 while the card waits for the graph (2026-11-19, LLAMA_STEP_TIME). The bytes are copied at the call: callers pass temporaries.
 struct ggml_set_batch_fork {
     bool on = false;
+    int  depth = 0;   // a batch opened inside a batch joins it: the outer end sends everything
     std::vector<struct ggml_tensor *> tensors;
     std::vector<size_t> offsets, sizes, data_offsets;
     std::vector<uint8_t> bytes;
@@ -657,11 +658,13 @@ extern "C" {
 }
 void ggml_backend_tensor_set_batch_begin_fork(void) {
     ggml_set_batch_fork & b = g_set_batch_fork;
+    if (b.depth++ > 0) { return; }
     b.on = true;
     b.tensors.clear(); b.offsets.clear(); b.sizes.clear(); b.data_offsets.clear(); b.bytes.clear();
 }
 void ggml_backend_tensor_set_batch_end_fork(void) {
     ggml_set_batch_fork & b = g_set_batch_fork;
+    if (b.depth <= 0 || --b.depth > 0) { return; }
     b.on = false;
     if (!b.tensors.empty()) {
         ggml_backend_tensor_set_n(b.tensors.data(), b.bytes.data(), b.offsets.data(), b.sizes.data(), b.data_offsets.data(), b.tensors.size());

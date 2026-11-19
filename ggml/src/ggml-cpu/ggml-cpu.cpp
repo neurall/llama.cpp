@@ -8,6 +8,8 @@
 
 extern "C" void ggml_cpu_set_gpu_shape(int on);   // quants.c
 extern "C" int  ggml_cpu_gpu_shape(void);         // quants.c
+extern "C" void ggml_cpu_tune_vec_dot(enum ggml_type type);                           // ggml-cpu.c: the per-type choice between the forms of a dot product
+extern "C" void ggml_cpu_set_extra_vec_dot(enum ggml_type type, ggml_vec_dot_t f);    // ggml-cpu.c: one more form from outside the library
 
 #include <cctype>
 #include <string>
@@ -700,6 +702,12 @@ static void * ggml_backend_cpu_get_proc_address(ggml_backend_reg_t reg, const ch
     }
     if (strcmp(name, "ggml_backend_cpu_get_gpu_shape") == 0) {
         return (void *)ggml_cpu_gpu_shape;       // its current state (GGML_CPU_GPU_SHAPE at start, then the setter)
+    }
+    if (strcmp(name, "ggml_backend_cpu_tune_vec_dot") == 0) {
+        return (void *)ggml_cpu_tune_vec_dot;    // a caller that multiplies a type outside a graph of this backend asks for the timing itself
+    }
+    if (strcmp(name, "ggml_backend_cpu_set_extra_vec_dot") == 0) {
+        return (void *)ggml_cpu_set_extra_vec_dot;
     }
 
     // threadpool - TODO:  move to ggml-base
