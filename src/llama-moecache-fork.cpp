@@ -18331,7 +18331,8 @@ static int bell_pool_n() {   // --moe bell-pool=N: the bell's CPU experts on a p
     return n;
 }
 static bellpool * bell_pool() {
-    static bellpool * p = bell_pool_n() > 0 ? new bellpool(bell_pool_n()) : nullptr;   // shortcut: never freed, its threads end with the process
+    static const int pin = [] { const char * e = moe_opt("bell-pin"); return e ? atoi(e) : -1; }();   // --moe bell-pin=K: workers on CPUs K, K+1, ...
+    static bellpool * p = bell_pool_n() > 0 ? new bellpool(bell_pool_n(), pin) : nullptr;   // shortcut: never freed, its threads end with the process
     return p;
 }
 static const ggml_type_traits_cpu * bell_traits(ggml_type t) {

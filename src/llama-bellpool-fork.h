@@ -20,6 +20,10 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#if defined(__linux__)
+#include <pthread.h>
+#include <sched.h>
+#endif
 
 typedef void (*bellpool_dot_t)(int n, float * s, size_t bs, const void * x, size_t bx, const void * y, size_t by, int nrc);
 typedef void (*bellpool_quant_t)(const float * x, void * y, int64_t n);
@@ -62,9 +66,18 @@ struct bellpool {
     std::vector<uint8_t> qx_up, qx_gate, qh;   // quantized inputs
     std::vector<float> hu, hg;                 // up and gate outputs, n * n_ff each
 
-    explicit bellpool(int n) : n_workers(std::max(1, n)) {
+    // pin_base >= 0: worker w runs on CPU pin_base + w - 1 only (one physical core each; Linux numbers the SMT siblings after all cores)
+    explicit bellpool(int n, int pin_base = -1) : n_workers(std::max(1, n)) {
         for (auto & p : phase_done) { p = 0; }
-        for (int w = 1; w < n_workers; ++w) { th.emplace_back([this, w] { loop(w); }); }
+        for (int w = 1; w < n_workers; ++w) {
+            th.emplace_back([this, w] { loop(w); });
+#if defined(__linux__)
+            if (pin_base >= 0) {
+                cpu_set_t set; CPU_ZERO(&set); CPU_SET(pin_base + w - 1, &set);
+                pthread_setaffinity_np(th.back().native_handle(), sizeof(set), &set);
+            }
+#endif
+        }
     }
     ~bellpool() {
         stop = true;

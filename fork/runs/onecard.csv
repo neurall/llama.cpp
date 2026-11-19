@@ -16,3 +16,4 @@ q1-nosync,qwen38,2,pf12k1k,512,"--moe bell=1,sync=0 -bs",--env CUDA_VISIBLE_DEVI
 q1-poll,qwen38,2,pf12k1k,512,"--moe bell=1 -bs --poll 100",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_STEP_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-bpool16,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=16 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-bpool32,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bpin32,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,bell-pin=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
