@@ -4220,7 +4220,12 @@ static int fork_cuda_last_oom(int * device, size_t * bytes, double * fit) {   //
     return fn ? fn(device, bytes, fit) : 0;
 }
 
+// dev, LLAMA_STEP_TIME: host timestamps of a decode call (entry, the graph handed to the scheduler, back from it)
+static int64_t g_st_entry = 0, g_st_submit = 0, g_st_back = 0, g_st_ret = 0;
+static int64_t g_st_s_gap = 0, g_st_s_prep = 0, g_st_s_sub = 0, g_st_n = 0;
 int llama_context::decode(const llama_batch_ext & batch_inp) {
+    static const bool st_on_d = getenv("LLAMA_STEP_TIME") != nullptr;
+    if (st_on_d) { g_st_entry = ggml_time_us(); g_st_submit = 0; }
     moe_decoded = true;
     // fork (--moe split-pass, default 1; 2 = equal passes, 0 = the old pass, A/B; dense split forced; user 2026-10-24): a prompt pass of the dense split was cut by the ONE-card limit, so
     // with two cards each computed about half of what its buffers hold, for every upload of the experts. Here a call is run pass by pass, each pass sized
@@ -5279,6 +5284,13 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             static int64_t s_sync = 0, s_step = 0, s_out = 0, n = 0, t_last = 0;
             const int64_t t_c = ggml_time_us();
             s_sync += t_b - t_a; s_step += t_c - t_b; s_out += t_last > 0 ? t_a - t_last : 0; t_last = t_c;
+            if (g_st_ret > 0 && g_st_submit > 0) { g_st_s_gap += g_st_entry - g_st_ret; g_st_s_prep += g_st_submit - g_st_entry; g_st_s_sub += g_st_back - g_st_submit; g_st_n++; }
+            g_st_ret = t_c;
+            if (g_st_n == 256) {
+                LLAMA_LOG_WARN("decode host: between calls %.0f us, entry to graph handed over %.0f us, scheduler launch call %.0f us (a call)\n",
+                               g_st_s_gap / 256.0, g_st_s_prep / 256.0, g_st_s_sub / 256.0);
+                g_st_s_gap = g_st_s_prep = g_st_s_sub = g_st_n = 0;
+            }
             if (++n % 256 == 0) {
                 LLAMA_LOG_WARN("step time: %lld calls, sync wait %.0f us, cache step %.0f us, decode() up to the wait %.0f us a call\n", (long long) n,
                                (double) s_sync / 256, (double) s_step / 256, (double) s_out / 256);
@@ -5850,7 +5862,10 @@ ggml_status llama_context::graph_compute(
 
     copy_experts.reset();
 
+    static const bool st_on_g = getenv("LLAMA_STEP_TIME") != nullptr;
+    if (st_on_g && g_st_submit == 0) { g_st_submit = ggml_time_us(); }
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
+    if (st_on_g) { g_st_back = ggml_time_us(); }
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
     }
