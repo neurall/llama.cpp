@@ -29,8 +29,9 @@ size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens);   //
 
 #include "llama-kvpad-fork.h"
 uint64_t llama_moe_cache_kv_backed_fork(void);   // fork: llama-moecache-fork.cpp: the cells every growing KV record backs with finite rows now (declared here, no header edit)
-// fork: the pad of a one-token pass (llama-kvpad-fork.h), set by the context from what a rebuild of its decode graph costs against a token
-static std::atomic<uint32_t> g_kv_decode_pad_fork { 256 };
+// fork: the pad of a one-token pass (llama-kvpad-fork.h): 1024 until the context measured what a rebuild of its decode graph costs against a token
+// (llama_kv_decode_pad_next_fork); LLAMA_KV_DECODE_PAD=0: 256 like every other pass
+static std::atomic<uint32_t> g_kv_decode_pad_fork { [] { const char * e = getenv("LLAMA_KV_DECODE_PAD"); return e && atoi(e) == 0 ? 256u : 1024u; }() };
 void     llama_kv_decode_pad_set_fork(uint32_t pad) { g_kv_decode_pad_fork.store(pad); }
 uint32_t llama_kv_decode_pad_get_fork(void) { return g_kv_decode_pad_fork.load(std::memory_order_relaxed); }
 

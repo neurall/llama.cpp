@@ -3939,34 +3939,32 @@ g_st_m[7] = ggml_time_us();     const auto status = graph_compute(res->get_gf(),
         ret = status;
         return nullptr;
     }
-    // fork: what building a decode graph again costs against a token; the next decode graphs read cells that far ahead (llama-kvpad-fork.h). A rebuilt pass
-    // is weighed once 8 reused ones followed it; the cheapest rebuild seen counts (the first of a request also pays for the prompt's leftovers), so the pad
-    // only ever narrows after its first value: a pad that moved both ways would build the graph again at every move.
+    // fork: what building a decode graph again costs against a token (llama-kvpad-fork.h: how far ahead the decode graphs read). A rebuilt graph costs its
+    // own pass and the next ones (the CUDA backend runs it node by node once and captures it on the pass after), so the first 4 passes from a rebuild are
+    // weighed against 4 steady ones (passes at least 8 behind any rebuild, running mean) once 32 passes followed it. Decided once per process: the first
+    // passes of a request are slow anyway (the cache refills, the thread search alternates), a later sample would only move the pad and build again.
     static const bool decode_pad_on = !getenv("LLAMA_KV_DECODE_PAD") || atoi(getenv("LLAMA_KV_DECODE_PAD")) != 0;   // =0: every pass rounds up to 256 (the A/B switch)
     if (decode_pad_on && ubatch.n_tokens == 1 && !cparams.ctx_other) {
-        static double  tok_us = 0.0, reb_us = 0.0;
-        static int64_t pend_us = 0;
-        static int     n_since = 0;
-        static bool    set = false;
-        const int64_t t_call = ggml_time_us() - g_st_m[0];
-        if (graph_rebuilt) {
-            pend_us = t_call;
-            n_since = 0;
-        } else {
-            tok_us = tok_us > 0.0 ? 0.9 * tok_us + 0.1 * (double) t_call : (double) t_call;
-            if (pend_us > 0 && ++n_since >= 8) {
-                const double r = std::max(0.0, (double) pend_us - tok_us);
-                reb_us  = reb_us > 0.0 ? std::min(reb_us, r) : r;
-                pend_us = 0;
-                const uint32_t was = llama_kv_decode_pad_get_fork(), pad = llama_kv_decode_pad_fork(reb_us, tok_us);
-                if (set ? pad < was : pad != was) {
-                    LLAMA_LOG_WARN("%s: building a decode graph again costs %.1f ms against %.2f ms a token: decode passes read the cells in use rounded up to %u (was %u), a rebuild at most every %u tokens\n",
-                            __func__, reb_us / 1e3, tok_us / 1e3, pad, was, pad);
-                    llama_kv_decode_pad_set_fork(pad);
-                }
-                set = true;
-            }
+        static double tok_us = 0.0, win_us = 0.0;
+        static int    n_since = 1 << 30;   // passes since the last rebuild
+        static bool   win_open = false, decided = false;
+        const double t_call = (double) (ggml_time_us() - g_st_m[0]);
+        if (graph_rebuilt) { n_since = 0; win_us = 0.0; win_open = !decided; }
+        if (n_since < 4) {
+            win_us += t_call;
+        } else if (n_since >= 8) {
+            tok_us = tok_us > 0.0 ? 0.9 * tok_us + 0.1 * t_call : t_call;
         }
+        if (win_open && n_since == 32) {
+            win_open = false;
+            decided  = true;
+            const double   reb_us = std::max(0.0, win_us - 4.0 * tok_us);
+            const uint32_t was = llama_kv_decode_pad_get_fork(), pad = llama_kv_decode_pad_next_fork(was, reb_us, tok_us);
+            LLAMA_LOG_WARN("%s: building a decode graph again costs %.1f ms against %.2f ms a token: decode passes read the cells in use rounded up to %u%s\n",
+                    __func__, reb_us / 1e3, tok_us / 1e3, pad, pad == was ? "" : " (1024 until now: rebuilds are cheap here)");
+            if (pad != was) { llama_kv_decode_pad_set_fork(pad); }
+        }
+        if (n_since < (1 << 30)) { n_since++; }
     }
     if (want_key) {
         dynkey_fetch(sched.get(), res->get_gf());

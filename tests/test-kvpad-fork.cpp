@@ -21,6 +21,13 @@ int main() {
     CHECK(llama_kv_decode_pad_fork(900.0, 12900.0) == 256);          // a cheap rebuild: no wider
     CHECK(llama_kv_decode_pad_fork(5e6, 3000.0) == 2048);            // never past the cap
 
+    // after a measurement: the start value stays unless rebuilds are cheap against a token
+    CHECK(llama_kv_decode_pad_next_fork(1024, 62000.0, 11500.0) == 1024);    // would be 2048: not worth one more rebuild
+    CHECK(llama_kv_decode_pad_next_fork(1024, 100000.0, 55000.0) == 1024);   // would be 512: the same
+    CHECK(llama_kv_decode_pad_next_fork(1024, 8000.0, 120000.0) == 256);     // CPU decode: a rebuild is a fraction of a token
+    CHECK(llama_kv_decode_pad_next_fork(1024, 0.0, 12900.0) == 256);
+    CHECK(llama_kv_decode_pad_next_fork(256, 62000.0, 11500.0) == 256);      // switched off (LLAMA_KV_DECODE_PAD=0) stays off
+
     const uint64_t all = (uint64_t) -1;
     // pad 256 (or nothing measured) is the old rule exactly
     for (uint32_t base = 256; base <= 8192; base += 256) {
