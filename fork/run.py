@@ -8740,11 +8740,15 @@ def run_list(name, argv):
         if CELL_LINES and not o.dry: open(f"{QDIR}/{o.build}-{name}.list.txt", "a").write("\n".join(CELL_LINES) + "\n")   # the screen shows only the current cell; the finished cells' lines go here
         if not o.dry: kept_kill()   # the kept server holds the pool: it goes before the unmount
         if not o.no_pool and not o.dry and os.path.ismount("/mnt/huge1g"):
+            # a server still exiting (a --wrap like nsys keeps it a while) maps the pool: "target is busy" (2026-11-19 trace cell); wait as run_list_pool does
+            for _ in range(24):
+                if subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True).returncode != 0: break
+                time.sleep(5)
             try:
                 import contextlib, io
                 with contextlib.redirect_stdout(io.StringIO()): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
                 print("pool ->0g", flush=True)
-            except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
+            except (SystemExit, subprocess.CalledProcessError) as e: print(f"pool: unmount failed: {e}", flush=True)
     print(f"[{name}] {len(rows)} cells, failed: {', '.join(bad) or 'none'}")
     return 1 if bad else 0
 
