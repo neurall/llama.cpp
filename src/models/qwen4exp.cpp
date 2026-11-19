@@ -1611,7 +1611,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
     ggml_tensor * conv_input = build_conv_state_at(inp, conv_states_all, qkv_mixed,
             conv_kernel_size - 1, conv_channels, il);
 
-    ggml_tensor * state = build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
+    ggml_tensor * state = build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs, llama_rs_inplace_getter_fork(inp, ubatch, cparams.n_rs_seq));
     state = ggml_reshape_4d(ctx0, state, head_v_dim, head_v_dim, num_v_heads, n_seqs);
     cb(state, "state_predelta", il);
 
@@ -1620,6 +1620,14 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
 
     ggml_tensor * conv_output_silu = ggml_silu(ctx0, conv_output_proper);
     cb(conv_output_silu, "conv_output_silu", il);
+
+    if (ggml_nbytes(z) <= ((size_t) 4 << 20)) {
+        // a decode-sized graph (the CUDA two-stream planner takes graphs whose nodes are all within 4 MiB): z's projection enters the graph behind
+        // the conv, so the planner runs it beside the small kernels up to the gated norm. In the order the output pulls it in it came after the
+        // delta net and the gated norm waited for it (20 us a GDN layer, Qwen3.8 IQ3_S, 2026-11-19 trace)
+        ggml_build_forward_expand(gf, conv_output_silu);
+        ggml_build_forward_expand(gf, z);
+    }
 
     ggml_tensor * conv_qkv_mix = conv_output_silu;
 
@@ -1883,7 +1891,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_conv_state_at(
 
     auto it = rs_rows.find(conv_states_all);
     if (it == rs_rows.end()) {
-        it = rs_rows.emplace(conv_states_all, build_rs(inp, conv_states_all, row_total, n_seqs)).first;
+        it = rs_rows.emplace(conv_states_all, build_rs(inp, conv_states_all, row_total, n_seqs, llama_rs_inplace_getter_fork(inp, ubatch, cparams.n_rs_seq))).first;
     }
     ggml_tensor * rows = it->second;
 

@@ -71,6 +71,33 @@ int main() {
         p.wait[4] = -1;
         assert(!ggml_stream_plan_check(u, cut, p));
     }
+    // a delta-net layer in small (2026-11-19 trace, Qwen3.8 IQ3_S): A the layer input; Q the input projection (21.5 MB, at the bus's rate);
+    // C1..C3 the conv chain behind it; Z the gate projection z (8.85 MB), which reads A alone; C4..C9 small kernels up to the delta net;
+    // G the gated norm, which reads both. Z beside Q would share the bus with it and stretch the main chain; behind Q it overlaps C4..C9
+    auto gdn = [&](float z_bus) {
+        std::vector<ggml_stream_unit> u = { unit(0, false, 2, 1, {}), unit(1, true, 25, 2, {1}), unit(2, true, 2, 3, {2}), unit(3, true, 2, 4, {3}),
+                                            unit(4, true, 2, 5, {4}), unit(5, true, 21, 9, {1}) };
+        u[1].bus = 21; u[5].bus = z_bus;
+        for (int i = 0; i < 6; ++i) { u.push_back(unit(6 + i, true, 3, 11 + i, { i == 0 ? 5 : 10 + i })); }
+        u.push_back(unit(12, false, 2, 20, {16, 9}));
+        return u;
+    };
+    {
+        const std::vector<ggml_stream_unit> u = gdn(10);
+        std::vector<uint8_t> cut(u.size(), 0);
+        const ggml_stream_plan p = ggml_stream_plan_make(u, cut, sw);
+        assert(ggml_stream_plan_check(u, cut, p));
+        assert(p.stream[5] == 1 && p.wait[5] == 1 && p.record[1]);   // Z beside the main chain, behind Q (not behind A)
+        assert(p.stream[1] == 0);
+        assert(p.t_plan == 2 + 25 + 6 + 18 + 2);                       // Z (28..49) ends before C9 (33..51): G does not wait longer
+    }
+    {   // a side unit that does not load the bus (the shared expert's 0.9 MB matrices) starts as soon as its input is there
+        const std::vector<ggml_stream_unit> u = gdn(0);
+        std::vector<uint8_t> cut(u.size(), 0);
+        const ggml_stream_plan p = ggml_stream_plan_make(u, cut, sw);
+        assert(ggml_stream_plan_check(u, cut, p));
+        assert(p.stream[5] == 1 && p.wait[5] == 0);
+    }
     // any graph, any allocation: the plan keeps every pair that touches the same memory in graph order, and is never slower than one stream by its own estimate
     std::mt19937 rng(7);
     long n_side = 0, n_wait = 0;
@@ -83,6 +110,7 @@ int main() {
             std::vector<int> in;
             for (int k = (int) (rng() % 4); k > 0; --k) { in.push_back(1 + (int) (rng() % n_buf)); }
             u.push_back(unit(i, rng() % 3 != 0, 1.0f + (float) (rng() % 30), rng() % 8 ? 1 + (int) (rng() % n_buf) : 0, in));
+            if (rng() % 3 == 0) { u.back().bus = 0.5f * u.back().cost; }
             cut[i] = i > 0 && rng() % 25 == 0;
         }
         const ggml_stream_plan p = ggml_stream_plan_make(u, cut, sw);

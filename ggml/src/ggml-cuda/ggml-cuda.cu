@@ -5631,7 +5631,11 @@ static ggml_stream_unit ggml_cuda_stream_unit_fork(const ggml_cgraph * cgraph, i
             }
             u.reads.push_back({ (uintptr_t) s->data, (uintptr_t) s->data + ggml_nbytes(s) });
         }
-        u.cost += 1.5f + (float) (bytes / 836e3);   // microseconds: a kernel's own latency, and the bytes it moves at a card's 836 GB/s
+        const float mem_us = (float) (bytes / 836e3);
+        u.cost += 1.5f + mem_us;   // microseconds: a kernel's own latency, and the bytes it moves at a card's 836 GB/s
+        // bound by the bus rather than its latency: such kernels do not overlap (ggml_stream_plan_make). GGML_CUDA_STREAMS_BUS=0: plan without that rule
+        static const bool bus_on = !getenv("GGML_CUDA_STREAMS_BUS") || atoi(getenv("GGML_CUDA_STREAMS_BUS")) != 0;
+        if (bus_on && mem_us > 1.5f) { u.bus += mem_us; }
         if (t->op == GGML_OP_MOE_ROWS) {
             // the launch waits for the host's rows (bell). Costed at 1.5 us the plan kept the shared expert's tail (swiglu, down, gate, mul) behind
             // that wait (trace 2026-11-19: 30 us mean, p90 81 us); Strata runs its shared expert inside it.
