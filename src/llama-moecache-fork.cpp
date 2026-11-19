@@ -15175,8 +15175,8 @@ void llama_moe_cache_step_fork() {
         if (!st_on) { return; }
         st_sum[st_cur + 1] += ggml_time_us() - st_last;
         if (++st_n % 256 == 0) {
-            LLAMA_LOG_WARN("step sections (us a step): head %.0f, publish %.0f, promote %.0f, tune %.0f, prefetch %.0f, schedule+rest %.0f\n",
-                st_sum[0] / 256.0, st_sum[1] / 256.0, st_sum[2] / 256.0, st_sum[3] / 256.0, st_sum[4] / 256.0, st_sum[5] / 256.0);
+            LLAMA_LOG_WARN("step sections (us a step): head %.0f, publish %.0f, promote %.0f, tune %.0f, prefetch %.0f, schedule %.0f, decay %.0f, rest %.0f\n",
+                st_sum[0] / 256.0, st_sum[1] / 256.0, st_sum[2] / 256.0, st_sum[3] / 256.0, st_sum[4] / 256.0, st_sum[5] / 256.0, st_sum[6] / 256.0, st_sum[7] / 256.0);
             for (auto & v : st_sum) { v = 0; }
         }
     } };
@@ -15765,6 +15765,7 @@ void llama_moe_cache_step_fork() {
         ls.pending.clear();
     }
     mc->wcv.notify_all();
+    step_mark(5);
 
     // decay: counts halve every N steps, so recent use dominates old use
     static const uint64_t halve_every = [] {
@@ -15777,6 +15778,7 @@ void llama_moe_cache_step_fork() {
         }
     }
 
+    step_mark(6);
     static const bool stats = moe_log_has("p");   // --moe log=p: periodic cache stats on the log, every 64 steps or every N with log=pN
     static const int stats_every = std::max(1, moe_log_num('p', 64));
     if (stats && mc->n_steps % stats_every == 0) {
