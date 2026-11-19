@@ -16,6 +16,8 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -155,9 +157,15 @@ struct bellpool {
         }
     }
 
+    // dev: LLAMA_BELL_TIME=1 sums the phases of the caller's view (ns) and logs every 2048 layers
+    struct phase_time { int64_t quant = 0, upg = 0, wait0 = 0, swq = 0, dn = 0, wait2 = 0; int64_t n = 0, experts = 0; } pt;
+    static int64_t now_ns() { return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+
     // one layer: returns when every out row is written
     void run(const bellpool_layer & L) {
         if (L.n <= 0) { return; }
+        static const bool timed = [] { const char * e = getenv("LLAMA_BELL_TIME"); return e && atoi(e) != 0; }();
+        int64_t t0 = timed ? now_ns() : 0, t1 = 0;
         job = &L;
         if (L.up.quant)   { qx_up.resize(L.up.q_row);     L.up.quant(L.x, qx_up.data(), L.n_embd); }
         if (L.gate.quant) { if (L.gate.quant == L.up.quant && L.gate.q_row == L.up.q_row) { qx_gate = qx_up; } else { qx_gate.resize(L.gate.q_row); L.gate.quant(L.x, qx_gate.data(), L.n_embd); } }
@@ -169,13 +177,27 @@ struct bellpool {
             gen.fetch_add(1, std::memory_order_acq_rel);
         }
         if (sleeping.load() > 0) { cv.notify_all(); }
+        if (timed) { t1 = now_ns(); pt.quant += t1 - t0; t0 = t1; }
         up_gate(0);
+        if (timed) { t1 = now_ns(); pt.upg += t1 - t0; t0 = t1; }
         phase_done[0].fetch_add(1, std::memory_order_acq_rel);
         wait_phase(0, n_workers);
+        if (timed) { t1 = now_ns(); pt.wait0 += t1 - t0; t0 = t1; }
         swiglu_quant();
+        if (timed) { t1 = now_ns(); pt.swq += t1 - t0; t0 = t1; }
         phase_done[1].store(1, std::memory_order_release);
         down(0);
+        if (timed) { t1 = now_ns(); pt.dn += t1 - t0; t0 = t1; }
         phase_done[2].fetch_add(1, std::memory_order_acq_rel);
         wait_phase(2, n_workers);
+        if (timed) {
+            t1 = now_ns(); pt.wait2 += t1 - t0; pt.n++; pt.experts += L.n;
+            if (pt.n % 2048 == 0) {
+                const double k = 1e-3 / (double) pt.n;
+                fprintf(stderr, "bell pool time: %lld layers, %.2f experts a layer, us a layer: quantize+wake %.1f, up/gate own %.1f, wait slowest %.1f, swiglu+quant %.1f, down own %.1f, wait slowest %.1f (workers %d)\n",
+                        (long long) pt.n, (double) pt.experts / pt.n, pt.quant * k, pt.upg * k, pt.wait0 * k, pt.swq * k, pt.dn * k, pt.wait2 * k, n_workers);
+                pt = phase_time();
+            }
+        }
     }
 };
