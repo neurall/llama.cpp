@@ -3690,10 +3690,21 @@ void tokheat_dump() {
 void llama_tokheat_dump_fork(void) { tokheat_dump(); }
 
 extern "C" { void ggml_backend_tensor_set_batch_begin_fork(void); void ggml_backend_tensor_set_batch_end_fork(void); }   // ggml-backend.cpp (fork, declared here: no header edit)
+// dev: LLAMA_STEP_TIME=1 also names pieces inside those sections (us a call, same line every 256 calls)
+static const char * const g_st_pn[8] = { "memory apply", "kv tail", "graph params", "split decide", "reuse check", "pool lend", "", "" };
+static int64_t g_st_pu[8] = {0};
+struct st_piece {
+    int k; int64_t t0;
+    explicit st_piece(int k) : k(k), t0(on() ? ggml_time_us() : 0) {}
+    static bool on() { static const bool v = getenv("LLAMA_STEP_TIME") != nullptr; return v; }
+    ~st_piece() { if (t0) { g_st_pu[k] += ggml_time_us() - t0; } }
+};
 static int64_t g_st_m[8] = {0}, g_st_ms[8] = {0};   // dev: marks inside process_ubatch (entry, after apply+tail, graph decided, reuse/build done, inputs set, freeze/verify done)
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads g_st_m[0] = ggml_time_us();
-    if (mctx && !mctx->apply()) {
+    bool applied = true;
+    if (mctx) { st_piece sp(0); applied = mctx->apply(); }
+    if (!applied) {
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
         ret = GGML_STATUS_FAILED;
         return nullptr;
@@ -3705,6 +3716,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // fork: --moe kv-tail: the KV zone of each card grows (cells past half of it) and makes room for the lend a graph of this size needed before, BEFORE the graph
     // is built: a graph never points at rows that move (a move changes the reuse epoch below)
     if (cparams.moe_cache) {
+        st_piece sp(1);
         llama_moe_cache_kv_tail_prepare_fork(sched.get(), (int32_t) ubatch.n_tokens);
         // a card whose pool cannot hold the KV zone at all (no gap between the zero blocks takes the fixed part and a cell): the graph would point at records that were never
         // attached (the allocator then aborted: 'cache_kv_record already has a buffer', OLMoE with 0.47 GiB VRAM left). The request fails with the reason instead.
@@ -3721,7 +3733,7 @@ g_st_m[1] = ggml_time_us();     auto * res = get_gf_res_prev();
 
     // the new graph parameters
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
-    const auto gparams = graph_params(res, ubatch, mctx, gtype);
+    const auto gparams = [&] { st_piece sp(2); return graph_params(res, ubatch, mctx, gtype); }();
 
     // fork: the pass before this one was a split pass: its card times are complete now (waited for), one balance step for it (llama-dsplit-fork.cpp)
     if (!fork_resident && ubatch.n_tokens > 1 && llama_dsplit_prev_split_fork()) {
@@ -3735,13 +3747,13 @@ g_st_m[1] = ggml_time_us();     auto * res = get_gf_res_prev();
     }
     if (!fork_resident) { llama_dsplit_note_pass_fork(ubatch.n_tokens > 1 && ubatch.pos ? (int64_t) ubatch.pos[0] : -1); }
     // fork: --moe dense-split: the configuration of this pass (one card or split over the cards), chosen before the graph is built; a changed choice rebuilds
-    const bool ds_changed = !fork_resident && llama_dsplit_decide_fork(model, ubatch.n_tokens);   // the per-pass split decision (and its log line) is part of what the exit skips
+    const bool ds_changed = [&] { st_piece sp(3); return !fork_resident && llama_dsplit_decide_fork(model, ubatch.n_tokens); }();   // the per-pass split decision (and its log line) is part of what the exit skips
     // fork: the share controller of the expert split (llama-graph.cpp) moves the cards' expert counts from the measurement of an earlier pass; a changed count
     // needs a new graph
     const bool ctl_changed = ubatch.n_tokens >= 32 && llama_split_ctl_poll_fork((int64_t) model.hparams.n_expert, (int64_t) model.hparams.n_embd);
     const int64_t t_graph0 = ggml_time_us(); g_st_m[2] = ggml_time_us();
     bool graph_rebuilt = false;
-    bool reuse = !graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork() && !ds_changed && !ctl_changed;
+    bool reuse = [&] { st_piece sp(4); return !graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork() && !ds_changed && !ctl_changed; }();
     // fork (--moe dynhot): the pass that ends a prompt (its last token has the output) copies the key rows out; a reused graph without the copies is built again
     const bool want_key = cparams.moe_cache_started && !cparams.ctx_other && ubatch.output != nullptr && ubatch.output[ubatch.n_tokens - 1] &&
                           llama_moe_topic_key_wanted_fork();
@@ -3764,7 +3776,7 @@ g_st_m[1] = ggml_time_us();     auto * res = get_gf_res_prev();
         // target's graph went back to the free list, the after-prompt refill uploaded experts into them, and the draft's scratch writes (its own streams) raced
         // the target's verify step: illegal memory access at depth 2 and 3 (DeepSeek 4.1 + Lucebox draft, tetris prompt, reasoning off, 2026-10-27)
         // the pool's own context calls it with the lend dropped too (moe_alias_bufs cleared): the KV pad rows in the pool are zeroed there (poison NaN otherwise, 2026-11-11)
-        if (cparams.moe_cache_started && !cparams.ctx_other && llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens)) { reuse = false; }   // the KV zone moved behind this graph: build it again
+        { st_piece sp(5); if (cparams.moe_cache_started && !cparams.ctx_other && llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens)) { reuse = false; } }   // the KV zone moved behind this graph: build it again
         if (!moe_alias_bufs.empty() && llama_moe_cache_pp_short_fork()) { reuse = false; }   // the lend left a layer of the prompt chain too few blocks
         if (const char * why = moe_alias_bufs.empty() ? nullptr : llama_moe_cache_alias_err_fork()) {   // fork: the graph and the KV do not fit the pool: this pass is refused (the request fails, the server lives)
             if (!fork_resident && llama_dsplit_cur_fork() == 1) {   // a split pass: one card instead, as below
@@ -5302,6 +5314,9 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                                g_st_s_gap / 256.0, g_st_s_prep / 256.0, g_st_s_sub / 256.0);
                 LLAMA_LOG_WARN("decode host sections (us a call): to process_ubatch %.0f, apply+kv tail %.0f, graph params+split %.0f, reuse/build %.0f, mirror fill %.0f, set_inputs %.0f, idx check %.0f, freeze+verify %.0f\n",
                                g_st_ms[0] / 256.0, g_st_ms[1] / 256.0, g_st_ms[2] / 256.0, g_st_ms[3] / 256.0, g_st_ms[4] / 256.0, g_st_ms[5] / 256.0, g_st_ms[6] / 256.0, g_st_ms[7] / 256.0);
+                LLAMA_LOG_WARN("decode host pieces (us a call): %s %.0f, %s %.0f, %s %.0f, %s %.0f, %s %.0f, %s %.0f\n", g_st_pn[0], g_st_pu[0] / 256.0, g_st_pn[1], g_st_pu[1] / 256.0,
+                               g_st_pn[2], g_st_pu[2] / 256.0, g_st_pn[3], g_st_pu[3] / 256.0, g_st_pn[4], g_st_pu[4] / 256.0, g_st_pn[5], g_st_pu[5] / 256.0);
+                for (auto & v : g_st_pu) { v = 0; }
                 for (auto & v : g_st_ms) { v = 0; }
                 g_st_s_gap = g_st_s_prep = g_st_s_sub = g_st_n = 0;
             }
