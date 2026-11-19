@@ -15,6 +15,7 @@
 #include "ggml-cuda/allreduce.cuh"
 #include "ggml-cuda/common.cuh"
 #include "ggml-streams-fork.h"
+#include "ggml-cuda/q8reuse-fork.h"
 #include "ggml-cuda/acc.cuh"
 #include "ggml-cuda/add-id.cuh"
 #include "ggml-cuda/arange.cuh"
@@ -7939,6 +7940,33 @@ struct ggml_cuda_op_prof {
     }
 };
 
+// fork: GGML_CUDA_Q8_REUSE=1, one quantized copy of a matvec input for all matvecs of the graph that read it (q8reuse-fork.h; mmvq.cu asks here)
+static constexpr int    Q8R_LANES = 2, Q8R_SLOTS = 8;
+static constexpr size_t Q8R_SLOT_BYTES = 16384;
+static q8_reuse_cache<Q8R_LANES, Q8R_SLOTS> g_q8r[GGML_CUDA_MAX_DEVICES];
+static char * g_q8r_buf[GGML_CUDA_MAX_DEVICES] = {};
+static bool ggml_cuda_q8_reuse_on() { static const bool on = getenv("GGML_CUDA_Q8_REUSE") && atoi(getenv("GGML_CUDA_Q8_REUSE")) != 0; return on; }
+
+// the slot for this input (nullptr: no reuse, quantize into a buffer of your own); *hit: it holds the quantized input already
+void * ggml_cuda_q8_reuse_fork(int device, int lane, const void * src, const int64_t * ne, const int64_t * strides, size_t src_bytes, size_t q8_bytes, bool * hit) {
+    *hit = false;
+    if (g_q8r_buf[device] == nullptr || q8_bytes > Q8R_SLOT_BYTES || lane < 0 || lane >= Q8R_LANES) {
+        return nullptr;
+    }
+    q8_reuse_key k;
+    k.src = src;
+    for (int j = 0; j < 4; ++j) { k.ne[j] = ne[j]; }
+    for (int j = 0; j < 3; ++j) { k.s[j] = strides[j]; }
+    const int slot = g_q8r[device].lookup_or_claim(lane, k, (uintptr_t) src, (uintptr_t) src + src_bytes, *hit);
+    return g_q8r_buf[device] + ((size_t) lane * Q8R_SLOTS + slot) * Q8R_SLOT_BYTES;
+}
+
+static void ggml_cuda_q8_written_fork(int device, const ggml_tensor * t) {
+    if (g_q8r_buf[device] != nullptr && t->data != nullptr) {
+        g_q8r[device].written((uintptr_t) t->data, (uintptr_t) t->data + ggml_nbytes(t));
+    }
+}
+
 static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const void * graph_key) {
     static ggml_cuda_op_prof op_prof;
     bool graph_evaluated_or_captured = false;
@@ -8194,9 +8222,17 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 }
             }
 #endif // USE_CUDA_GRAPH
+            // fork: q8 reuse slots live for this graph only (the pool hands out the same bytes on every capture, so a captured graph replays them)
+            ggml_cuda_pool_alloc<char> q8r_alloc(cuda_ctx->pool());
+            struct q8r_guard { int d; ~q8r_guard() { g_q8r_buf[d] = nullptr; } } q8r_g { cuda_ctx->device };
+            if (ggml_cuda_q8_reuse_on()) {
+                g_q8r_buf[cuda_ctx->device] = q8r_alloc.alloc((size_t) Q8R_LANES * Q8R_SLOTS * Q8R_SLOT_BYTES);
+                g_q8r[cuda_ctx->device].reset();
+            }
             for (int i = 0; i < cgraph->n_nodes; i++) {
                 ggml_tensor * node = cgraph->nodes[i];
-                g_cuda_oom_node = node;   // fork: the op an out-of-memory came from (ggml_cuda_oom_report)
+                g_cuda_oom_node = node;
+                ggml_cuda_q8_written_fork(cuda_ctx->device, node);   // before it runs: a quantized copy of memory this node writes is stale   // fork: the op an out-of-memory came from (ggml_cuda_oom_report)
                 if (nodes_fused[i]) {
                     continue;
                 }
@@ -8272,6 +8308,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     continue;
                 }
                 if (nodes_to_skip != 0) {
+                    for (int k = 1; k <= nodes_to_skip && i + k < cgraph->n_nodes; ++k) { ggml_cuda_q8_written_fork(cuda_ctx->device, cgraph->nodes[i + k]); }
                     sp_after(i, nodes_to_skip, nodes_fused, fused_was);
                     if (check_node) { ggml_cuda_scratch_check_end_fork(cuda_ctx->device, cgraph, i, nodes_to_skip + 1, check_saved); }
 #ifdef GGML_CUDA_DEBUG

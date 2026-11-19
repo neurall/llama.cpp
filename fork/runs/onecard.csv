@@ -9,3 +9,4 @@ q1-routed,qwen38,2,pf12k1k,512,"--moe bell=1 -bs",--env CUDA_VISIBLE_DEVICES=0 -
 q1-bestc,qwen38,1,pf12k1k,512,"--moe bell=1 -bs","--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'nsys profile --trace=cuda,osrt --sample=process-tree --backtrace=fp --cpuctxsw=process-tree --delay=27 --duration=4 --kill=none -o /p/bw/data/nsys/q1bc-%p --force-overwrite=true'"
 q1-steptime,qwen38,1,pf12k1k,512,"--moe bell=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_STEP_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-fusedump,qwen38,1,pf12k1k,32,"--moe bell=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_FUSE_DUMP=40 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-q8r,qwen38,2,pf12k1k,512,"--moe bell=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_Q8_REUSE=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
