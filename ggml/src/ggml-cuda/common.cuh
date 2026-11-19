@@ -1534,6 +1534,17 @@ struct ggml_backend_cuda_context {
     cudaStream_t stream(int device, int stream) {
         if (streams[device][stream] == nullptr) {
             ggml_cuda_set_device(device);
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+            // fork: the main stream above the others, so a side-stream kernel of the two-stream decode plan (ggml-streams-fork.h) takes only the SMs the
+            // main chain leaves free: blocks are handed out by priority, without it a big matvec on either stream holds every SM until its last wave
+            // (trace 2026-11-19). GGML_CUDA_STREAMS_PRIO=0: all streams at the default priority
+            static const bool prio = !getenv("GGML_CUDA_STREAMS_PRIO") || atoi(getenv("GGML_CUDA_STREAMS_PRIO")) != 0;
+            int least = 0, greatest = 0;
+            if (prio && stream == 0 && cudaDeviceGetStreamPriorityRange(&least, &greatest) == cudaSuccess && greatest < least) {
+                CUDA_CHECK(cudaStreamCreateWithPriority(&streams[device][stream], cudaStreamNonBlocking, greatest));
+                return streams[device][stream];
+            }
+#endif
             CUDA_CHECK(cudaStreamCreateWithFlags(&streams[device][stream], cudaStreamNonBlocking));
         }
         return streams[device][stream];

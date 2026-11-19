@@ -5631,11 +5631,7 @@ static ggml_stream_unit ggml_cuda_stream_unit_fork(const ggml_cgraph * cgraph, i
             }
             u.reads.push_back({ (uintptr_t) s->data, (uintptr_t) s->data + ggml_nbytes(s) });
         }
-        const float mem_us = (float) (bytes / 836e3);
-        u.cost += 1.5f + mem_us;   // microseconds: a kernel's own latency, and the bytes it moves at a card's 836 GB/s
-        // bound by the bus rather than its latency: such kernels do not overlap (ggml_stream_plan_make). GGML_CUDA_STREAMS_BUS=0: plan without that rule
-        static const bool bus_on = !getenv("GGML_CUDA_STREAMS_BUS") || atoi(getenv("GGML_CUDA_STREAMS_BUS")) != 0;
-        if (bus_on && mem_us > 1.5f) { u.bus += mem_us; }
+        u.cost += 1.5f + (float) (bytes / 836e3);   // microseconds: a kernel's own latency, and the bytes it moves at a card's 836 GB/s
         if (t->op == GGML_OP_MOE_ROWS) {
             // the launch waits for the host's rows (bell). Costed at 1.5 us the plan kept the shared expert's tail (swiglu, down, gate, mul) behind
             // that wait (trace 2026-11-19: 30 us mean, p90 81 us); Strata runs its shared expert inside it.
@@ -5651,6 +5647,15 @@ static ggml_stream_unit ggml_cuda_stream_unit_fork(const ggml_cgraph * cgraph, i
 }
 
 #ifdef USE_CUDA_GRAPH
+// fork: a captured kernel keeps the priority of the stream it was captured on (the side stream of the two-stream plan below the main one, common.cuh)
+static cudaError_t ggml_cuda_graph_instantiate_fork(cudaGraphExec_t * x, cudaGraph_t g) {
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    return cudaGraphInstantiateWithFlags(x, g, cudaGraphInstantiateFlagUseNodePriority);
+#else
+    return cudaGraphInstantiate(x, g, nullptr, nullptr, 0);
+#endif
+}
+
 static bool ggml_cuda_graph_debug_enabled() {
     static const bool enabled = ggml_cuda_env_flag("GGML_CUDA_GRAPH_DEBUG");
     return enabled;
@@ -5917,7 +5922,7 @@ static void ggml_cuda_graph_update_executable(cudaGraphExec_t & instance, cudaGr
         (void)cudaGetLastError();
         CUDA_CHECK(cudaGraphExecDestroy(instance));
         instance = nullptr;
-        const cudaError_t ie = cudaGraphInstantiate(&instance, cuda_graph, nullptr, nullptr, 0);
+        const cudaError_t ie = ggml_cuda_graph_instantiate_fork(&instance, cuda_graph);
         if (ie == cudaErrorMemoryAllocation) {   // fork: see ggml_cuda_oom
             (void) cudaGetLastError();
             instance = nullptr;
@@ -5951,7 +5956,7 @@ static void ggml_cuda_graph_launch_chunk(ggml_backend_cuda_context * cuda_ctx, g
         } else {
             GGML_ASSERT(idx == graph->instances.size());
             graph->instances.emplace_back(nullptr);
-            const cudaError_t ie = cudaGraphInstantiate(&graph->instances[idx], cuda_graph, nullptr, nullptr, 0);
+            const cudaError_t ie = ggml_cuda_graph_instantiate_fork(&graph->instances[idx], cuda_graph);
             if (ie == cudaErrorMemoryAllocation) {   // fork: see ggml_cuda_oom
                 (void) cudaGetLastError();
                 graph->instances.pop_back();

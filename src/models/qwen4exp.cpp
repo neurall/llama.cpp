@@ -1565,6 +1565,13 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
     auto qkvz = build_qkvz(cur, il);
     ggml_tensor * qkv_mixed = qkvz.first;
     ggml_tensor * z         = qkvz.second;
+    if (ggml_nbytes(z) <= ((size_t) 4 << 20)) {
+        // a decode-sized graph (the CUDA two-stream planner takes graphs whose nodes are all within 4 MiB): z enters the graph right behind qkv, so
+        // the plan puts it on the side stream while qkv holds the main one, and it runs beside the conv and delta-net kernels. In the order the
+        // output pulls it in it came after the delta net and the gated norm waited for it (18 us a GDN layer, Qwen3.8 IQ3_S, 2026-11-19 trace)
+        ggml_build_forward_expand(gf, qkv_mixed);
+        ggml_build_forward_expand(gf, z);
+    }
 
     ggml_tensor * beta  = nullptr;
     ggml_tensor * alpha = nullptr;
@@ -1621,13 +1628,6 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
     ggml_tensor * conv_output_silu = ggml_silu(ctx0, conv_output_proper);
     cb(conv_output_silu, "conv_output_silu", il);
 
-    if (ggml_nbytes(z) <= ((size_t) 4 << 20)) {
-        // a decode-sized graph (the CUDA two-stream planner takes graphs whose nodes are all within 4 MiB): z's projection enters the graph behind
-        // the conv, so the planner runs it beside the small kernels up to the gated norm. In the order the output pulls it in it came after the
-        // delta net and the gated norm waited for it (20 us a GDN layer, Qwen3.8 IQ3_S, 2026-11-19 trace)
-        ggml_build_forward_expand(gf, conv_output_silu);
-        ggml_build_forward_expand(gf, z);
-    }
 
     ggml_tensor * conv_qkv_mix = conv_output_silu;
 

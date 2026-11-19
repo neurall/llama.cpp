@@ -26,7 +26,6 @@ struct ggml_stream_unit {
     int   leader  = -1;      // graph node index of its first node
     bool  movable = false;   // may run beside the main chain
     float cost    = 0.0f;    // estimated time, in any unit that is the same for all
-    float bus     = 0.0f;    // of it, the time it moves bytes at the card's bandwidth (0: a kernel short of the bus; see the plan)
     std::vector<ggml_stream_range> reads, writes;
 };
 
@@ -65,23 +64,17 @@ static inline ggml_stream_plan ggml_stream_plan_make(const std::vector<ggml_stre
     float clock[2]  = { 0.0f, 0.0f };
     int   synced[2] = { -1, -1 };   // synced[s]: the latest unit of the other stream that stream s has waited for
     int   first     = 0;            // the chunk's first unit
-    int   heavy     = -1;           // the main stream's latest unit that moves bytes (bus > 0)
     for (int u = 0; u < n; ++u) {
         if (u == 0 || (u < (int) cut.size() && cut[u])) {
             const float t = std::max(clock[0], clock[1]);
             clock[0] = clock[1] = t;
             synced[0] = synced[1] = u - 1;
             first = u;
-            heavy = -1;
         }
         int dep[2] = { -1, -1 };   // the latest unit of each stream that has to end first
         for (int v = u - 1; v >= first && (dep[0] < 0 || dep[1] < 0); --v) {
             if (dep[p.stream[v]] < 0 && ggml_stream_conflict(units[v], units[u])) { dep[p.stream[v]] = v; }
         }
-        // two kernels that each move bytes at the card's bandwidth do not overlap: both slow down and the main chain's one ends later. One that would
-        // go beside the main chain waits for the main stream's latest such kernel, so it overlaps the small kernels behind it (2026-11-19 trace:
-        // z's projection beside the input projection gained nothing; beside the conv chain's small kernels it is free). The main stream waits for no bus
-        if (units[u].bus > 0.0f && heavy > dep[0]) { dep[0] = heavy; }
         float start[2];
         for (int s = 0; s < 2; ++s) {
             const int o = dep[1 - s];
@@ -89,7 +82,6 @@ static inline ggml_stream_plan ggml_stream_plan_make(const std::vector<ggml_stre
         }
         const int s = units[u].movable && start[1] + switch_cost < start[0] ? 1 : 0;
         const int o = dep[1 - s];
-        if (s == 0 && units[u].bus > 0.0f) { heavy = u; }
         if (o >= 0 && o > synced[s]) {
             p.wait[u]   = o;
             p.record[o] = 1;
