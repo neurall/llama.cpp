@@ -48,3 +48,4 @@ q1-steptime,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",
 q1-bp16,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=16,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-bp24,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=24,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-bp31,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=31,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bus0,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_STREAMS_BUS=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
