@@ -15718,6 +15718,12 @@ void llama_moe_cache_step_fork() {
     // per pool class: its weakest cached expert's score this step (the shortcut below)
     std::vector<double>   cls_min(mc->pool.size(), 0.0);
     std::vector<uint64_t> cls_min_step(mc->pool.size(), UINT64_MAX);
+    // the step's picks of a class from one scan (llama-poolalloc-fork.h, poolx_pick_order): a scan a pick was 335 to 854 us a token (9 to 21 picks of about
+    // 40 us, LLAMA_STEP_TIME, Qwen3.8, 2026-11-19) on the thread the card waits for. LLAMA_PICK_ORDER=0: a scan a pick, as before
+    static std::vector<poolx_pick_order> cls_order;
+    cls_order.resize(mc->pool.size());
+    std::vector<uint64_t> cls_order_step(mc->pool.size(), UINT64_MAX);
+    static const bool pick_order_on = !getenv("LLAMA_PICK_ORDER") || atoi(getenv("LLAMA_PICK_ORDER")) != 0;
     // 2) schedule new uploads: evict at a sync point (clear the victim's table
     //    entry now), then hand the slice copies to the worker
     const size_t n_layers = mc->layers.size();
@@ -15765,10 +15771,27 @@ void llama_moe_cache_step_fork() {
             // the class's weakest cached expert, scanned once a step (not once a layer: 48 scans of every block were 0.4 ms of a 15 ms token, 2026-11-19).
             // Within the step the weakest score only rises (blocks taken here leave the scan), so a candidate below it breaks here exactly where the
             // full scan would break it. Not with own-layer or big: their victim depends on the candidate.
+            // within a step the ranks of the blocks not picked stay (the scores are the experts' own counts) and a picked block's upload is in flight, so one
+            // scan's order answers every pick of the step. Not with own-layer or big (the victim depends on the candidate)
+            const auto pick_step = [&](double & bst) -> slot_pick {
+                if (!pick_order_on || ls.pcls < 0 || own_layer || knobs().big != 0) { return pick_slot(mc, li, rank, bst); }
+                auto & ps = mc->pool[ls.pcls];
+                const auto busy_fn = [&](int32_t o, int32_t b) { return mc->layers[o].slot_in_flight[b] || mc->layers[o].is_stream[b]; };
+                const auto exp_fn  = [&](int32_t o, int32_t b) { return mc->layers[o].slot_expert[b]; };
+                const auto rank_fn = [&](int32_t o, int32_t e) { return rank(mc->layers[o], (size_t) o, e); };
+                poolx_pick_order & ord = cls_order[ls.pcls];
+                if (cls_order_step[ls.pcls] != mc->n_steps) {
+                    poolx_pick_order_make(ord, ps, ps.n_active(), busy_fn, exp_fn, rank_fn, (size_t) std::max(0, budget_total) + 8);
+                    cls_order_step[ls.pcls] = mc->n_steps;
+                }
+                const poolx_pick q = poolx_pick_order_next(ord, ps, ps.n_active(), busy_fn, exp_fn, rank_fn, bst);
+                slot_pick r; r.slot = q.slot; r.owner = q.owner;
+                return r;
+            };
             if (ls.pcls >= 0 && !own_layer && knobs().big == 0) {
                 if (cls_min_step[ls.pcls] != mc->n_steps) {
                     double b0 = 0;
-                    const slot_pick p0 = pick_slot(mc, li, rank, b0);
+                    const slot_pick p0 = pick_step(b0);
                     const int32_t v0 = p0.slot >= 0 && p0.owner >= 0 ? mc->layers[p0.owner].slot_expert[p0.slot] : -1;
                     cls_min[ls.pcls]      = v0 >= 0 ? xscore(mc, mc->layers[p0.owner], v0) : -1e300;   // a free block (or none in reach): no shortcut
                     cls_min_step[ls.pcls] = mc->n_steps;
@@ -15779,7 +15802,7 @@ void llama_moe_cache_step_fork() {
                 }
             }
             const int64_t tp0 = st_on ? ggml_time_us() : 0;
-            const slot_pick pk = pick_slot(mc, li, rank, best);
+            const slot_pick pk = pick_step(best);
             if (st_on) { st_pick += ggml_time_us() - tp0; ++st_npick; }
             const int32_t slot = pk.slot;
             if (slot < 0) {

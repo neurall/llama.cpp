@@ -122,6 +122,56 @@ static void test_hot_cache() {
 }
 
 // ---- prefetch staging ---------------------------------------------------------------------------------------------------------------------------
+// the picks of a step from one scan (poolx_pick_order) against a scan a pick (poolx_pick_slot), while picked blocks are taken as the cache step takes them
+static void test_hot_order() {
+    printf("Testing the hot cache's picks of a step from one scan:\n");
+    std::mt19937_64 rng(g_seed + 17);
+    long bad = 0, n_pick = 0, n_take = 0, n_rescan = 0; std::string first;
+    for (long it = 0; it < g_iters; ++it) {
+        const int N = 1 + (int) (rng() % 60), NL = 1 + (int) (rng() % 4);
+        hot_state h; h.ps.owner.resize(N); h.busy.resize(N); h.expert.resize(N); h.rank.resize(N);
+        const bool with_free = rng() % 4 == 0;
+        for (int b = 0; b < N; ++b) {
+            const int r = (int) (rng() % 10);
+            h.ps.owner[b] = r == 0 ? -2 : r == 1 ? -3 : r == 2 && with_free ? -1 : (int32_t) (rng() % NL);
+            if (h.ps.owner[b] == -1 && rng() % 4 != 0) { h.ps.free.push_back(b); }   // one in four free blocks is not in the stack
+            h.busy[b]   = rng() % 6 == 0;
+            h.expert[b] = rng() % 8 == 0 ? -1 : (int32_t) (1000 * b + (int32_t) (rng() % 64));   // an expert id of its own a block
+            h.rank[b]   = rng() % 5 == 0 ? -1.0 : (double) (rng() % 12);                          // few values: equal ranks are common
+        }
+        const int32_t n_active = (int32_t) (rng() % (N + 1));
+        const auto busy   = [&](int32_t, int32_t b) { return h.busy[b] != 0; };
+        const auto expert = [&](int32_t, int32_t b) { return h.expert[b]; };
+        const auto rank   = [&](int32_t, int32_t e) { return h.rank[e / 1000]; };
+        poolx_pick_order ord;
+        const size_t cap = (size_t) (rng() % 6);
+        poolx_pick_order_make(ord, h.ps, n_active, busy, expert, rank, cap);
+        for (int k = 0; k < 12; ++k) {
+            double b0 = 0, b1 = 0;
+            const poolx_pick want = poolx_pick_slot(h.ps, n_active, busy, expert, rank, b0);
+            const size_t before = ord.i_ranked;
+            const poolx_pick got  = poolx_pick_order_next(ord, h.ps, n_active, busy, expert, rank, b1);
+            n_pick++;
+            n_rescan += ord.cut && ord.i_ranked == ord.ranked.size() && before <= ord.ranked.size();
+            if (want.slot != got.slot || want.owner != got.owner || b0 != b1) {
+                if (bad++ == 0) { first = fmt("pick %d of a step: a scan gives block %d (owner %d, rank %g), the order block %d (owner %d, rank %g)", k, want.slot, want.owner, b0, got.slot, got.owner, b1); }
+                break;
+            }
+            if (want.slot < 0) { break; }
+            if (rng() % 4 != 0) {   // taken, as the step does: out of the free stack, another layer's now, its upload in flight
+                n_take++;
+                const int32_t b = want.slot;
+                h.ps.free.erase(std::remove(h.ps.free.begin(), h.ps.free.end(), b), h.ps.free.end());
+                h.ps.owner[b] = (int32_t) (rng() % NL);
+                h.expert[b]   = -1;
+                h.busy[b]     = 1;
+            }
+        }
+    }
+    report("the order of one scan gives every pick a scan of its own gives", bad == 0, first);
+    printf("  (%ld picks, %ld blocks taken, %ld picks past a cut list)\n", n_pick, n_take, n_rescan);
+}
+
 static void test_prefetch() {
     printf("Testing prefetch staging slots:\n");
     std::mt19937_64 rng(g_seed + 1);
@@ -309,6 +359,7 @@ int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
     test_hot_cache();
+    test_hot_order();
     test_prefetch();
     test_passes();
     test_dense_split();

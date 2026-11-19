@@ -533,6 +533,67 @@ static poolx_pick poolx_pick_slot(const PS & ps, int32_t n_active, Busy busy, Ex
     return p;
 }
 
+// The picks of one step from one scan. poolx_pick_slot scans every block of the class for each pick: a decode step of Qwen3.8 made 9 to 21 picks of about 40 us
+// each (335 to 854 us a token on the thread the card waits for, 2026-11-19). Between the picks of a step only the picked blocks change (their upload is in
+// flight, or they left the free stack) and the ranks of the others stay, so the order of one scan answers every pick as a scan of its own would: a free block of the
+// stack first, then the first block of the scan without a cached expert, then the lowest rank, the lower block among equals. cap: how many ranked blocks are kept (a
+// step takes no more than its budget); when they run out and blocks were left out, the pick is a scan again (exact, never a guess).
+struct poolx_pick_order {
+    struct ent { double r; int32_t b, o, e; };
+    std::vector<ent>     ranked;   // evictable blocks, the pick order; a block is skipped once it is busy or holds another expert
+    std::vector<int32_t> empty;    // blocks without a cached expert, in scan order
+    size_t i_ranked = 0, i_empty = 0;
+    bool   cut = false;            // more evictable blocks than cap: the list is not all of them
+};
+template <class PS, class Busy, class Expert, class Rank>
+static void poolx_pick_order_make(poolx_pick_order & ord, const PS & ps, int32_t n_active, Busy busy, Expert expert, Rank rank, size_t cap) {
+    ord.ranked.clear(); ord.empty.clear();
+    ord.i_ranked = ord.i_empty = 0;
+    ord.cut = false;
+    const auto less = [](const poolx_pick_order::ent & x, const poolx_pick_order::ent & y) { return x.r < y.r || (x.r == y.r && x.b < y.b); };
+    for (int32_t b = 0; b < n_active; ++b) {
+        const int32_t o = ps.owner[b];
+        if (o < -1) { continue; }
+        if (o < 0) { ord.empty.push_back(b); continue; }
+        if (busy(o, b)) { continue; }
+        const int32_t e = expert(o, b);
+        if (e < 0) { ord.empty.push_back(b); continue; }
+        const double r = rank(o, e);
+        if (r < 0) { continue; }
+        const poolx_pick_order::ent c = { r, b, o, e };
+        if (ord.ranked.size() < cap) {
+            ord.ranked.push_back(c);
+            std::push_heap(ord.ranked.begin(), ord.ranked.end(), less);   // the highest of the kept ones on top
+        } else {
+            ord.cut = true;
+            if (cap > 0 && less(c, ord.ranked.front())) {
+                std::pop_heap(ord.ranked.begin(), ord.ranked.end(), less);
+                ord.ranked.back() = c;
+                std::push_heap(ord.ranked.begin(), ord.ranked.end(), less);
+            }
+        }
+    }
+    std::sort_heap(ord.ranked.begin(), ord.ranked.end(), less);
+}
+// the pick poolx_pick_slot would make now, from the order (the same busy, expert and rank as at its making)
+template <class PS, class Busy, class Expert, class Rank>
+static poolx_pick poolx_pick_order_next(poolx_pick_order & ord, const PS & ps, int32_t n_active, Busy busy, Expert expert, Rank rank, double & best) {
+    best = 1e300;
+    poolx_pick p;
+    int32_t top = -1;
+    for (int32_t b : ps.free) { if (b > top && b < (int32_t) ps.owner.size() && ps.owner[b] == -1) { top = b; } }
+    if (top >= 0) { p.slot = top; best = 0; return p; }
+    for (; ord.i_empty < ord.empty.size(); ++ord.i_empty) {
+        const int32_t b = ord.empty[ord.i_empty], o = ps.owner[b];
+        if (o == -1 || (o >= 0 && !busy(o, b) && expert(o, b) < 0)) { p.slot = b; best = 0; return p; }
+    }
+    for (; ord.i_ranked < ord.ranked.size(); ++ord.i_ranked) {
+        const poolx_pick_order::ent & c = ord.ranked[ord.i_ranked];
+        if (ps.owner[c.b] == c.o && !busy(c.o, c.b) && expert(c.o, c.b) == c.e) { p.slot = c.b; p.owner = c.o; best = c.r; return p; }
+    }
+    return ord.cut ? poolx_pick_slot(ps, n_active, busy, expert, rank, best) : p;
+}
+
 // ---- the prompt chain: which blocks of a class a layer's misses may take -------------------------------------------------------------------------
 // fn(b, o) for every block that is free (-1), holds a layer's expert (>= 0) or, with grid (staging=0), is another class's bytes the chain may claim (-4). Every block
 // of the class, not only the first n_active: a grid block a layer of this pass claimed sits past the home and stays this class's until cls_home, so the layers after
