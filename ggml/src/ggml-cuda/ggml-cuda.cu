@@ -16,6 +16,7 @@
 #include "ggml-cuda/common.cuh"
 #include "ggml-streams-fork.h"
 #include "ggml-cuda/q8reuse-fork.h"
+extern "C" { GGML_API void ggml_gallocr_set_spread_fork(int n_nodes, size_t max_node_bytes, bool host_too); }   // ggml-alloc.c (fork, declared here: no header edit)
 static constexpr int    Q8R_LANES = 4, Q8R_SLOTS = 8;   // a lane per stream of the plan (GGML_STREAMS_MAX, ggml-streams-fork.h)
 static constexpr size_t Q8R_SLOT_BYTES = 16384;
 static bool ggml_cuda_q8_reuse_on() { static const bool on = !getenv("GGML_CUDA_Q8_REUSE") || atoi(getenv("GGML_CUDA_Q8_REUSE")) != 0; return on; }   // on unless GGML_CUDA_Q8_REUSE=0 (2026-11-19: with the hc fuse +2 t/s Qwen3.8 decode)
@@ -10461,6 +10462,13 @@ ggml_backend_t ggml_backend_cuda_init(int device) {
             ggml_cuda_set_device(device);
             CUDA_CHECK(cudaStreamCreateWithPriority(&ctx->streams[device][0], cudaStreamNonBlocking, greatest));
         }
+    }
+#endif
+#ifdef USE_CUDA_GRAPH
+    if (ggml_cuda_streams_fork() > 0) {
+        // fork: the launches of a planned graph are joined at every chunk's end, and the plan takes graphs whose nodes are all within 4 MiB: over two
+        // chunks no buffer of such a graph goes to a second node, so only launches that need each other's results wait (ggml-alloc.c)
+        ggml_gallocr_set_spread_fork(2 * ggml_cuda_graph_chunk_size(), (size_t) 4 << 20, false);
     }
 #endif
     ggml_backend_sched_set_xcopy_dst_ordered(ggml_backend_cuda_xcopy_dst_ordered);   // fork: see ggml_cuda_xstage_copy
