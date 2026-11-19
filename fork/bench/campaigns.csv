@@ -10370,3 +10370,5 @@ mmvq_tune-q1-hcload-pf12k1k,2026-11-19 14:30:54,bench /m/q/1/Qwen3.8-Flash-Next-
 mmvq_tune-q1-tune-pf12k1k,2026-11-19 14:32:53,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds mmvq_tune variants v test pf12k n=2,,
 hc_fuse-q1-hcfuse-pf12k1k,2026-11-19 14:40:48,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds hc_fuse variants v test pf12k n=2,,
 hc_fuse-p1-hcfk-pf12k1k,2026-11-19 14:43:10,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds hc_fuse variants v test pf12k n=2,,
+hc_fuse2-q1-hcfuse-pf12k1k,2026-11-19 15:05:06,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds hc_fuse2 variants v test pf12k n=2,,
+hc_fuse2-p1-hcfk-pf12k1k,2026-11-19 15:07:07,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds hc_fuse2 variants v test pf12k n=2,,
