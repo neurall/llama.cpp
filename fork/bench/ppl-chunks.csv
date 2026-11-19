@@ -4352,3 +4352,23 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-19 13:03:40,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3828
 2026-11-19 13:03:40,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3937
 2026-11-19 13:03:40,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3913
+2026-11-19 13:08:13,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1329
+2026-11-19 13:08:13,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1062
+2026-11-19 13:08:13,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1413
+2026-11-19 13:08:13,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2157
+2026-11-19 13:08:13,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2543
+2026-11-19 13:08:13,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.3203
+2026-11-19 13:08:13,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.4037
+2026-11-19 13:08:13,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3828
+2026-11-19 13:08:13,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3937
+2026-11-19 13:08:13,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3913
+2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1329
+2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1062
+2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1413
+2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2157
+2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2543
+2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.3203
+2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.4037
+2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3828
+2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3937
+2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3913
