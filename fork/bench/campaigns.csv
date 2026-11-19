@@ -10310,3 +10310,4 @@ cuda_q8_reuse3-p1-q8rk-pf12k1k,2026-11-19 09:59:09,bench /m/q/1/Qwen3.8-Flash-Ne
 dev_q8_log-q1-q8log-pf12k1k,2026-11-19 10:02:53,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_q8_log variants v test pf12k n=2,,
 dev_step_sections-q1-steptime-pf12k1k,2026-11-19 10:06:28,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_step_sections variants v test pf12k n=2,,
 dev_step_sections2-q1-steptime-pf12k1k,2026-11-19 10:09:43,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_step_sections2 variants v test pf12k n=2,,
+cuda_step_scan_once-q1-steptime-pf12k1k,2026-11-19 10:13:57,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_step_scan_once variants v test pf12k n=2,,

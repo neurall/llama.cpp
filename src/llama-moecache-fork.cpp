@@ -15163,6 +15163,7 @@ void llama_moe_cache_step_fork() {
     static const bool st_on = getenv("LLAMA_STEP_TIME") != nullptr;
     static int64_t st_sum[8] = {0};
     static int64_t st_n = 0;
+    static int64_t st_pick = 0, st_lock = 0, st_sort = 0, st_npick = 0, st_njob = 0, st_npend = 0;
     int64_t st_last = st_on ? ggml_time_us() : 0;
     int st_cur = -1;
     auto step_mark = [&](int k) {
@@ -15177,6 +15178,9 @@ void llama_moe_cache_step_fork() {
         if (++st_n % 256 == 0) {
             LLAMA_LOG_WARN("step sections (us a step): head %.0f, publish %.0f, promote %.0f, tune %.0f, prefetch %.0f, schedule %.0f, decay %.0f, rest %.0f\n",
                 st_sum[0] / 256.0, st_sum[1] / 256.0, st_sum[2] / 256.0, st_sum[3] / 256.0, st_sum[4] / 256.0, st_sum[5] / 256.0, st_sum[6] / 256.0, st_sum[7] / 256.0);
+            LLAMA_LOG_WARN("step schedule (a step): sort %.0f us of %.1f pending, pick %.0f us in %.1f picks, lock %.0f us for %.1f jobs\n",
+                st_sort / 256.0, st_npend / 256.0, st_pick / 256.0, st_npick / 256.0, st_lock / 256.0, st_njob / 256.0);
+            st_pick = st_lock = st_sort = st_npick = st_njob = st_npend = 0;
             for (auto & v : st_sum) { v = 0; }
         }
     } };
@@ -15702,9 +15706,11 @@ void llama_moe_cache_step_fork() {
 
         // hottest candidates first; the budget only throttles evictions,
         // filling empty slots is free
+        const int64_t ts0 = st_on ? ggml_time_us() : 0;
         std::sort(ls.pending.begin(), ls.pending.end(), [&](int32_t a, int32_t b) {
             return score(ls, a) > score(ls, b);
         });
+        if (st_on) { st_sort += ggml_time_us() - ts0; st_npend += ls.pending.size(); }
         mc->pr[3] += ls.pending.size();
         if (get_policy() == policy::rel && !g_rel_dead.load() && mc->pr[0] == 0 && mc->n_steps > 4) {
             g_rel_dead = true;
@@ -15747,7 +15753,9 @@ void llama_moe_cache_step_fork() {
                     break;
                 }
             }
+            const int64_t tp0 = st_on ? ggml_time_us() : 0;
             const slot_pick pk = pick_slot(mc, li, rank, best);
+            if (st_on) { st_pick += ggml_time_us() - tp0; ++st_npick; }
             const int32_t slot = pk.slot;
             if (slot < 0) {
                 mc->pr[9] += ls.pending.end() - it;
@@ -15777,7 +15785,9 @@ void llama_moe_cache_step_fork() {
             ls.slot_in_flight[slot] = true;
             ls.queued[id]           = 1;
 
+            const int64_t tl0 = st_on ? ggml_time_us() : 0;
             std::lock_guard<std::mutex> wlk(mc->wmtx);
+            if (st_on) { st_lock += ggml_time_us() - tl0; ++st_njob; }
             upload_job sj { li, id, slot };
             sj.t_queued = ggml_time_us();
             mc->todo.push_back(sj);
