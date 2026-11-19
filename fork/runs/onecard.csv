@@ -21,3 +21,4 @@ p1-bpoolk,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32 -bs","--env CUDA_VISIB
 q1-nosynct,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-ovl,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 v1-ovlvf,qwen38,1,pf12k1k,128,"--moe bell=1,bell-pool=32,sync=0,verify=2 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-hcq8,qwen38hc,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
