@@ -8,7 +8,7 @@
 //   hc_down: grid (row groups, K splits); each block holds its K slice of xn in shared memory and writes partial sums part[ks][r]
 //   hc_up:   every block sums the partials of all rows (L2, a few KB), applies scale + silu, then its rows of W_up, the sigmoid gate and the stream mean
 // The input stays f32 (no q8_1 quantize): the dot reads Q8_0 weights against f32 activations.
-// Matched in ggml_cuda_try_fuse on the MUL_MAT of W_down (on by default, GGML_CUDA_HC_FUSE=0 turns it off); any other shape or type runs the graph as before.
+// Matched in ggml_cuda_try_fuse on the MUL_MAT of W_down (off by default: decode perplexity +0.20 +- 0.08% against the graph, 8 of 10 chunks, and no speed gain, 2026-11-19; GGML_CUDA_HC_FUSE=1 turns it on); any other shape or type runs the graph as before.
 #include "common.cuh"
 #include "ggml-impl.h"
 
@@ -135,7 +135,7 @@ static bool hcf_reaches(const ggml_tensor * t, const ggml_tensor * target) {   /
 
 // returns the nodes to skip after i (0: no match)
 int ggml_cuda_try_fuse_hc_mix_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i) {
-    static const bool on = !getenv("GGML_CUDA_HC_FUSE") || atoi(getenv("GGML_CUDA_HC_FUSE")) != 0;   // on unless GGML_CUDA_HC_FUSE=0
+    static const bool on = getenv("GGML_CUDA_HC_FUSE") && atoi(getenv("GGML_CUDA_HC_FUSE")) != 0;   // off unless GGML_CUDA_HC_FUSE=1 (see the top)
     if (!on) {
         return 0;
     }
