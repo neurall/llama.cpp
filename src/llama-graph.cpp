@@ -1861,12 +1861,21 @@ void llm_graph_result::reset() {
 
 void llm_graph_result::set_inputs(const llama_ubatch * ubatch) {
     static const bool dbg = getenv("LLAMA_SPLIT_CTL_DEBUG") != nullptr;   // fork: which input a big pass's start waits for
+    static const bool st = getenv("LLAMA_STEP_TIME") != nullptr;           // dev: per input type, us a one-token call
+    static std::map<std::string, int64_t> st_us; static int64_t st_n = 0;
     for (auto & input : inputs) {
-        const int64_t t0 = dbg ? ggml_time_us() : 0;
+        const int64_t t0 = (dbg || st) ? ggml_time_us() : 0;
         input->set_input(ubatch);
+        if (st && ubatch->n_tokens == 1) { st_us[typeid(*input).name()] += ggml_time_us() - t0; }
         if (dbg && ubatch->n_tokens >= 1024 && ggml_time_us() - t0 >= 2000) {
             LLAMA_LOG_WARN("prefill split: input %s of %u tokens took %.1f ms\n", typeid(*input).name(), ubatch->n_tokens, (ggml_time_us() - t0) / 1e3);
         }
+    }
+    if (st && ubatch->n_tokens == 1 && ++st_n == 256) {
+        std::string line;
+        for (auto & [k, v] : st_us) { if (v >= 256) { line += " " + k + " " + std::to_string(v / 256) + ","; } }
+        LLAMA_LOG_WARN("set_inputs (us a call):%s\n", line.c_str());
+        st_us.clear(); st_n = 0;
     }
 }
 
