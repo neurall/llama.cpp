@@ -18291,6 +18291,8 @@ struct bell_chain {
     ggml_backend_t cpu;
     ggml_tensor *  x, * ids, * ids_all, * out;
     ggml_cgraph *  g;
+    int8_t         pool_ok = -1;   // --moe bell-pool: -1 not looked at yet, 0 the graph runs, 1 the pool runs it
+    ggml_tensor *  up = nullptr, * gate = nullptr, * down = nullptr;
 };
 static std::unordered_map<const llama_moe_cache_layer_fork *, bell_layer> g_bell_layers;
 static std::vector<bell_chain>                g_bell_chains;   // of the graph built last, in layer order
@@ -18322,6 +18324,90 @@ static void bell_need(const llama_moe_cache_layer_fork * pub, const int32_t * mi
     }
 }
 
+#include "llama-bellpool-fork.h"
+
+static int bell_pool_n() {   // --moe bell-pool=N: the bell's CPU experts on a pool of N workers (0: the scheduler's CPU graph)
+    static const int n = [] { const char * e = moe_opt("bell-pool"); return e ? atoi(e) : 0; }();
+    return n;
+}
+static bellpool * bell_pool() {
+    static bellpool * p = bell_pool_n() > 0 ? new bellpool(bell_pool_n()) : nullptr;   // shortcut: never freed, its threads end with the process
+    return p;
+}
+static const ggml_type_traits_cpu * bell_traits(ggml_type t) {
+    static auto get = (const ggml_type_traits_cpu * (*)(ggml_type)) cpu_proc_fork("ggml_backend_cpu_get_type_traits");
+    return get ? get(t) : nullptr;
+}
+static bool bell_pool_type(const ggml_tensor * w, int64_t n_in, bellpool_type & ty) {
+    const ggml_type_traits_cpu * tr = bell_traits(w->type);
+    if (!tr || !tr->vec_dot || tr->nrows != 1) { return false; }
+    ty.dot   = (bellpool_dot_t) tr->vec_dot;
+    ty.w_row = w->nb[1];
+    if (tr->vec_dot_type == GGML_TYPE_F32) { ty.quant = nullptr; ty.q_row = (size_t) n_in * sizeof(float); return true; }
+    const ggml_type_traits_cpu * qt = bell_traits(tr->vec_dot_type);
+    if (!qt || !qt->from_float || n_in % ggml_blck_size(tr->vec_dot_type) != 0) { return false; }
+    ty.quant = (bellpool_quant_t) qt->from_float;
+    ty.q_row = ggml_row_size(tr->vec_dot_type, n_in);
+    return true;
+}
+// the host chain is up, gate, swiglu(gate, up), down of the bell's input and nothing else: then the pool can run it
+static bool bell_pool_check(bell_chain & c) {
+    ggml_tensor * mm[3] = { nullptr, nullptr, nullptr }; int n_mm = 0;
+    ggml_tensor * glu = nullptr;
+    for (int i = 0; i < ggml_graph_n_nodes(c.g); ++i) {
+        ggml_tensor * t = ggml_graph_node(c.g, i);
+        if (t->op == GGML_OP_MUL_MAT_ID) { if (n_mm == 3) { return false; } mm[n_mm++] = t; }
+        else if (t->op == GGML_OP_GLU) { if (glu) { return false; } glu = t; }
+        else if (t->op != GGML_OP_VIEW && t->op != GGML_OP_RESHAPE && t->op != GGML_OP_NONE) { return false; }
+    }
+    if (n_mm != 3 || !glu || ggml_get_glu_op(glu) != GGML_GLU_OP_SWIGLU || ggml_get_op_params_i32(glu, 1) != 0 || glu->src[1] == nullptr) { return false; }
+    ggml_tensor * gate = glu->src[0], * up = glu->src[1], * down = nullptr;
+    for (ggml_tensor * t : mm) { if (t != gate && t != up) { down = t; } }
+    if (!down || down->src[1] != glu || gate->op != GGML_OP_MUL_MAT_ID || up->op != GGML_OP_MUL_MAT_ID || gate->src[1] != up->src[1]) { return false; }
+    const int64_t n_embd = up->src[0]->ne[0], n_ff = up->src[0]->ne[1];
+    if (gate->src[0]->ne[0] != n_embd || gate->src[0]->ne[1] != n_ff || down->src[0]->ne[0] != n_ff || down->src[0]->ne[1] != n_embd || c.b->n_embd != n_embd || c.b->n_used > 16) { return false; }
+    bellpool_type tu, tg, td;
+    if (!bell_pool_type(up->src[0], n_embd, tu) || !bell_pool_type(gate->src[0], n_embd, tg) || !bell_pool_type(down->src[0], n_ff, td)) { return false; }
+    c.up = up; c.gate = gate; c.down = down;
+    return true;
+}
+static const char * bell_pool_expert(const ggml_tensor * w, int32_t e) {
+    const moe_cache * mc = g_cache;
+    if (mc && mc->rp_on) { if (const void * p = rp_cpu_ptr(w, e)) { return (const char *) p; } }   // the pinned pool's copy, as the CPU op reads it (ggml_cpu_expert_ptr_hook)
+    return (const char *) w->data + (size_t) e * w->nb[2];
+}
+// the pool runs the chain: false when this chain is not one it can run (the caller runs the graph)
+static bool bell_pool_serve(bell_chain & c, const int32_t * miss, int n) {
+    bellpool * pool = bell_pool();
+    if (!pool) { return false; }
+    if (c.pool_ok < 0) {
+        c.pool_ok = bell_pool_check(c) ? 1 : 0;
+        if (!c.pool_ok) { LLAMA_LOG_WARN("moe-cache: bell pool: layer %d keeps the CPU graph (its host chain is not up, gate, swiglu, down)\n", c.pub->il); }
+    }
+    if (!c.pool_ok) { return false; }
+    // the router observation the gate op makes on the CPU path (ggml-cpu.c, mul_mat_id): the cache counts every pick from it
+    {
+        void * ud = nullptr;
+        ggml_moe_obs_cb_t cb = ggml_get_moe_obs_callback(&ud);
+        const ggml_tensor * g = c.gate;
+        if (cb && strstr(g->src[0]->name, "ffn_gate_exps") && strncmp(g->name, "ffn_moe_defer", 13) != 0) { cb(g->src[0]->name, g->src[5] ? g->src[5] : g->src[2], (ggml_tensor *) g, ud); }
+    }
+    if (n <= 0) { return true; }
+    bellpool_layer L;
+    L.n_embd = (int) c.up->src[0]->ne[0]; L.n_ff = (int) c.up->src[0]->ne[1];
+    bell_pool_type(c.up->src[0], L.n_embd, L.up); bell_pool_type(c.gate->src[0], L.n_embd, L.gate); bell_pool_type(c.down->src[0], L.n_ff, L.down);
+    L.x = (const float *) ggml_bell_x(c.b);
+    const size_t row = sizeof(float) * (size_t) c.b->n_embd;
+    for (int i = 0; i < c.b->n_used; ++i) {
+        if (miss[i] < 0) { continue; }
+        L.w_up[L.n] = bell_pool_expert(c.up->src[0], miss[i]); L.w_gate[L.n] = bell_pool_expert(c.gate->src[0], miss[i]); L.w_down[L.n] = bell_pool_expert(c.down->src[0], miss[i]);
+        L.out[L.n] = (float *) ((char *) ggml_bell_rows(c.b) + (size_t) i * row);
+        L.n++;
+    }
+    pool->run(L);
+    return true;
+}
+
 static void bell_serve(bell_chain & c) {
     bell_layer & bl = g_bell_layers[c.pub];
     ggml_bell * b = c.b;
@@ -18347,12 +18433,13 @@ static void bell_serve(bell_chain & c) {
     // the host chain, as the scheduler ran it: its gate op shows the cache every pick, its products compute the missing ones (none: one thread zeroes the rows)
     static const bool bt_on = getenv("LLAMA_BELL_TIME") != nullptr;   // dev: where a layer's host time goes
     const int64_t bt0 = bt_on ? ggml_time_us() : 0;
-    if (ggml_backend_graph_compute(c.cpu, c.g) != GGML_STATUS_SUCCESS) { GGML_ABORT("moe-cache: bell: the host chain failed"); }
+    const bool pooled = bell_pool_serve(c, miss, n);   // the rows straight into the bell's memory
+    if (!pooled && ggml_backend_graph_compute(c.cpu, c.g) != GGML_STATUS_SUCCESS) { GGML_ABORT("moe-cache: bell: the host chain failed"); }
     const int64_t bt1 = bt_on ? ggml_time_us() : 0;
     g_bell_n_layers++;
     if (n > 0) {
         const size_t row = sizeof(float) * (size_t) b->n_embd;
-        for (int i = 0; i < b->n_used; ++i) {
+        for (int i = 0; i < b->n_used && !pooled; ++i) {
             if (miss[i] >= 0) { memcpy((char *) ggml_bell_rows(b) + (size_t) i * row, (const char *) c.out->data + (size_t) i * row, row); }
         }
         ggml_bell_host_done(b, bl.seen);

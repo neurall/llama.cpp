@@ -669,6 +669,9 @@ static void * ggml_backend_cpu_get_proc_address(ggml_backend_reg_t reg, const ch
     if (strcmp(name, "ggml_backend_cpu_set_expert_ptr_hook") == 0) {
         return (void *) ggml_backend_cpu_set_expert_ptr_hook;
     }
+    if (strcmp(name, "ggml_backend_cpu_get_type_traits") == 0) {   // fork: the bell's expert pool (src/llama-bellpool-fork.h) dots and quantizes with these
+        return (void *) ggml_get_type_traits_cpu;
+    }
     if (strcmp(name, "ggml_backend_set_n_threads") == 0) {
         ggml_backend_set_n_threads_t fct = ggml_backend_cpu_set_n_threads;
         return (void *)fct;

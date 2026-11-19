@@ -14,3 +14,5 @@ p1-q8rk,qwen38,1,pf12k1k,512,"--moe bell=1 -bs","--env CUDA_VISIBLE_DEVICES=0 --
 q1-q8log,qwen38,1,pf12k1k,32,"--moe bell=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_Q8_REUSE=1 --env GGML_CUDA_Q8_REUSE_LOG=1 --env GGML_CUDA_FUSE_DUMP=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-nosync,qwen38,2,pf12k1k,512,"--moe bell=1,sync=0 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-poll,qwen38,2,pf12k1k,512,"--moe bell=1 -bs --poll 100",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_STEP_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bpool16,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=16 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bpool8,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=8 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
