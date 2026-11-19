@@ -75,3 +75,8 @@ q1-bp64,qwen38,2,pf12k1k,512,"--moe bell-pool=64 -bs",--env CUDA_VISIBLE_DEVICES
 q1-stepiq0,qwen38,1,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_BELL_IQ2S=0 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-pick0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_PICK_ORDER=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-fuse0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_HC_FUSE=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-spread0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_GALLOC_SPREAD=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-s2def,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-s0def,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-nopriodef,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS_PRIO=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-iq0def,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_BELL_IQ2S=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
