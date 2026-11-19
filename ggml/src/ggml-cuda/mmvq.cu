@@ -1132,6 +1132,17 @@ static int mmvq_tuned_nwarps(int device, ggml_type type, int table_nw, const std
 }
 #endif // defined(GGML_USE_HIP)
 
+// fork: the block height (warps) of one-token matvecs over a 2D weight, per (device, type, K, rows), timed once at load
+// (ggml_backend_cuda_mmvq_tune_fork, before the expert pool takes the card); the run time only looks it up. The table's value stays unless another is 5% faster.
+static thread_local int g_mmvq_force_nw = 0;   // the tuner's candidate
+static std::mutex g_mmvq_loaded_mu;
+static std::map<std::array<int64_t, 4>, int> g_mmvq_loaded;
+static int mmvq_loaded_nwarps(int device, ggml_type type, int64_t k, int64_t rows, int table_nw) {
+    std::lock_guard<std::mutex> lk(g_mmvq_loaded_mu);
+    auto it = g_mmvq_loaded.find({device, (int64_t) type, k, rows});
+    return it == g_mmvq_loaded.end() || it->second <= 0 ? table_nw : it->second;
+}
+
 template<ggml_type type>
 static std::pair<dim3, dim3> calc_launch_params(
         const int ncols_dst, const int nrows_x, const int nchannels_dst, const int nsamples_or_ntokens,
@@ -1339,17 +1350,20 @@ static void mul_mat_vec_q_switch_ncols_dst(
 
                 const std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst + (fusion.shared_up != nullptr),
                                                                               nsamples_dst, warp_size, table_id, c_small_k, c_halve_iters);
-#if defined(GGML_USE_HIP)
-                if constexpr (!c_small_k && !c_halve_iters) {
-                    if (calc_rows_per_block(type, c_ncols_dst, table_id) == 1) {   // one row per block at any width (all AMD tables): only the block height changes
+                if constexpr (!c_halve_iters) {
+                    // the block height chosen at run time when the grid follows it: one row per block, or the small-K path's rows = warps
+                    if (c_small_k || calc_rows_per_block(type, c_ncols_dst, table_id, c_small_k, (int) dims.second.y) == 1) {
                         const auto run = [&](int nw) {
                             dim3 bd = dims.second;
                             bd.y = nw;
+                            dim3 gd = dims.first;
+                            const int rpb = calc_rows_per_block(type, c_ncols_dst, table_id, c_small_k, nw);
+                            gd.x = (nrows_x + rpb - 1) / rpb;
                             const auto go = [&](auto nw_tag) {
-                                mul_mat_vec_q_switch_fusion<type, c_ncols_dst, false, false, decltype(nw_tag)::value>(
+                                mul_mat_vec_q_switch_fusion<type, c_ncols_dst, c_small_k, false, decltype(nw_tag)::value>(
                                     vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
                                     channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst, sample_ratio_fd,
-                                    stride_sample_x, stride_sample_y, stride_sample_dst, dims.first, bd, 0, ids_stride, stream);
+                                    stride_sample_x, stride_sample_y, stride_sample_dst, gd, bd, 0, ids_stride, stream);
                             };
                             switch (nw) {
                                 case 1:  go(std::integral_constant<int, 1>{}); break;
@@ -1358,13 +1372,21 @@ static void mul_mat_vec_q_switch_ncols_dst(
                                 default: go(std::integral_constant<int, 8>{}); break;
                             }
                         };
-                        const int64_t fus = fusion.shared_up ? 2 : (fusion.gate || fusion.x_bias || fusion.gate_bias || fusion.x_scale || fusion.gate_scale) ? 1 : 0;
-                        run(mmvq_tuned_nwarps(device, type, (int) dims.second.y, {(int64_t) ncols_x, (int64_t) nrows_x,
-                                                                                 (int64_t) dims.first.y * (has_ids ? -1 : 1), fus}, stream, run));
+                        int nw = (int) dims.second.y;
+#if defined(GGML_USE_HIP)
+                        if constexpr (!c_small_k) {
+                            const int64_t fus = fusion.shared_up ? 2 : (fusion.gate || fusion.x_bias || fusion.gate_bias || fusion.x_scale || fusion.gate_scale) ? 1 : 0;
+                            nw = mmvq_tuned_nwarps(device, type, nw, {(int64_t) ncols_x, (int64_t) nrows_x,
+                                                                      (int64_t) dims.first.y * (has_ids ? -1 : 1), fus}, stream, run);
+                        }
+#else
+                        if (!has_ids && nchannels_dst == 1 && nsamples_dst == 1) { nw = mmvq_loaded_nwarps(device, type, ncols_x, nrows_x, nw); }
+#endif // defined(GGML_USE_HIP)
+                        if (g_mmvq_force_nw > 0) { nw = g_mmvq_force_nw; }
+                        run(nw);
                         return;
                     }
                 }
-#endif // defined(GGML_USE_HIP)
                 mul_mat_vec_q_switch_fusion<type, c_ncols_dst, c_small_k, c_halve_iters>(
                     vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
                     channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst, sample_ratio_fd,
@@ -1768,4 +1790,68 @@ void ggml_cuda_op_mul_mat_vec_q(
         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, stream);
 
     GGML_UNUSED_VARS(src1, dst, src1_ddf_i, src1_ncols, src1_padded_row_size);
+}
+
+// fork: times the block heights of the one-token matvec over weight w on its device, once per (device, type, K, rows), and keeps the fastest for the
+// run (mmvq_loaded_nwarps). Called at load, before the expert pool takes the card: scratch input and output of its own, a stream of its own (no wait on a
+// graph that may hold kernels waiting for the host). A zero input: the weights' bytes are read the same, the time is the real one.
+void ggml_cuda_mmvq_tune_fork(int device, const ggml_tensor * w) {
+    if (ggml_n_dims(w) != 2 || !ggml_is_quantized(w->type) || w->ne[0] % ggml_blck_size(w->type) != 0) {
+        return;
+    }
+    const int64_t k = w->ne[0], rows = w->ne[1];
+    {
+        std::lock_guard<std::mutex> lk(g_mmvq_loaded_mu);
+        if (g_mmvq_loaded.count({device, (int64_t) w->type, k, rows})) {
+            return;
+        }
+    }
+    ggml_cuda_set_device(device);
+    const int64_t kpad = GGML_PAD(k, MATRIX_ROW_PADDING);
+    void * vy = nullptr; float * dst = nullptr;
+    cudaStream_t st = nullptr;
+    if (cudaMalloc(&vy, kpad / QK8_1 * sizeof(block_q8_1)) != cudaSuccess || cudaMalloc((void **) &dst, rows * sizeof(float)) != cudaSuccess ||
+            cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking) != cudaSuccess) {
+        (void) cudaGetLastError();
+        if (vy) { cudaFree(vy); } if (dst) { cudaFree(dst); }
+        return;
+    }
+    CUDA_CHECK(cudaMemsetAsync(vy, 0, kpad / QK8_1 * sizeof(block_q8_1), st));
+    const auto launch = [&]() {
+        mul_mat_vec_q_switch_type(w->data, w->type, vy, nullptr, ggml_cuda_mm_fusion_args_device{}, dst, (int) k, (int) rows, 1,
+                                  (int) (w->nb[1] / ggml_type_size(w->type)), (int) (kpad / QK8_1), (int) rows,
+                                  1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, st);
+    };
+    cudaEvent_t e0, e1;
+    CUDA_CHECK(cudaEventCreate(&e0));
+    CUDA_CHECK(cudaEventCreate(&e1));
+    const int cand[5] = {0, 1, 2, 4, 8};   // 0: the table's choice
+    float us[5];
+    for (int i = 0; i < 5; ++i) {
+        g_mmvq_force_nw = cand[i];
+        launch();   // warm-up: code load and caches
+        CUDA_CHECK(cudaEventRecord(e0, st));
+        for (int r = 0; r < 8; ++r) { launch(); }
+        CUDA_CHECK(cudaEventRecord(e1, st));
+        CUDA_CHECK(cudaEventSynchronize(e1));
+        float ms = 0.0f;
+        CUDA_CHECK(cudaEventElapsedTime(&ms, e0, e1));
+        us[i] = 1e3f * ms / 8;
+    }
+    g_mmvq_force_nw = 0;
+    CUDA_CHECK(cudaEventDestroy(e0));
+    CUDA_CHECK(cudaEventDestroy(e1));
+    CUDA_CHECK(cudaStreamDestroy(st));
+    CUDA_CHECK(cudaFree(vy));
+    CUDA_CHECK(cudaFree(dst));
+    int best = 0;
+    float t_best = us[0];
+    for (int i = 1; i < 5; ++i) {
+        if (us[i] < 0.95f * us[0] && us[i] < t_best) { best = cand[i]; t_best = us[i]; }
+    }
+    const double gbs = (double) ggml_nbytes(w) / (t_best * 1e3);
+    GGML_LOG_WARN("mmvq tune: CUDA%d %s k=%lld rows=%lld: warps %s%d, us table %.1f, 1:%.1f 2:%.1f 4:%.1f 8:%.1f (%.0f GB/s)\n", device, ggml_type_name(w->type),
+                  (long long) k, (long long) rows, best ? "" : "table ", best, us[0], us[1], us[2], us[3], us[4], gbs);
+    std::lock_guard<std::mutex> lk(g_mmvq_loaded_mu);
+    g_mmvq_loaded[{device, (int64_t) w->type, k, rows}] = best > 0 ? best : -1;
 }

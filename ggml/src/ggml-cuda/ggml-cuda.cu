@@ -10162,11 +10162,21 @@ static void * ggml_backend_cuda_bell_alloc_fork(ggml_backend_dev_t dev, size_t s
     return ggml_cuda_bell_alloc(((ggml_backend_cuda_device_context *) dev->context)->device, size);
 }
 
+void ggml_cuda_mmvq_tune_fork(int device, const ggml_tensor * w);   // mmvq.cu
+static void ggml_backend_cuda_mmvq_tune_fork(const ggml_tensor * w) {
+    if (w && w->buffer && w->data && ggml_backend_buft_is_cuda(w->buffer->buft)) {
+        ggml_cuda_mmvq_tune_fork(((ggml_backend_cuda_buffer_type_context *) w->buffer->buft->context)->device, w);
+    }
+}
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     // fork: the core asks for hooks by the neutral name ggml_backend_fork_<x> (src/llama-backend-fork.h); here they are the ggml_backend_cuda_<x> functions
     if (strncmp(name, "ggml_backend_fork_", 18) == 0) {
         const std::string cuda_name = std::string("ggml_backend_cuda_") + (name + 18);
         return ggml_backend_cuda_reg_get_proc_address(reg, cuda_name.c_str());
+    }
+    if (strcmp(name, "ggml_backend_cuda_mmvq_tune") == 0) {   // fork: (const ggml_tensor *) the one-token matvec block height for this weight, timed (mmvq.cu)
+        return (void *) ggml_backend_cuda_mmvq_tune_fork;
     }
     if (strcmp(name, "ggml_backend_cuda_h2d_bytes") == 0) {
         return (void *)ggml_backend_cuda_h2d_bytes;

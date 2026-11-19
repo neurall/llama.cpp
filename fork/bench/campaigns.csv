@@ -10359,3 +10359,7 @@ hc_q8_load-q1-ovl-pf12k1k,2026-11-19 13:12:28,bench /m/q/1/Qwen3.8-Flash-Next-GS
 hc_q8_load-q1-hcload-pf12k1k,2026-11-19 13:14:24,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds hc_q8_load variants v test pf12k n=2,,
 hc_q8_load-q1-ovl-pf12k1k,2026-11-19 13:16:24,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds hc_q8_load variants v test pf12k n=2,,
 hc_q8_load-p1-allk-pf12k1k,2026-11-19 13:18:52,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds hc_q8_load variants v test pf12k n=2,,
+hc_q8_load-q1-q8all-pf12k1k,2026-11-19 13:56:28,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds hc_q8_load variants v test pf12k n=2,,
+hc_q8_load-q1-hcload-pf12k1k,2026-11-19 13:58:23,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds hc_q8_load variants v test pf12k n=2,,
+hc_q8_load-q1-q8all-pf12k1k,2026-11-19 14:00:21,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds hc_q8_load variants v test pf12k n=2,,
+hc_q8_load-q1-hcload-pf12k1k,2026-11-19 14:02:18,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds hc_q8_load variants v test pf12k n=2,,
