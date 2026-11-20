@@ -106,6 +106,7 @@ extern "C" void ggml_backend_sched_upload_weight_fork(ggml_backend_sched_t sched
 extern "C" void ggml_backend_sched_upload_runs_fork(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy,
                                                     int n, const size_t * offs, const size_t * lens);   // ggml-backend.cpp: --moe batch-reads, all runs of a weight in one call
 extern "C" bool ggml_backend_sched_batch_reads_fork(void);   // ggml-backend.cpp: --moe batch-reads is on (SSD streaming only)
+extern "C" int ggml_backend_sched_gpu_ran_fork(void);    // ggml-backend.cpp: the non-CPU splits of the running compute that were issued (a failed call before any: never run)
 extern "C" void ggml_backend_sched_link_add_fork(ggml_backend_dev_t dst, ggml_backend_dev_t src, uint64_t n);   // the same for any input: src NULL = host memory
 bool     llama_kv_parts_on_fork();   // llama-kv-cache.cpp: the attention runs on several cards now (--moe attn-split)
 bool     llama_moe_cache_kv_parts_fork(ggml_backend_sched_t sched, bool on, char * note, size_t note_size);   // llama-moecache-fork.cpp: the KV rows move
@@ -5060,7 +5061,12 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             llama_pos cells = 0;
             for (uint32_t i = 0; i < ubatch.n_tokens; ++i) { cells = std::max(cells, ubatch.pos[i] + 1); }
             bool back = inst ? (!own || room || shrink) : ubatch.n_tokens > k_pass_granule;   // the smallest pass does not fit: an error (see g_oom_tc)
+            // the kernel-load guard (fit -2) stopped the call before any card ran a part of it: its cells go back as never computed, as a refused pass's. A DeepSeek V4
+            // cache refuses a partial removal otherwise (b16041 gainers 2026-11-20: DSpark's first 2-token step after a 38-token prompt failed with "Compute error")
+            const bool none_ran = oom_fit <= -2.0 && ggml_backend_sched_gpu_ran_fork() == 0;
+            if (none_ran) { llama_memory_recurrent_no_compute_fork(true); }
             for (size_t k = 0; back && k < call_pos_min.size(); ++k) { back = memory->seq_rm(call_pos_min[k].first, call_pos_min[k].second, -1); }
+            if (none_ran) { llama_memory_recurrent_no_compute_fork(false); }
             if (back) {
                 if (!inst || shrink) {
                     const double share = oom_fit > 0.0 ? std::min(0.9, std::max(0.25, oom_fit * 0.9)) : 0.5;
