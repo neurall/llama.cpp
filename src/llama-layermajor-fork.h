@@ -99,3 +99,37 @@ static inline bool lm_groups(const lm_in & in, uint32_t chunk, std::vector<lm_gr
     }
     return true;
 }
+
+// The call's time (us) as layer-major with k equal chunks; *plan: the groups and the parts. Per group the longest of its drive reads (once, or once per chunk when
+// reread), its uploads (once when held, once per chunk when streamed; the chunks' hidden state in beside them) and its compute (a streamed layer's further entries
+// cost as in the passes), its uploads and compute added up for LM_HELD; then every graph's host cost. < 0: a chunk past the cap or too big for a card.
+// shortcut: no weight-read floor for small chunks (a chunk with fewer tokens than a layer has experts per pick still reads every expert); add max(chunk x token,
+// layer bytes / VRAM rate) per layer if the planner picks such chunks.
+static inline double estimate_layermajor_time(const lm_in & in, uint32_t k, lm_plan * plan = nullptr) {
+    lm_plan p;
+    if (in.n == 0 || k == 0 || k > in.n || in.layers.empty()) { if (plan) { *plan = p; } return -1.0; }
+    p.k = k;
+    p.chunk = (in.n + k - 1) / k;
+    if ((in.cap > 0 && p.chunk > in.cap) || !lm_groups(in, p.chunk, p.groups)) { p.us = -1.0; if (plan) { *plan = p; } return -1.0; }
+    const double n = (double) in.n, L = (double) in.layers.size();
+    double t = 0.0;
+    for (const auto & g : p.groups) {
+        const lm_card & c = in.cards[(size_t) g.card];
+        const double link = c.link_gbs * 1e3, ssd = in.ssd_gbs * 1e3, R = lm_ring_b(c, p.chunk);   // bytes per us
+        double S = 0.0, M = 0.0, extra = 0.0;
+        for (uint32_t l = g.a; l < g.b; ++l) {
+            const lm_layer & x = in.layers[l];
+            S += x.S; M += x.M;
+            if (g.kind == LM_STREAMED && x.S > 0.0) { extra += std::ceil(x.S / R) - 1.0; }
+        }
+        const double t_ssd  = ssd > 0.0 ? (g.reread ? (double) k : 1.0) * M / ssd : 0.0;
+        const double t_link = link > 0.0 ? ((g.kind == LM_STREAMED ? (double) k : 1.0) * S + n * in.layers[g.a].state_b) / link : 0.0;
+        const double t_comp = n * (in.tok_us * (double) (g.b - g.a) + in.entry_us_tok * extra) / L;
+        t += g.kind == LM_HELD ? std::max(t_ssd, t_link + t_comp) : std::max({ t_ssd, t_link, t_comp });
+        p.ssd_us += t_ssd; p.link_us += t_link; p.comp_us += t_comp;
+    }
+    p.fixed_us = (double) k * (double) p.groups.size() * in.graph_us;
+    p.us = t + p.fixed_us;
+    if (plan) { *plan = p; }
+    return p.us;
+}

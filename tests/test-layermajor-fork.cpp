@@ -1,6 +1,7 @@
 // Unit tests of the layer-major prompt plan (src/llama-layermajor-fork.h, fork/docs/layer-major-prompt.md): the layer groups and token chunks of a prompt call and
 // its time against today's passes (the formulas of src/llama-passplan-fork.h). CPU only, no model:
 //   groups   lm_groups                 : consecutive layers of one card; kept in the ring for all chunks when they fit, else streamed by every chunk
+//   time     estimate_layermajor_time  : the call's time with k chunks, its parts (drives, link, compute, graphs)
 // Numbers: Kimi K3.1 IQ1_S on PC1 (2 x 24 GiB, one drive; server logs of 2026-11-20), OLMoE-1B-7B Q4_K_M (its tensors) on the restricted machine of the first engine row.
 //
 // build: cmake --build <dir> --target test-layermajor-fork;  or alone: clang++ -std=c++17 -O1 tests/test-layermajor-fork.cpp -o /tmp/t && /tmp/t
@@ -130,8 +131,47 @@ static void test_groups() {
     }
 }
 
+static void test_time() {
+    printf("Testing the call's time:\n");
+    {
+        const lm_in in = k31(12558, 5814.0);
+        lm_plan p;
+        const double t = estimate_layermajor_time(in, 3, &p);
+        const double ssd_once = 290.0 * GiB / 5.4e3;   // us
+        double S = 0.0, carry = 0.0;
+        for (uint32_t l = 1; l < 93; ++l) { S += in.layers[l].S / (in.layers[l].card == 0 ? 26.5e3 : 26.6e3); }
+        for (const auto & g : p.groups) { carry += 12558.0 * in.layers[g.a].state_b / (in.cards[g.card].link_gbs * 1e3); }
+        check("K3.1, 3 chunks: the drives give the 290 GiB once (57.7 s, a pass's worth)", t > 0.0 && std::fabs(p.ssd_us - ssd_once) < 1.0,
+              fmt("%.1f s", p.ssd_us / 1e6));
+        check("K3.1, 3 chunks: the link carries every expert once per chunk and each group's hidden state in",
+              std::fabs(p.link_us - (3.0 * S + carry)) < 1.0, fmt("%.1f s (experts %.1f, hidden state %.1f)", p.link_us / 1e6, 3.0 * S / 1e6, carry / 1e6));
+        check("K3.1, 3 chunks: 276 graphs", std::fabs(p.fixed_us - 276.0 * 20e3) < 1.0 && p.k == 3 && p.chunk == 4186, fmt("%.1f s", p.fixed_us / 1e6));
+        check("a chunk past the cap or the pools cannot run", estimate_layermajor_time(in, 2) < 0.0 && estimate_layermajor_time(in, 0) < 0.0);
+        lm_in r = in;
+        r.hold_b = 6.0 * GiB;
+        lm_plan pr;
+        estimate_layermajor_time(r, 3, &pr);
+        check("K3.1 with a 6 GiB hold: the drives read every layer again in every chunk (no gain from the drives)", std::fabs(pr.ssd_us - 3.0 * ssd_once) < 3.0);
+    }
+    {   // OLMoE kept on the card: every expert crosses the link once, its drive bytes once
+        const lm_in in = olmoe(8192);
+        lm_plan p;
+        estimate_layermajor_time(in, 4, &p);
+        double S = 0.0, M = 0.0;
+        for (const auto & l : in.layers) { S += l.S; M += l.M; }
+        check("OLMoE, 4 chunks kept on the card: the experts cross the link once and the drives once",
+              std::fabs(p.link_us - (S / 26.6e3 + 15.0 * 8192.0 * 8192.0 / 26.6e3)) < 1.0 && std::fabs(p.ssd_us - M / 5.4e3) < 1.0,
+              fmt("link %.0f ms, drives %.0f ms", p.link_us / 1e3, p.ssd_us / 1e3));
+        const lm_in tight = olmoe(8192, 1.0, 0.9);
+        lm_plan pt;
+        estimate_layermajor_time(tight, 4, &pt);
+        check("OLMoE alone in the ring: a group's uploads add to its compute (they wait for the group before)", pt.us > p.us, fmt("%.0f against %.0f ms", pt.us / 1e3, p.us / 1e3));
+    }
+}
+
 int main() {
     test_groups();
+    test_time();
     if (g_fail > 0) {
         printf("%d tests failed\n", g_fail);
         return 1;
