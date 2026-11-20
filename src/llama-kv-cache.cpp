@@ -3608,10 +3608,22 @@ bool llama_kv_cache_context::apply() {
         return true;
     }
 
-    kv->apply_ubatch(sinfos[i_cur], ubatches[i_cur]);
-    n_kv      = kv->get_n_kv(sinfos[i_cur]);
-    n_kv_rows = kv->get_n_kv_rows(ubatches[i_cur]);
+    // fork (layer-major prompt): a ubatch applied before (replay_fork) gets its first view back, its cells hold it already
+    const auto view = lm_view_apply(views_fork, i_cur, [&] {
+        kv->apply_ubatch(sinfos[i_cur], ubatches[i_cur]);
+        return std::make_pair(kv->get_n_kv(sinfos[i_cur]), kv->get_n_kv_rows(ubatches[i_cur]));
+    });
+    n_kv      = view.first;
+    n_kv_rows = view.second;
 
+    return true;
+}
+
+bool llama_kv_cache_context::replay_fork(uint32_t i) {
+    if (status != LLAMA_MEMORY_STATUS_SUCCESS || views_fork.at(i) == nullptr) {
+        return false;
+    }
+    i_cur = i;
     return true;
 }
 

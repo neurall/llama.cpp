@@ -4,6 +4,7 @@
 #include "llama-graph.h"
 #include "llama-kv-cells.h"
 #include "llama-memory.h"
+#include "llama-layermajor-fork.h"   // lm_views: the replay of a chunk (layer-major prompt)
 
 #include <unordered_map>
 #include <vector>
@@ -445,6 +446,8 @@ public:
     llama_memory_status  get_status() const override;
     const llama_ubatch & get_ubatch() const override;
 
+    bool replay_fork(uint32_t i) override;   // fork: layer-major prompt
+
     //
     // llama_kv_cache_context specific API
     //
@@ -529,6 +532,9 @@ private:
 
     // see llama_kv_cache::get_n_kv_rows
     uint32_t n_kv_rows = 0;
+
+    // fork (layer-major prompt): n_kv and n_kv_rows of every ubatch applied so far, from its first apply (replay_fork goes back to one)
+    lm_views<std::pair<uint32_t, uint32_t>> views_fork;
 };
 
 // fork: threads the attention-mask fill of the next ubatch may use (the batch compute thread count)

@@ -164,3 +164,20 @@ static inline double lm_passes_time(const lm_in & in, uint32_t cap, int extra) {
     }
     return ppx_stream_us(in.n, cap, ppx_stream_pass_us(up, M, in.ssd_gbs), in.tok_us + in.entry_us_tok * (double) extra);
 }
+
+// ---- the memory's replay of a chunk: the groups after the first go back to a chunk without applying it again ----
+// A memory context's view of every ubatch it applied, from that first apply (the KV context: the cells its graph reads, n_kv and n_kv_rows, which apply() works out
+// from the cells in use at the time; applying chunk 0 again after the call's last chunk would read all of the call's cells). Applies come in order: a view goes in
+// only for the next ubatch. at(i): ubatch i's view, nullptr when it was not applied (no replay).
+template <class V> struct lm_views {
+    std::vector<V> v;
+    const V * at(size_t i) const { return i < v.size() ? &v[i] : nullptr; }
+    bool put(size_t i, const V & x) { if (i != v.size()) { return false; } v.push_back(x); return true; }
+};
+// apply() of ubatch i: the view of its first apply when there was one (the memory holds the ubatch already), else apply_now() applies it and its view is kept
+template <class V, class F> static inline V lm_view_apply(lm_views<V> & vs, size_t i, F apply_now) {
+    if (const V * w = vs.at(i)) { return *w; }
+    const V x = apply_now();
+    vs.put(i, x);
+    return x;
+}

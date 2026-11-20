@@ -4,6 +4,7 @@
 //   time     estimate_layermajor_time  : the call's time with k chunks, its parts (drives, link, compute, graphs)
 //   pick     lm_pick                   : the chunk count with the least time (the fewest chunks within 1%)
 //   passes   lm_passes_time            : today's equal passes from the same inputs (ppx_stream_us, ppx_stream_pass_us)
+//   replay   lm_views, lm_view_apply   : a memory context's view of each chunk from its first apply, given back to the later groups without applying it again
 // Numbers: Kimi K3.1 IQ1_S on PC1 (2 x 24 GiB, one drive; server logs of 2026-11-20), OLMoE-1B-7B Q4_K_M (its tensors) on the restricted machine of the first engine row.
 //
 // build: cmake --build <dir> --target test-layermajor-fork;  or alone: clang++ -std=c++17 -O1 tests/test-layermajor-fork.cpp -o /tmp/t && /tmp/t
@@ -216,10 +217,34 @@ static void test_pick() {
     }
 }
 
+// The KV context's apply() as the engine wires it (llama-kv-cache.cpp): the cells of a ubatch are marked in use, and the cells its graph reads are the cells in use
+// padded to 256 (llama_kv_cache::get_n_kv). A 3-chunk call of 600 tokens, chunks of 200.
+static void test_replay() {
+    printf("Testing the memory's replay of a chunk:\n");
+    uint32_t used = 0;   // cells in use (one sequence, from cell 0)
+    int n_apply = 0;
+    auto apply_chunk = [&](uint32_t c) {   // apply_ubatch + get_n_kv for chunk c
+        n_apply++;
+        used = std::max(used, 200 * (c + 1));
+        return std::pair<uint32_t, uint32_t>((used + 255) / 256 * 256, 0);
+    };
+    lm_views<std::pair<uint32_t, uint32_t>> vs;
+    uint32_t n_kv[3] = {};
+    for (uint32_t c = 0; c < 3; ++c) { n_kv[c] = lm_view_apply(vs, c, [&] { return apply_chunk(c); }).first; }   // the first group: as passes
+    check("the first group applies every chunk once, each reads the cells in use then (256, 512, 768)",
+          n_apply == 3 && n_kv[0] == 256 && n_kv[1] == 512 && n_kv[2] == 768, fmt("%d applies, %u %u %u", n_apply, n_kv[0], n_kv[1], n_kv[2]));
+    bool same = true;
+    for (uint32_t c = 0; c < 3; ++c) { same = same && lm_view_apply(vs, c, [&] { return apply_chunk(c); }).first == n_kv[c]; }   // a later group
+    check("a later group gets each chunk's own view back, chunk 0 reads 256 cells, not the 768 in use by now; nothing applied again", same && n_apply == 3);
+    check("a chunk never applied has no view (its replay is refused)", vs.at(3) == nullptr && vs.at(2) != nullptr);
+    check("views go in only for the next ubatch (applies come in order)", !vs.put(5, { 1, 1 }) && !vs.put(1, { 1, 1 }) && vs.at(1)->first == 512 && vs.put(3, { 1024, 0 }));
+}
+
 int main() {
     test_groups();
     test_time();
     test_pick();
+    test_replay();
     if (g_fail > 0) {
         printf("%d tests failed\n", g_fail);
         return 1;
