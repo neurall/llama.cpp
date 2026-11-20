@@ -18753,6 +18753,17 @@ static const char * bell_pool_expert(const ggml_tensor * w, int32_t e) {
     return (const char *) w->data + (size_t) e * w->nb[2];
 }
 // the pool runs the chain: false when this chain is not one it can run (the caller runs the graph)
+// the router observation the gate op makes on the CPU path (ggml-cpu.c, mul_mat_id): the cache counts every pick from it. A pooled chain makes it itself,
+// after the card has its rows: the callback takes the cache's lock and updates its windows (Qwen3.8 IQ4_XS 2 cards, 2026-11-20: the bell's host time 88 us a
+// layer against the pool's 52 us), work the card does not wait for. --moe bell-obs-first=1 keeps it before the pool, as before
+static void bell_pool_obs(bell_chain & c) {
+    void * ud = nullptr;
+    ggml_moe_obs_cb_t cb = ggml_get_moe_obs_callback(&ud);
+    const ggml_tensor * g = c.gate;
+    if (cb && strstr(g->src[0]->name, "ffn_gate_exps") && strncmp(g->name, "ffn_moe_defer", 13) != 0) { cb(g->src[0]->name, g->src[5] ? g->src[5] : g->src[2], (ggml_tensor *) g, ud); }
+}
+static bool bell_obs_first() { static const bool on = [] { const char * e = moe_opt("bell-obs-first"); return e && atoi(e) != 0; }(); return on; }
+
 static bool bell_pool_serve(bell_chain & c, const int32_t * miss, int n) {
     bellpool * pool = bell_pool();
     if (!pool) { return false; }
@@ -18769,13 +18780,7 @@ static bool bell_pool_serve(bell_chain & c, const int32_t * miss, int n) {
         }
     }
     if (!c.pool_ok) { return false; }
-    // the router observation the gate op makes on the CPU path (ggml-cpu.c, mul_mat_id): the cache counts every pick from it
-    {
-        void * ud = nullptr;
-        ggml_moe_obs_cb_t cb = ggml_get_moe_obs_callback(&ud);
-        const ggml_tensor * g = c.gate;
-        if (cb && strstr(g->src[0]->name, "ffn_gate_exps") && strncmp(g->name, "ffn_moe_defer", 13) != 0) { cb(g->src[0]->name, g->src[5] ? g->src[5] : g->src[2], (ggml_tensor *) g, ud); }
-    }
+    if (bell_obs_first()) { bell_pool_obs(c); }
     if (n <= 0) { return true; }
     bellpool_layer L;
     L.n_embd = (int) c.up->src[0]->ne[0]; L.n_ff = (int) c.up->src[0]->ne[1];
@@ -18890,6 +18895,7 @@ static void bell_serve(bell_chain & c) {
         g_bell_n_wait++;
         g_bell_n_miss += (uint64_t) n_run;
     }
+    if (pooled && !bell_obs_first()) { bell_pool_obs(c); }
 }
 
 // the scheduler's bell callback: on its bell thread, from before the split's graph is launched (ggml_backend_set_split_bell_callback). No call into a card here
