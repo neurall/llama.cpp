@@ -25,6 +25,25 @@ bool llama_bell_dots_fork(int type, int * act, llama_bell_dot_fn * dot, llama_be
 }
 
 #if defined(__AVX2__) && (defined(__GNUC__) || defined(__clang__))
+#include <cpuid.h>
+
+// cpuid itself: __builtin_cpu_supports needs compiler-rt's __cpu_model, which the Windows release link (clang, -nostdlib) does not bring
+static bool bell_cpu_avx2_fma_f16c() {
+    unsigned a, b, c, d;
+    if (!__get_cpuid(1, &a, &b, &c, &d)) {
+        return false;
+    }
+    if (!((c >> 12) & 1) || !((c >> 27) & 1) || !((c >> 28) & 1) || !((c >> 29) & 1)) {   // FMA, OSXSAVE, AVX, F16C
+        return false;
+    }
+    unsigned lo, hi;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    if ((lo & 6) != 6) {   // the OS saves the YMM registers
+        return false;
+    }
+    return __get_cpuid_count(7, 0, &a, &b, &c, &d) && ((b >> 5) & 1);   // AVX2
+}
+
 #define BELL_DOT(name, fn)  static void name(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) { fn(n, s, bs, vx, bx, vy, by, nrc); }
 #define BELL_DOT2(name, fn) static void name(int n, float * s_a, float * s_b, const void * vxa, const void * vxb, const void * vy) { fn(n, s_a, s_b, vxa, vxb, vy); }
 BELL_DOT (d_iq2_s,    llama_dot_iq2_s_q8_K_avx2)    BELL_DOT2(d2_iq2_s,   llama_dot2_iq2_s_q8_K_avx2)
@@ -43,7 +62,7 @@ BELL_DOT2(d2_mxfp4,   llama_dot2_mxfp4_q8_0_avx2)
 BELL_DOT2(d2_q2_0,    llama_dot2_q2_0_q8_0_avx2)
 
 bool llama_bell_dots_fork(int type, int * act, llama_bell_dot_fn * dot, llama_bell_dot2_fn * dot2) {
-    static const bool cpu = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c");
+    static const bool cpu = bell_cpu_avx2_fma_f16c();
     *dot = nullptr; *dot2 = nullptr;
     if (!cpu) {
         return false;
