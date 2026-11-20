@@ -105,6 +105,33 @@ static void test_tune() {
     CHECK(c.settled && c.n == 64);
 }
 
+// the pool's start and grows against the RAM a request needed beside it (rp_start_pick, rp_grow_cap, rp_need_now): Kimi K3.1 on PC1, 2026-11-20 (b16041 gainers)
+static size_t gib(double g) { return (size_t) (g * 1073741824.0); }
+static bool near(size_t a, double g) { const double d = (double) a / 1073741824.0 - g; return d > -0.01 && d < 0.01; }
+static void test_start() {
+    // the failure: short requests had grown the pool and stored 12.05 GiB kept; the next start took 229.6 GiB (the equation gave 217.0), its 12.5k-token
+    // prompt needed 13.3 GiB beside the pool and RAM available fell to 1.5 GiB. No need measured yet: the start stays at the equation
+    rp_size_rule r { gib(217.0), gib(241.7), gib(12.05), 0, gib(5.16) };
+    CHECK(near(rp_start_pick(r), 217.0));
+    // the need of the dev rows' 12.5k prompt at the equation's pool: 241.7 available, pool 217.7, at least 10.73 left
+    CHECK(near(rp_need_now(gib(241.7), gib(217.7), gib(10.73)), 13.27));
+    CHECK(rp_need_now(gib(241.7), gib(217.7), gib(30.0)) == 0);   // other processes gave RAM back: no need below zero
+    // measured: the start keeps it and the grow floor free, above the equation where that leaves room
+    r.need = gib(13.27);
+    CHECK(near(rp_start_pick(r), 241.7 - 13.27 - 5.16));
+    r.kept = gib(25.0);   // the last session left more beside its pool (it gave chunks back): that start
+    CHECK(near(rp_start_pick(r), 241.7 - 25.0));
+    r.kept = 0;           // no session stored one: the equation
+    CHECK(near(rp_start_pick(r), 217.0));
+    r.kept = gib(250.0);  // less RAM available than the room to keep: the equation, as before
+    CHECK(near(rp_start_pick(r), 217.0));
+    // a grow after short requests stops where the measured need and the floor stay free; with no need measured it is the grow's own
+    CHECK(near(rp_grow_cap(gib(2.0), gib(241.7), gib(241.7 - 13.27 - 5.16), gib(13.27), gib(5.16)), 0.0));
+    CHECK(near(rp_grow_cap(gib(2.0), gib(241.7), gib(217.0), gib(13.27), gib(5.16)), 2.0));
+    CHECK(near(rp_grow_cap(gib(9.0), gib(241.7), gib(217.0), gib(13.27), gib(5.16)), 241.7 - 13.27 - 5.16 - 217.0));
+    CHECK(rp_grow_cap(gib(2.0), gib(241.7), gib(230.0), 0, gib(5.16)) == gib(2.0));
+}
+
 static void test_rows() {
     // a pass's rows: none in RAM the first time, all the second time (free blocks take anyone), each with its own bytes
     {
@@ -242,6 +269,7 @@ int main() {
 
     test_rows();
     test_tune();
+    test_start();
     if (g_fail) { fprintf(stderr, "%d checks failed\n", g_fail); return 1; }
     printf("test-rampool-fork: all checks passed\n");
     return 0;
