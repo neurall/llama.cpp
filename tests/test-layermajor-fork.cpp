@@ -2,6 +2,8 @@
 // its time against today's passes (the formulas of src/llama-passplan-fork.h). CPU only, no model:
 //   groups   lm_groups                 : consecutive layers of one card; kept in the ring for all chunks when they fit, else streamed by every chunk
 //   time     estimate_layermajor_time  : the call's time with k chunks, its parts (drives, link, compute, graphs)
+//   pick     lm_pick                   : the chunk count with the least time (the fewest chunks within 1%)
+//   passes   lm_passes_time            : today's equal passes from the same inputs (ppx_stream_us, ppx_stream_pass_us)
 // Numbers: Kimi K3.1 IQ1_S on PC1 (2 x 24 GiB, one drive; server logs of 2026-11-20), OLMoE-1B-7B Q4_K_M (its tensors) on the restricted machine of the first engine row.
 //
 // build: cmake --build <dir> --target test-layermajor-fork;  or alone: clang++ -std=c++17 -O1 tests/test-layermajor-fork.cpp -o /tmp/t && /tmp/t
@@ -169,9 +171,55 @@ static void test_time() {
     }
 }
 
+static void test_pick() {
+    printf("Testing layer-major against today's passes:\n");
+    {   // K3.1 13k: today 3 equal passes of 4186 (8 chunks a layer, 7 further entries, cap 4352), each reading the 290 GiB again (2026-11-20: 46-70 s a pass)
+        for (const double tok : { 5814.0, 1651.0 }) {
+            const lm_in in = k31(12558, tok);
+            const double passes = lm_passes_time(in, 4352, 7);
+            const lm_plan p = lm_pick(in, 32);
+            const double want = tok > 2000.0 ? 0.60 : 0.45;
+            check(fmt("K3.1 12558 tokens, compute %.0f us a token: one stream beats 3 passes (under %.0f%% of their time)", tok, 100.0 * want).c_str(),
+                  p.us > 0.0 && p.us < want * passes,
+                  fmt("%u chunks of %u: %.1f s (drives %.1f, link %.1f, compute %.1f, graphs %.1f) against %.1f s", p.k, p.chunk, p.us / 1e6, p.ssd_us / 1e6, p.link_us / 1e6,
+                      p.comp_us / 1e6, p.fixed_us / 1e6, passes / 1e6));
+        }
+        const lm_in slow = [] { lm_in in = k31(12558, 5814.0); in.graph_us = 100e3; return in; }();
+        const lm_plan ps = lm_pick(slow, 32);
+        check("K3.1: still one stream at 100 ms a graph", ps.us > 0.0 && ps.us < 0.75 * lm_passes_time(slow, 4352, 7), fmt("%.1f s", ps.us / 1e6));
+        const lm_in two = k31(12558, 5814.0, 10.8);
+        const double p2 = lm_passes_time(two, 4352, 7);
+        const lm_plan l2 = lm_pick(two, 32);
+        check("K3.1 on two drives: the passes get faster, the stream still wins (compute and link bound it)", l2.us > 0.0 && l2.us < p2,
+              fmt("%.1f s against %.1f s", l2.us / 1e6, p2 / 1e6));
+        const lm_in one = k31(1000, 5814.0);
+        const double p1 = lm_passes_time(one, 4352, 7);
+        const lm_plan l1 = lm_pick(one, 32);
+        check("K3.1 1000 tokens, one pass: layer-major only adds graphs and hidden-state copies", l1.us >= p1, fmt("%.1f s against %.1f s", l1.us / 1e6, p1 / 1e6));
+    }
+    {
+        const lm_in in = olmoe(8192);
+        const double passes = lm_passes_time(in, 2048, 0);
+        const lm_plan p = lm_pick(in, 32);
+        check("OLMoE 8192 tokens, 2.6 of 3.6 GiB from the drive: 4 chunks kept on the card, under half the 4 passes",
+              p.k == 4 && count_kind(p.groups, LM_HELD2) == 16 && p.us < 0.5 * passes, fmt("%u chunks: %.0f ms against %.0f ms", p.k, p.us / 1e3, passes / 1e3));
+        lm_in none = in;
+        for (auto & l : none.layers) { l.S = l.M = 0.0; }
+        const lm_plan pn = lm_pick(none, 32);
+        check("OLMoE, every expert on the card: the passes (nothing to stream)", pn.us >= lm_passes_time(none, 2048, 0));
+        const lm_in ram = olmoe(8192, 4.0);
+        const lm_plan pr = lm_pick(ram, 32);
+        const double prs = lm_passes_time(ram, 2048, 0);
+        check("OLMoE, every expert in RAM: nothing from the drives, the experts over the link once (4 passes: 4 x 147 ms); the compute and graphs decide",
+              pr.us > 0.0 && pr.ssd_us == 0.0 && std::fabs(pr.link_us - (3.633 * GiB / 26.6e3 + 15.0 * 8192.0 * 8192.0 / 26.6e3)) < 1e3,
+              fmt("%.0f ms against %.0f ms (%s)", pr.us / 1e3, prs / 1e3, pr.us < prs ? "layer-major" : "passes"));
+    }
+}
+
 int main() {
     test_groups();
     test_time();
+    test_pick();
     if (g_fail > 0) {
         printf("%d tests failed\n", g_fail);
         return 1;

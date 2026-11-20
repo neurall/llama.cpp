@@ -133,3 +133,34 @@ static inline double estimate_layermajor_time(const lm_in & in, uint32_t k, lm_p
     if (plan) { *plan = p; }
     return p.us;
 }
+
+// The chunk count of a layer-major call: from the fewest chunks the cap allows to one per `granule` tokens (the smallest pass the context cuts), the fewest whose
+// time is within 1% of the lowest (as ppx_pick_chunks: fewer chunks, fewer graphs). us < 0: none can run.
+static inline lm_plan lm_pick(const lm_in & in, uint32_t granule) {
+    lm_plan best;
+    if (in.n == 0) { return best; }
+    const uint32_t k0 = in.cap > 0 ? (in.n + in.cap - 1) / in.cap : 1;
+    const uint32_t k1 = std::max(k0, in.n / std::max<uint32_t>(1, granule));
+    std::vector<double> us;
+    double t_min = -1.0;
+    for (uint32_t k = k0; k <= k1; ++k) {
+        us.push_back(estimate_layermajor_time(in, k));
+        if (us.back() >= 0.0 && (t_min < 0.0 || us.back() < t_min)) { t_min = us.back(); }
+    }
+    for (uint32_t k = k0; t_min >= 0.0 && k <= k1; ++k) {
+        if (us[k - k0] >= 0.0 && us[k - k0] <= 1.01 * t_min) { estimate_layermajor_time(in, k, &best); break; }
+    }
+    return best;
+}
+
+// Today's equal passes of the same call from the same inputs: passes of at most cap tokens, a layer in 1 + extra entries (the stream's pick, ppx_pick_chunks),
+// each pass uploading every expert over its layer's link beside the drives' bytes (ppx_stream_pass_us), the longer of that and its compute (ppx_stream_us).
+static inline double lm_passes_time(const lm_in & in, uint32_t cap, int extra) {
+    double up = 0.0, M = 0.0;
+    for (const auto & x : in.layers) {
+        const double link = x.card >= 0 && (size_t) x.card < in.cards.size() ? in.cards[(size_t) x.card].link_gbs * 1e3 : 0.0;
+        up += link > 0.0 ? x.S / link : 0.0;
+        M  += x.M;
+    }
+    return ppx_stream_us(in.n, cap, ppx_stream_pass_us(up, M, in.ssd_gbs), in.tok_us + in.entry_us_tok * (double) extra);
+}
