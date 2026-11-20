@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+glm30-nc,glm,2,pf12k4k,4096,"--moe bell-clamp=0",--env PERF_LEDGER=0
+ds-nc,ds,2,pf12k4k,4096,"--moe bell-clamp=0",--env PERF_LEDGER=0
+k31-i-ns,k31,2,pfbest1k,1024,"--moe bell-situ=0",
