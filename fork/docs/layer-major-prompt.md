@@ -195,4 +195,5 @@ prompt once, the call time against the estimate. Then K3.1 13k against the passe
   the first rows.
 * The hold (7.5 GiB, the pool's probation blocks of 2026-11-13) is not today's number; the engine reads it from the pool.
 * Weight reads of small chunks (fewer tokens than a layer has experts per pick) are not in the estimate (shortcut in the header).
+* A group graph's lend per token is taken as the full graph's (one layer's temporaries are the peak); the first OLMoE row's lend line says.
 * The checkpoint inside the call, the sliding-window replay and the hyper-connection state are designed here, not prototyped.
