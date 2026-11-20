@@ -7864,6 +7864,9 @@ static size_t alias_release(moe_cache * mc) {
 // background. --moe reheat-bg=1: all in the background. --moe fixed=1: all at normal priority (the step publishes them in order)
 static bool reheat_bg() { static const bool v = [] { const char * e = moe_opt("reheat-bg"); return e && atoi(e) != 0; }(); return v; }
 static bool fixed_on() { static const bool v = [] { const char * e = moe_opt("fixed"); return e && atoi(e) != 0; }(); return v; }
+// --moe reheat-all=1: every refill job at normal priority, not only each layer's top k. The background part waited behind the decode steps' own misses: after a
+// 15.5k prompt on one card the refill of 2.7-6.5 GB took ~1.1 s (2.4-5.9 GB/s of a 26.6 GB/s link) and its 68 tokens ran at 16.1 ms against 12.6 (Qwen3.8 IQ3_S, 2026-11-20)
+static bool reheat_all() { static const bool v = [] { const char * e = moe_opt("reheat-all"); return e && atoi(e) != 0; }(); return v; }
 static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = false) {   // ini_only: by the lifetime counts alone (the state ini's hot map and this run's use), no recent window
     static const bool on = [] { const char * e = moe_opt("reheat"); return !e || atoi(e) != 0; }();
     if (!on) {
@@ -7916,7 +7919,7 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = fals
             ls.slot_in_flight[slot] = true;
             ls.queued[c[i].e]       = 1;
             upload_job j { c[i].li, c[i].e, slot };
-            j.bg       = !(fixed_on() || (wait && c[i].part == 1));   // part 1 at normal priority (wait), the rest behind decode's own misses
+            j.bg       = !(fixed_on() || (wait && (c[i].part == 1 || reheat_all())));   // part 1 at normal priority (wait), the rest behind decode's own misses
             j.refill   = true;
             j.t_queued = ggml_time_us();
             jobs.push_back(j);
