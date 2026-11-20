@@ -12985,9 +12985,11 @@ static const std::vector<uint8_t> * cs_used(moe_cache * mc, int il, int64_t ne) 
 static bool ring_keep_hot() { static const bool on = [] { const char * e = moe_opt("ring-keep-hot"); return e && atoi(e) != 0; }(); return on; }
 // --moe ring-cold (user 2026-11-20: "rest layers prefetch to gaps or coldest", "measure both, keep under switch"). 1: the blocks the stream takes over cached
 // experts go by the decode value they lose (poolx_ring_lost), coldest first (poolx_ring_before cold), a claim over another class's bytes weighed by the hottest
-// expert the cache held under them before the pass. 2: as 1, and an entry planned beyond the next two takes only blocks that lose nothing (poolx_ring_cold_ok).
-// 0: by next use and the cursor's order, as before. Qwen3.8 IQ3_S one card 4k: the old order left 248 of the layers' top-10 decode experts to refill a prompt
-static int ring_cold() { static const int v = [] { const char * e = moe_opt("ring-cold"); return e ? std::max(0, std::min(2, atoi(e))) : 0; }(); return v; }
+// expert the cache held under them before the pass. 2 (default): as 1, and an entry planned beyond the next two takes only blocks that lose nothing
+// (poolx_ring_cold_ok). 0: by next use and the cursor's order, as before. Qwen3.8 IQ3_S one card 4k: the old order left 248 of the layers' top-10 decode experts
+// to refill a prompt. Default 2 since 2026-11-20 (build ring_cold, one card, -cs -gh pairs against 0): 14k + 1k decode 75.9 against 73.7 t/s (4 of 4 runs), 4k + 2k
+// 79.2 against 78.8 (4 of 4), prompts equal; the reload after a 4k prompt 1.65 GB against 7.1 GB
+static int ring_cold() { static const int v = [] { const char * e = moe_opt("ring-cold"); return e ? std::max(0, std::min(2, atoi(e))) : 2; }(); return v; }
 // --moe cs-tail=1: the stream's upload area behind the floor, taken first, and the experts in every block it takes moved out by heat first (poolx_tail_first,
 // poolx_tail_moves in llama-poolalloc-fork.h; cs_tail_moves below). 0 (default): neither.
 static bool cs_tail_on() { static const bool on = [] { const char * e = moe_opt("cs-tail"); return e && atoi(e) != 0; }(); return on; }
