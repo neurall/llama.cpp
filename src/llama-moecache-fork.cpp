@@ -16991,22 +16991,48 @@ static bool cs_pick(moe_cache * mc, uint32_t n, size_t cells_end, uint32_t ub) {
         for (size_t k = 0; k < mc->alias.size(); ++k) { mc->alias[k].floor_end = old[k]; }
         cap[i] = c;
     }
-    double E = 0.0, R = 0.0;
-    pp_expert_bytes(mc, mc->link_dev[0], E, R);
+    double E = 0.0, R = 0.0, Mm = 0.0;
+    pp_expert_bytes(mc, mc->link_dev[0], E, R, &Mm);
     const double gbs   = llama_moe_cache_link_gbs_fork(mc->link_dev[0]);
-    const double up_us = gbs > 0.0 ? E / (gbs * 1e3) * share : 0.0;   // every expert over the link, the cards' links side by side in an expert split
+    // every expert over the link (the cards' links side by side in an expert split), beside it the experts only the drives have (ppx_stream_pass_us)
+    const double up_us = ppx_stream_pass_us(gbs > 0.0 ? E / (gbs * 1e3) * share : 0.0, Mm, pp_ssd_rate_gbs());
     double c_us = 0.0;
     {
         std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
         const double cells = cells_end > 0 ? (double) cells_end : (double) g_pp_cells;
         c_us = g_pp_c_us > 0.0 ? g_pp_c_us + g_pp_a_us * std::max(0.0, cells - 0.5 * (double) n) : 0.0;
     }
+    // caps estimated before any pass measured its graph (no compute measured yet) can be high: the first such pick of a request size is kept, and the next pick of
+    // that size after passes ran gives the estimate's error (ppx_cap_err), stored for the next start; estimated picks count their caps that much less
+    const bool est = c_us <= 0.0;
+    static double   cap_err[NC];   // per candidate (llama-passplan-fork.h ppx_cap_err)
+    static bool     err_read = false;
+    static uint32_t est_n = 0, est_cap[NC] = {};
+    static size_t   est_cells = 0;
+    if (!err_read) {
+        err_read = true;
+        for (int i = 0; i < NC; ++i) { std::string v; cap_err[i] = moe_state_get(mc->profile, hw_key(format("cs.cap_err.%d", cs_cand[i])), v) ? std::max(0.0, atof(v.c_str())) : 0.0; }
+    }
+    if (est && est_n == 0) {
+        est_n = n; est_cells = cells_end; std::copy(cap, cap + NC, est_cap);
+    } else if (!est && est_n == n && est_cells == cells_end) {
+        ppx_cap_err(est_cap, cap, NC, cap_err);
+        std::vector<std::pair<std::string, std::string>> kv;
+        std::string row;
+        for (int i = 0; i < NC; ++i) {
+            kv.push_back({ hw_key(format("cs.cap_err.%d", cs_cand[i])), format("%.4f", cap_err[i]) });
+            if (est_cap[i] > 0 && cap[i] > 0) { row += format(" %d: %u -> %u", cs_cand[i], est_cap[i], cap[i]); }
+        }
+        moe_state_set(mc->profile, kv);
+        LLAMA_LOG_WARN("moe-cache: stream caps of %u tokens to %zu cells, estimated -> measured by chunks:%s; estimated picks count them that much less (stored)\n", n, cells_end, row.c_str());
+        est_n = 0;
+    }
     // no compute measured yet (a start's first prompt; dense split passes never measure it): the calculated one, so every candidate is weighed. Dropping those with
     // more than one further entry instead left Kimi K3.1 (a layer 5.5 GiB, pools of 6.3 GiB) 2 chunks: its 995-token prompt as 16 passes of 64 tokens, 27 s
     // each (13 t/s staged, 2026-11-13). Only with no figure at all (no probe): at most one further entry per layer (the fewest passes alone took 6 chunks)
     if (c_us <= 0.0) { c_us = llama_dsplit_compute_calc_us_fork(mc->link_dev[0]); }
     if (c_us <= 0.0) { for (int i = 0; i < NC; ++i) { if (extra[i] > 1) { cap[i] = 0; } } }
-    const int b = ppx_pick_chunks(n, cap, extra, NC, up_us, c_us, CS_ENTRY_COST * c_us, us);
+    const int b = ppx_pick_chunks(n, cap, extra, NC, up_us, c_us, CS_ENTRY_COST * c_us, us, est ? cap_err : nullptr);
     if (b < 0 || !cs_apply(mc, cs_cand[b])) { return false; }
     std::string tab;
     for (int i = 0; i < NC; ++i) {
@@ -17016,9 +17042,10 @@ static bool cs_pick(moe_cache * mc, uint32_t n, size_t cells_end, uint32_t ub) {
     size_t ring_b = 0, cells_log = cells_end;
     for (const auto & a : mc->alias) { if (!a.rcls.empty()) { ring_b = std::max(ring_b, a.tail_end - a.floor_end); } }
     if (cells_log == 0) { std::lock_guard<llama_checked_mutex> lk(g_pp_mu); cells_log = (size_t) g_pp_cells; }
-    const std::string line = format("stream of %u tokens to %zu cells: a layer in %d chunk%s (the graph and the KV stop %.0f MiB short of the tail, one entry; by chunks: %s; upload %.0f ms a pass, compute %s, a card holds %.2f of a layer)",
+    const std::string line = format("stream of %u tokens to %zu cells: a layer in %d chunk%s (the graph and the KV stop %.0f MiB short of the tail, one entry; by chunks: %s; upload or SSD reads %.0f ms a pass, compute %s, a card holds %.2f of a layer%s)",
             n, cells_log, cs_cand[b], cs_cand[b] > 1 ? "s" : "", ring_b / 1048576.0, tab.c_str(), up_us / 1e3,
-            c_us > 0.0 ? format("%.0f us a token, %.0f a further entry", c_us, CS_ENTRY_COST * c_us).c_str() : "not measured yet: the fewest passes", share);
+            c_us > 0.0 ? format("%.0f us a token, %.0f a further entry", c_us, CS_ENTRY_COST * c_us).c_str() : "not measured yet: the fewest passes", share,
+            est && cap_err[b] > 0.0 ? format("; the picked caps estimated, counted %.1f%% lower (the error stored)", 100.0 * cap_err[b]).c_str() : "");
     LLAMA_LOG_WARN("moe-cache: %s\n", line.c_str());
     llama_moe_stats_log_fork("DEC", line.c_str());
     return true;
