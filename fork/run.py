@@ -1747,6 +1747,12 @@ def decisions(log):
     # the real maximum: the smaller of the engine's pass ceiling (the size its compute buffer was reserved for) and the pass the RAM allows ("prompt pass N tokens
     # (cut from M to fit)"), the last of each in the log; the auto setup's first pick above (16384 on DeepSeek-V4.1) never ran when either is smaller
     lims = [int(x[-1]) for x in (re.findall(r"limit (\d+) from the pinned-mask budget", log), re.findall(r"fits the ceiling (\d+)", log), re.findall(r"prompt pass (\d+) tokens \(cut from", log)) if x]
+    # --moe staging=0: the stream's own cap at the request's end cells, the picked chunk count's "N: P passes of at most CAP" of the last "stream of" line
+    # (Kimi K3.1: ceiling 5056, the stream held 4352 at 8 chunks; the ceiling alone sized a 13k prompt as 2 passes of 5056)
+    sc = re.findall(r"stream of \d+ tokens to \d+ cells: a layer in (\d+) chunks? \(.*?by chunks: (.*?); upload", log)
+    if sc:
+        c = re.search(rf"(?:^|; ){sc[-1][0]}: \d+ passes of at most (\d+)", sc[-1][1])
+        if c: lims.append(int(c.group(1)))
     if lims:
         d["ubatch_max"] = min(lims)
     rows = []
@@ -8418,6 +8424,7 @@ def run_list(name, argv):
     ap.add_argument("-s", "--stock", action="store_true", help="run on the newest official ggml-org release binary (pulled once into devbuilds/stock-bNNNNN-official; stock-latest points to it)")
     ap.add_argument("-w", "--warm", action="store_true", help="a warm-up pass before the measured runs (same prompt again; stored with temp=warmpass, not in the statistics); default off")
     ap.add_argument("-ledger", "--ledger", action="store_true", help="the pool write ledger on in every cell (who wrote which bytes of a card's pool, when): a debug record, about 25%% slower decode; printed at the start, recorded in the row (PERF_LEDGER=1); off by default, never turned on by a build name")
+    ap.add_argument("-clampasses", "--clamp-passes", action="store_true", help="pfbest cells: the best prompt cut to whole passes of the engine's newest measured pass maximum for this model and VRAM (runs.db ubatch_max with the stream's chunk cap, clamp_passes): a best prompt a sliver past k passes runs k, not k+1; each cut is printed")
     ap.add_argument("-gh", "--global-hot", action="store_true", help="every server starts from the hot-expert map of its (model, test), the same for every build (fork/hotglobal.py): written into the state the start reads, learned from the runs until it settles, then frozen; a speed difference between builds is then the code, not the map")
     ap.add_argument("--hot-settle", action="store_true", help="-gh, and every cell repeats until its hot map is settled (the hottest experts of each layer change by under 1%% twice in a row; at most RUN_HOT_SETTLE_MAX = 8 runs): one pass per prompt and model, before the builds are compared")
     ap.add_argument("-cs", "--clean-state", action="store_true", help="every cell starts from an EMPTY learned state of its own (bench --clean-state) on a server of its own: run 1 is the cold start of a new user, run 2 runs on the same server (warm). Two builds compared this way learn from zero on the same prompt, so they should arrive at the same speed (reg tests); the user's state file is not touched. No cell inherits another's state (an A/B of two builds read in run order once gave a 37%% gap that was only the shared state file)")
@@ -8499,7 +8506,19 @@ def run_list(name, argv):
         if not _sel(r): continue
         was = r["test"]; r["test"] = best_test(r["model"], r["test"], remote=o.machine.split("-")[0] != "pc1")
         if re.fullmatch(r"pfbest\d*k?", was or "") and o.machine.split("-")[0] == "pc1" and best_prompt_tokens(r["model"]) and "PERF_PTOK" not in (r.get("extra") or ""):
-            r["extra"] = ((r.get("extra") or "") + f" --env PERF_PTOK={best_prompt_tokens(r['model'])} --env PERF_PNAME={best_prompt_label(best_prompt_tokens(r['model']))}-{model_alias(r['model'])}").strip()   # pf9k1k is only the label: the prompt is the stored best, 8900 tokens, not 9000
+            _pt = best_prompt_tokens(r["model"])
+            if o.clamp_passes and (_cap := latest_pass_cap(r["model"], o.machine)):
+                _pt2, _k = clamp_passes(_pt, _cap)
+                if _pt2 != _pt:
+                    print(col("1;94", f"{r['name']}: best prompt {_pt} tokens is {_pt / _cap:.2f} passes of the newest pass maximum {_cap}: cut to {_pt2} ({_k} whole pass{'es' if _k > 1 else ''})"
+                                      f"{'' if o.dry else ', stored as its bestpp and maxpp'}"), flush=True)
+                    if not o.dry:   # stored (this hardware's models.ini): the next run starts at the cut size without -clampasses
+                        _sec = model_alias(r["model"])
+                        _e = bestpp_entries((fcfg.models_ini().get(_sec) or {}).get("bestpp", "")).get(int(hw_key()[:-1]))
+                        if _e: ini_set_bestpp(_sec, _pt2, *_e[1:])
+                        ini_set_maxpp(_sec, _cap)
+                _pt = _pt2
+            r["extra"] = ((r.get("extra") or "") + f" --env PERF_PTOK={_pt} --env PERF_PNAME={best_prompt_label(_pt)}-{model_alias(r['model'])}").strip()   # pf9k1k is only the label: the prompt is the stored best, 8900 tokens, not 9000
         if r["test"] != was and was != r["test"] and (r["model"], r["test"]) not in _picked and not o.status:
             _picked.add((r["model"], r["test"]))   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
     if o.test: rows = [r for r in rows if r["test"] in {x if x.startswith("pf") or x in {r2["test"] for r2 in rows} else "pf" + x for x in o.test.split(",")}]   # best1k = pfbest1k (plain names, no pf prefix)
@@ -9018,6 +9037,28 @@ def best_prompt_ids(post, text, n, name):
             f.write(f"\n[{name}]\npath = {fp}\nlen = {n}\nin = {round(n / 1000)}k\nout = 1k\n")
         ini_put(name.rsplit("-", 1)[-1], "bestprompt", f"{name} {n}")   # beside bestpp in this hardware's models.ini: the prompts.ini section and the token count its file is cut to
     return ids
+
+
+def clamp_passes(tokens, cap):
+    """-clampasses: (tokens, passes) of a prompt cut to whole passes of at most cap tokens. k = round(tokens / cap) passes: when k x cap <= tokens the prompt is cut
+    to k x cap (the sliver past them would cost a whole pass, twice the time of a one-pass prompt), else it already fits k equal passes and stays. No cap: unchanged."""
+    if not cap or cap <= 0: return tokens, 0
+    if tokens <= cap: return tokens, 1
+    k = max(1, int(tokens / cap + 0.5))
+    return (k * cap, k) if k * cap <= tokens else (tokens, -(-tokens // cap))
+
+
+def latest_pass_cap(model_path, machine="pc1"):
+    """the engine's real pass maximum of the newest run of this model on this machine with the VRAM in use (runs.db ubatch_max: the smallest of its ceilings and the
+    stream's chunk cap, decisions()); None when no run recorded one"""
+    try:
+        g = int(hw_key()[:-1])
+        con = sqlite3.connect(f"file:{RUNS_DB}?mode=ro", uri=True)
+        for um, vm in con.execute("select ubatch_max, vram_mib from runs where model = ? and hw = ? and ubatch_max > 0 and vram_mib > 0 order by ts desc limit 50",
+                                  (model_path, machine.split("-")[0])):
+            if abs(round(float(vm) / 1024) - g) <= 1: return int(um)
+    except (sqlite3.Error, ValueError, TypeError): pass
+    return None
 
 
 def best_prompt_tokens(model_path):
@@ -11550,6 +11591,14 @@ def _tool_selftest():
         if not cond:
             failed.append(msg)
 
+
+    # 0. -clampasses: a best prompt a sliver past whole passes runs the whole passes, one that fits its equal passes stays (fork/run.py clamp_passes)
+    _ns = runpy.run_path(RUN, run_name="run_selftest_import")
+    _cp = _ns["clamp_passes"]
+    check(_cp(12000, 11900) == (11900, 1), "clamp_passes: 12000 tokens at a pass maximum of 11900 run one pass of 11900, not two")
+    check(_cp(12562, 4352) == (12562, 3), "clamp_passes: Kimi K3.1 12562 tokens at 4352 stay, three equal passes of 4188")
+    check(_cp(10000, 4900) == (9800, 2), "clamp_passes: 10000 at 4900 run two passes of 4900, not three")
+    check(_cp(12000, 7000) == (12000, 2) and _cp(8000, 16384) == (8000, 1) and _cp(8000, None) == (8000, 0), "clamp_passes: fits as it is, one pass, no maximum known")
 
     # 1. compile, help
     py_compile.compile(RUN, doraise=True)
