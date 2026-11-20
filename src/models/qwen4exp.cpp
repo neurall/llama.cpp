@@ -1606,6 +1606,15 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
 
     gate = ggml_reshape_4d(ctx0, gate, 1, num_v_heads, n_seq_tokens, n_seqs);
 
+    if (ggml_nbytes(z) <= ((size_t) 4 << 20)) {
+        // the delta-net gates enter the graph here too, ahead of the conv chain, as in the dense split's builder. Pulled in by the delta net they came
+        // after the conv chain: the alpha matvec ran at once on a side stream, but its add, softplus and the beta matvec waited there for buffers the
+        // allocator had handed the conv chain before them (the plan keeps two units that touch the same memory in graph order), and the delta net
+        // started ~6 us after its q/k norms (Qwen3.8 IQ3_S one card, 36 GDN layers, 2026-11-20 trace q1tr4k)
+        ggml_build_forward_expand(gf, beta);
+        ggml_build_forward_expand(gf, gate);
+    }
+
     ggml_tensor * conv_states_all = mctx_cur->get_r_l(il);
     ggml_tensor * ssm_states_all  = mctx_cur->get_s_l(il);
 
