@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+vf-qni3-rc,qwen38,1,pfbest1k,8,"--moe verify=2,ring-cold=1",
+vf-qni3-rc2,qwen38,1,pfbest1k,8,"--moe verify=2,ring-cold=2",
+vf-qni4-rc2,qn_iq4xs,1,scific,8,"--moe verify=2,ring-cold=2",
+vf-mimo-rc2,mimo,1,scific,8,"--moe verify=2,ring-cold=2",

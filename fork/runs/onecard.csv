@@ -86,3 +86,22 @@ q1-cand0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_ROW
 q1-nobs,qwen38,2,pf12k1k,512,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-tailref,qwen38,2,pf12k1k,512,"-bs --moe tail-refill=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-at0,qwen38,2,pf12k1k,512,"-bs --moe autotune=0",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-at0-uw0,qwen38,2,pf12k1k,512,"-bs --moe autotune=0",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_MOE_CACHE_UPLOAD_WAIT=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-uw0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_MOE_CACHE_UPLOAD_WAIT=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-ut2,qwen38,2,pf12k1k,512,"-bs --moe upload-threads=2",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-stg1,qwen38,2,pf12k1k,512,"-bs --moe staging=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-g2k,qwen38,2,pf12k1k,2048,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-ut2-g2k,qwen38,2,pf12k1k,2048,"-bs --moe upload-threads=2",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-p14k,qwen38,2,pf14k1k,1024,"-bs",--env CUDA_VISIBLE_DEVICES=0
+q1-ut2-p14k,qwen38,2,pf14k1k,1024,"-bs --moe upload-threads=2",--env CUDA_VISIBLE_DEVICES=0
+q1-stg1-g2k,qwen38,2,pf12k1k,2048,"-bs --moe staging=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-stg1-p14k,qwen38,2,pf14k1k,1024,"-bs --moe staging=1",--env CUDA_VISIBLE_DEVICES=0
+q1-rkh,qwen38,2,pf12k1k,512,"-bs --moe ring-keep-hot=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-rkh-g2k,qwen38,2,pf12k1k,2048,"-bs --moe ring-keep-hot=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-rkh-p14k,qwen38,2,pf14k1k,1024,"-bs --moe ring-keep-hot=1",--env CUDA_VISIBLE_DEVICES=0
+q1-rc-g2k,qwen38,2,pf12k1k,2048,"-bs --moe ring-cold=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-rc-p14k,qwen38,2,pf14k1k,1024,"-bs --moe ring-cold=1",--env CUDA_VISIBLE_DEVICES=0
+q1-rc2-g2k,qwen38,2,pf12k1k,2048,"-bs --moe ring-cold=2",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-rc2-p14k,qwen38,2,pf14k1k,1024,"-bs --moe ring-cold=2",--env CUDA_VISIBLE_DEVICES=0
+q1-strata-g2k,qwen38,2,pf12k1k,2048,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --env STRATA_ROUTE_TAIL_SKIP=0
+q1-strata-p14k,qwen38,2,pf14k1k,1024,,--env CUDA_VISIBLE_DEVICES=0 --env STRATA_ROUTE_TAIL_SKIP=0

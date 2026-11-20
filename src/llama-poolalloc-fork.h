@@ -74,8 +74,13 @@ static inline int32_t poolx_first_window(const std::vector<uint8_t> & ok, int32_
 // come). The best ranks first (free, empty, own computed, other class), then cached experts already computed, then a layer to come: at a pass's start every block
 // holds one, and the window must still form there (2026-11-14, Qwen3.8 12k: gated on "the tiered pick would take them too", 0 of 123 entries found a run, the
 // scattered picks kept the class scattered). -1: no run that long, the caller picks blocks one by one.
-static inline int32_t poolx_ring_window(const std::vector<int8_t> & rank, int32_t from, int32_t n) {
-    for (int lim : { 3, 5, 6 }) {
+// cold (--moe ring-cold=1): a run takes only blocks that displace no cached expert (free, empty, the stream's own computed writes); the rest go one by one, coldest first
+static inline int32_t poolx_ring_window(const std::vector<int8_t> & rank, int32_t from, int32_t n, bool cold = false) {
+    static const int lims[] = { 3, 5, 6 }, lims_cold[] = { 2 };
+    const int * L = cold ? lims_cold : lims;
+    const size_t nl = cold ? 1 : 3;
+    for (size_t li = 0; li < nl; ++li) {
+        const int lim = L[li];
         std::vector<uint8_t> ok(rank.size());
         for (size_t j = 0; j < rank.size(); ++j) { ok[j] = rank[j] >= 0 && rank[j] <= lim; }
         const int32_t j0 = poolx_first_window(ok, from, n);
@@ -175,9 +180,19 @@ static inline double poolx_victim_rank(bool on, bool all, size_t o, size_t jli, 
 // entry's copies stay in runs), a cached one coldest first within its layer.
 static inline double poolx_ring_victim(size_t o, size_t jli, size_t n, double s, bool streamed) { return poolx_rank_next_use(o, jli, n, streamed ? 0.0 : s, 2); }
 // the order taken: by tier rank, then the lower rank (poolx_ring_victim; a claim over a pending expert by its nearest pending layer, the furthest first); equal
-// ranks keep the cursor's order (stable sort)
-static inline bool poolx_ring_before(int tier_x, double rank_x, int tier_y, double rank_y) {
-    const int rx = poolx_ring_rank(tier_x), ry = poolx_ring_rank(tier_y);
+// ranks keep the cursor's order (stable sort). cold (--moe ring-cold=1, user 2026-11-20: "prefetch to gaps or coldest"): a cached expert of a computed layer
+// (tier 3) and a claim over computed or empty bytes of another class (tier 5) share one rank and go by the decode score of what they displace, the coldest
+// first (rank_x: victim_score of the expert, of a claim the hottest expert under its bytes), not by next use or by the cursor
+static inline int poolx_ring_rank_of(int tier, bool cold) { return cold && tier == 3 ? poolx_ring_rank(5) : poolx_ring_rank(tier); }
+// ring-cold: the decode value taking a block loses, the score s of the expert the cache held there before this pass; free and empty blocks and the stream's own
+// writes of this pass (tier 2, and tier 8 when streamed this pass) lose nothing
+static inline double poolx_ring_lost(int tier, bool up_now, double s) { return tier <= 2 || (tier == 8 && up_now) ? 0.0 : s; }
+// --moe ring-cold=2: an entry planned beyond the one needed now and the card's next (poolx_ring_cheap) takes only blocks that lose nothing; those two take the
+// coldest. Qwen3.8 IQ3_S one card, 4k prompt, 2026-11-20: the entries planned ahead took computed layers' cached experts as cheap blocks (7770 claims, 1442
+// cached experts a pass) and the prompt left 3732 experts (7.1 GB, 248 of the layers' top 10) to refill in decode
+static inline bool poolx_ring_cold_ok(int level, bool cheap, double lost) { return !(level >= 2 && cheap && lost > 0.0); }
+static inline bool poolx_ring_before(int tier_x, double rank_x, int tier_y, double rank_y, bool cold = false) {
+    const int rx = poolx_ring_rank_of(tier_x, cold), ry = poolx_ring_rank_of(tier_y, cold);
     if (rx != ry) { return rx < ry; }
     return rank_x < rank_y;
 }

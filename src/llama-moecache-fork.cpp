@@ -574,6 +574,7 @@ struct moe_cache {
     uint64_t                 cs_n_direct = 0, cs_n_map = 0;   // the pass so far: slices the RAM pool refused, read O_DIRECT into a pinned slot; slices copied from the mapping (should stay 0)
     uint64_t                 cs_n_up = 0, cs_n_free = 0, cs_n_done = 0, cs_n_cold = 0, cs_n_ahead = 0, cs_n_cp = 0, cs_n_hook = 0, cs_n_claim = 0, cs_n_claim_fut = 0, cs_n_busy = 0;   // the pass so far: experts uploaded, their blocks were free/empty, of computed layers (cold: streamed this pass), of layers ahead; copies
     uint64_t                 cs_n_hot = 0;   // the pass so far: decode-hot experts the stream evicted or claimed over anyway (ring keep-hot: only for the entry needed now)
+    uint64_t                 cs_n_lost = 0;  // the pass so far: blocks taken over an expert the cache held before the pass with decode value (poolx_ring_lost; claims: its bytes)
     std::vector<double>      cs_hot_cut;   // per layer: its decode-hot cut (poolx_hot_cut), set at each pass's first plan
     uint32_t                 cs_hot_pass = UINT32_MAX;
     uint64_t                 cs_n_win = 0, cs_n_ent = 0;   // the pass so far: entries placed in one run of blocks (cs_plan's window), entries that uploaded anything
@@ -12727,7 +12728,7 @@ static int64_t chain_grid_blocks(moe_cache * mc, const layer_state & l, int64_t 
     return n;
 }
 static bool ring_hot(const moe_cache * mc, size_t lx, int32_t e);
-static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, int32_t & done_q, int32_t & fut_q, bool force, bool * hot = nullptr) {   // cache lock held; force: pins yield; done_q: the newest computed entry whose expert lies there (its copy waits for its compute), fut_q: the nearest layer to come's; -1 none
+static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, int32_t & done_q, int32_t & fut_q, bool force, bool * hot = nullptr, double * heat = nullptr) {   // cache lock held; force: pins yield; done_q: the newest computed entry whose expert lies there (its copy waits for its compute), fut_q: the nearest layer to come's; -1 none
     int32_t dq = -1;
     fut_q = -1;
     const bool ok = cls_over(mc, pc, b, [&](int32_t qc, int32_t x) {
@@ -12741,7 +12742,16 @@ static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, int32
         if (e < 0) { return true; }
         const int32_t q = (size_t) lx < mc->cs_pos.size() ? mc->cs_pos[(size_t) lx] : -1;
         if (q < 0 || (!force && pinned(mc, lo, e))) { return false; }
-        if ((size_t) q < mc->cs_done[lo.link]) { dq = std::max(dq, q); if (hot && ring_hot(mc, (size_t) lx, e)) { *hot = true; } return true; }
+        if ((size_t) q < mc->cs_done[lo.link]) {
+            dq = std::max(dq, q);
+            if (hot && ring_hot(mc, (size_t) lx, e)) { *hot = true; }
+            if (heat && (size_t) lx < mc->layers.size()) {   // a shadow has no decode heat, the stream's own write of this pass displaces nothing the cache held
+                const std::vector<uint32_t> & up = mc->pool[qc].cs_up;
+                const bool up_now = (size_t) x < up.size() && up[(size_t) x] == mc->cs_pass;
+                *heat = std::max(*heat, poolx_ring_lost(up_now ? 2 : 3, up_now, victim_score(mc, lo, e, true)));
+            }
+            return true;
+        }
         if ((size_t) q > p) { fut_q = fut_q < 0 ? q : std::min(fut_q, q); return true; }
         return false;
     });
@@ -12966,6 +12976,11 @@ static const std::vector<uint8_t> * cs_used(moe_cache * mc, int il, int64_t ne) 
 // the heat file's, else its lifetime count, as vis_next) goes after every other cheap block and only to the entry needed now. Qwen3.8 IQ4_XS 12k 2026-11-15:
 // the stream took them like cold ones, so staging=0 refilled 24-26 GB after the prompt (staged 14-15) and decoded 45.8 t/s against staged's 49.95
 static bool ring_keep_hot() { static const bool on = [] { const char * e = moe_opt("ring-keep-hot"); return e && atoi(e) != 0; }(); return on; }
+// --moe ring-cold (user 2026-11-20: "rest layers prefetch to gaps or coldest", "measure both, keep under switch"). 1: the blocks the stream takes over cached
+// experts go by the decode value they lose (poolx_ring_lost), coldest first (poolx_ring_before cold), a claim over another class's bytes weighed by the hottest
+// expert the cache held under them before the pass. 2: as 1, and an entry planned beyond the next two takes only blocks that lose nothing (poolx_ring_cold_ok).
+// 0: by next use and the cursor's order, as before. Qwen3.8 IQ3_S one card 4k: the old order left 248 of the layers' top-10 decode experts to refill a prompt
+static int ring_cold() { static const int v = [] { const char * e = moe_opt("ring-cold"); return e ? std::max(0, std::min(2, atoi(e))) : 0; }(); return v; }
 static bool ring_hot(const moe_cache * mc, size_t lx, int32_t e) {
     if (!ring_keep_hot() || e < 0 || lx >= mc->layers.size() || lx >= mc->cs_hot_cut.size()) { return false; }
     const layer_state & lo = mc->layers[lx];
@@ -12998,7 +13013,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t &
     if (ps.cs_up.size() < ps.owner.size()) { ps.cs_up.resize(ps.owner.size(), 0); }
     // A ring (user 2026-11-12: "evict past not future"; the staged stream's whole-layer copies, only the destination differs): the blocks in order from the class's write
     // cursor, so a layer lands in one run over what was written longest ago. Never a block of a layer uploaded for in this pass whose kernels are not queued yet.
-    struct cand { int tier; int32_t b; int64_t o; int32_t at; int32_t wq; double rk; };   // o: the entry (layer or shadow) holding the block, -1 none; at: its place from the cursor; wq: the computed entry whose compute the copy waits for, -1 none; rk: the rank within its tier (poolx_ring_before)
+    struct cand { int tier; int32_t b; int64_t o; int32_t at; int32_t wq; double rk; double lost; };   // o: the entry (layer or shadow) holding the block, -1 none; at: its place from the cursor; wq: the computed entry whose compute the copy waits for, -1 none; rk: the rank within its tier (poolx_ring_before)
     std::vector<cand> c;
     // the layer ring (staging=0): the class's blocks in the reserve behind floor_end, from the card's cursor (bytes, class-blind: the layers of every class follow
     // one another there, first in first out); without a reserve the class's own cursor over all its blocks
@@ -13012,6 +13027,8 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t &
         ps.cs_cur = b0 >= r0 && b0 < nb ? b0 - r0 : 0;
     } else if (ps.cs_cur >= nr) { ps.cs_cur = 0; }
     // a second scan when the first finds too few: pinned experts give way (a pin keeps a decode favourite, it must not keep a layer out of its class's blocks)
+    const int  cold_lv = ring_cold();
+    const bool cold = cold_lv > 0;
     int n_sk[7] = {};   // the blocks the last scan left out: other class not claimable, lent, in flight, outside the pass, pinned, uploaded this pass and not computed, decode-hot (an entry ahead leaves them)
     for (int force = 0; force < 2 && c.size() < want.size(); ++force) {
     c.clear();
@@ -13023,9 +13040,12 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t &
         if (o == -4) {   // another class's bytes: claimed when the ring could take what lies there (tier 5: nothing of a layer to come, 6: an expert of one)
             int32_t dq = -1, fq = -1;
             bool hot = false;
-            const bool ok = cls_claimable(mc, ls.pcls, b, p, dq, fq, force, &hot);
+            double heat = 0.0;
+            const bool ok = cls_claimable(mc, ls.pcls, b, p, dq, fq, force, &hot, cold ? &heat : nullptr);   // ring-cold off: no score per claim, as before
+            const int  tc = fq >= 0 ? 6 : hot ? 10 : 5;
             if (ok && cheap && fq < 0 && hot) { n_sk[6]++; }
-            else if (ok && !(cheap && fq >= 0)) { c.push_back({ fq >= 0 ? 6 : hot ? 10 : 5, b, -1, i, dq, -(double) fq }); } else { n_sk[0]++; }
+            else if (ok && tc == 5 && !poolx_ring_cold_ok(cold_lv, cheap, heat)) { n_sk[6]++; }   // ring-cold=2: an entry ahead claims no cached expert's bytes
+            else if (ok && !(cheap && fq >= 0)) { c.push_back({ tc, b, -1, i, dq, cold && tc == 5 ? heat : -(double) fq, tc == 5 ? heat : 0.0 }); } else { n_sk[0]++; }
             continue;
         }
         const int64_t lx = cs_li_of(mc, o);   // a layer's or a shadow's
@@ -13044,7 +13064,9 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t &
         if (t < 0) { n_sk[5] += !(cheap && (size_t) q > p); continue; }
         if (t == 3 && ring_hot(mc, (size_t) lx, x)) { if (cheap) { n_sk[6]++; continue; } t = 9; }
         const double s = t != 2 && (size_t) lx < mc->layers.size() ? victim_score(mc, lo, x, true) : 0.0;   // a shadow lives one pass and has no decode heat
-        c.push_back({ t, b, lx, i, (size_t) q < done ? q : -1, poolx_ring_victim((size_t) q, p, mc->cs_order.size(), s, t == 2) });
+        const double lost = poolx_ring_lost(t, ps.cs_up[b] == mc->cs_pass, s);
+        if (!poolx_ring_cold_ok(cold_lv, cheap, lost)) { n_sk[6]++; continue; }   // ring-cold=2: an entry ahead leaves the decode cache's experts
+        c.push_back({ t, b, lx, i, (size_t) q < done ? q : -1, cold && (t == 3 || t == 8) ? lost : poolx_ring_victim((size_t) q, p, mc->cs_order.size(), s, t == 2), lost });
     }
     }
     // The stream takes the cache's own blocks (user 2026-11-13: nothing set aside for it), so it keeps what the cache holds: free blocks first, then empty ones of a
@@ -13066,7 +13088,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t &
             if (poolx_ring_costly(c[x].tier)) { continue; }
             ci[(size_t) (c[x].b - r0)] = (int32_t) x; rk[(size_t) (c[x].b - r0)] = (int8_t) poolx_ring_rank(c[x].tier);
         }
-        const int32_t j0 = poolx_ring_window(rk, ps.cs_cur, (int32_t) want.size());
+        const int32_t j0 = poolx_ring_window(rk, ps.cs_cur, (int32_t) want.size(), cold);
         if (j0 >= 0) {
             std::vector<cand> run;
             for (int32_t j = j0; j < j0 + (int32_t) want.size(); ++j) { run.push_back(c[(size_t) ci[(size_t) j]]); }
@@ -13086,7 +13108,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t &
         }
     }
     if (!win) {
-        std::stable_sort(c.begin(), c.end(), [](const cand & x, const cand & y) { return poolx_ring_before(x.tier, x.rk, y.tier, y.rk); });
+        std::stable_sort(c.begin(), c.end(), [cold](const cand & x, const cand & y) { return poolx_ring_before(x.tier, x.rk, y.tier, y.rk, cold); });
         if (c.size() > want.size()) { c.resize(want.size()); }
     }
     mc->cs_n_win += win;
@@ -13137,6 +13159,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t &
         else if (kind == POOLX_TAKE_CLAIM) { cls_claim(mc, ls.pcls, b); mc->cs_n_claim++; mc->cs_n_claim_fut += c[i].tier == 6; }
         else if (kind == POOLX_TAKE_EVICT) { cs_evict(mc, (size_t) c[i].o, b); }
         if (c[i].wq >= 0) { GGML_ASSERT((size_t) c[i].wq < mc->cs_cov.size() && mc->cs_cov[(size_t) c[i].wq] >= c[i].wq); wait_at = std::max(wait_at, (size_t) mc->cs_cov[(size_t) c[i].wq] + 1); }
+        mc->cs_n_lost += c[i].lost > 0.0;
         mc->cs_n_free += c[i].tier <= 1; mc->cs_n_cold += c[i].tier == 2; mc->cs_n_done += c[i].tier == 3 || c[i].tier == 9; mc->cs_n_hot += c[i].tier == 9 || c[i].tier == 10; mc->cs_n_ahead += c[i].tier == 4; mc->cs_n_busy += c[i].tier == 8;
         pool_take(mc, li, b);
         led_upload(mc, "cs-up", li, e, b, false);
@@ -13363,10 +13386,10 @@ static void cs_begin(moe_cache * mc) {
     static int n_log = 0;
     if (mc->cs_pass > 0 && (n_log < 6 || mc->cs_pass % 64 == 0)) {
         n_log++;
-        LLAMA_LOG_WARN("moe-cache: cstream: pass %u: %llu experts into blocks in %llu copies (%llu of %llu entries in one run of blocks, copies on %s): %llu free or empty, %llu streamed this pass, %llu cached before it, %llu of the layer still computing, %llu of layers ahead, %llu claimed from other size classes (%llu over an expert of a layer ahead); %llu decode-hot taken anyway (ring keep-hot %s); slices the RAM pool refused: %llu read O_DIRECT into pinned slots, %llu from the mapping\n",
+        LLAMA_LOG_WARN("moe-cache: cstream: pass %u: %llu experts into blocks in %llu copies (%llu of %llu entries in one run of blocks, copies on %s): %llu free or empty, %llu streamed this pass, %llu cached before it, %llu of the layer still computing, %llu of layers ahead, %llu claimed from other size classes (%llu over an expert of a layer ahead); %llu decode-hot taken anyway (ring keep-hot %s); %llu over an expert the cache held before the pass with decode value (ring-cold %d); slices the RAM pool refused: %llu read O_DIRECT into pinned slots, %llu from the mapping\n",
                 mc->cs_pass, (unsigned long long) mc->cs_n_up, (unsigned long long) mc->cs_n_cp, (unsigned long long) mc->cs_n_win, (unsigned long long) mc->cs_n_ent,
                 cs_async(mc) ? "the cards' upload workers" : "the scheduler thread", (unsigned long long) mc->cs_n_free, (unsigned long long) mc->cs_n_cold,
-                (unsigned long long) mc->cs_n_done, (unsigned long long) mc->cs_n_busy, (unsigned long long) mc->cs_n_ahead, (unsigned long long) mc->cs_n_claim, (unsigned long long) mc->cs_n_claim_fut, (unsigned long long) mc->cs_n_hot, ring_keep_hot() ? "on" : "off",
+                (unsigned long long) mc->cs_n_done, (unsigned long long) mc->cs_n_busy, (unsigned long long) mc->cs_n_ahead, (unsigned long long) mc->cs_n_claim, (unsigned long long) mc->cs_n_claim_fut, (unsigned long long) mc->cs_n_hot, ring_keep_hot() ? "on" : "off", (unsigned long long) mc->cs_n_lost, ring_cold(),
                 (unsigned long long) mc->cs_n_direct, (unsigned long long) mc->cs_n_map);
     }
     if (mc->cs_pass > 0 && n_log <= 6) {
@@ -13388,7 +13411,7 @@ static void cs_begin(moe_cache * mc) {
                 mc->cs_pass, k_last, (unsigned long long) mc->cs_n_pred, (unsigned long long) mc->cs_n_late, (unsigned long long) mc->cs_n_used,
                 mc->cs_n_used ? 100.0 * (double) mc->cs_n_listed / (double) mc->cs_n_used : 0.0, (unsigned long long) mc->cs_n_noids, (unsigned long long) mc->cs_n_steal);
     }
-    mc->cs_n_up = mc->cs_n_cp = mc->cs_n_free = mc->cs_n_cold = mc->cs_n_done = mc->cs_n_ahead = mc->cs_n_hook = mc->cs_n_claim = mc->cs_n_claim_fut = mc->cs_n_busy = mc->cs_n_hot = 0;
+    mc->cs_n_up = mc->cs_n_cp = mc->cs_n_free = mc->cs_n_cold = mc->cs_n_done = mc->cs_n_ahead = mc->cs_n_hook = mc->cs_n_claim = mc->cs_n_claim_fut = mc->cs_n_busy = mc->cs_n_hot = mc->cs_n_lost = 0;
     mc->cs_n_pred = mc->cs_n_late = mc->cs_n_used = mc->cs_n_listed = mc->cs_n_noids = mc->cs_n_steal = 0;
     g_cs_k_pass = g_cs_pred_built ? cs_k_call() : 0.0;
     k_last = g_cs_k_pass;

@@ -1220,6 +1220,40 @@ static void test_regress_room_own_calls() {
         }
     }
 }
+static void test_regress_ring_cold_order() {
+    printf("Testing [Qwen3.8 IQ3_S one card 4k, 2026-11-20: the stream took 248 of the layers' top-10 decode experts] the cold order takes the coldest displaced expert first:\n");
+    // candidates as cs_plan builds them: tier 3 = a cached expert of a computed layer (rank: its decode score with --moe ring-cold, else next use), tier 5 = a claim
+    // over another class's bytes (rank: the hottest expert under them with ring-cold, else 1, so the cursor's order decides); 0 free, 2 the stream's own, 8 the layer computing
+    struct cand { int tier; double rk; const char * what; };
+    const std::vector<cand> c = { { 5, 900.0, "claim over a hot expert" }, { 3, 10.0, "cold cached expert" }, { 8, 0.0, "the layer still computing" },
+                                  { 5, 5.0, "claim over a cold expert" }, { 3, 800.0, "hot cached expert" }, { 2, 0.0, "own computed write" }, { 0, 0.0, "free" } };
+    auto order = [&](bool cold) {
+        std::vector<cand> v = c;
+        std::stable_sort(v.begin(), v.end(), [cold](const cand & x, const cand & y) { return poolx_ring_before(x.tier, x.rk, y.tier, y.rk, cold); });
+        std::string o;
+        for (const auto & x : v) { o += std::string(x.what) + "; "; }
+        return v;
+    };
+    const auto old_o = order(false), new_o = order(true);
+    // the old order: every claim before every cached expert, so the claim over the hot expert goes before the cold cached one (the regression)
+    size_t i_hot_claim = 0, i_cold_cached = 0;
+    for (size_t i = 0; i < old_o.size(); ++i) { if (old_o[i].tier == 5 && old_o[i].rk == 900.0) { i_hot_claim = i; } if (old_o[i].tier == 3 && old_o[i].rk == 10.0) { i_cold_cached = i; } }
+    report("old order: a claim over a hot expert goes before a cold cached expert (the regression)", i_hot_claim < i_cold_cached, "");
+    report("cold order: free, the stream's own write, then by decode score: cold claim, cold cached, hot cached, hot claim, then the layer computing",
+           new_o[0].tier == 0 && new_o[1].tier == 2 && new_o[2].rk == 5.0 && new_o[3].rk == 10.0 && new_o[4].rk == 800.0 && new_o[5].rk == 900.0 && new_o[6].tier == 8, "");
+    // a run (one copy per tensor) over blocks of rank 0-2 only in the cold order: a run over cached experts would take them by position again
+    const std::vector<int8_t> rk = { 4, 4, 4, 4, 3, 3, 3, 3, 0, 2, -1, 1, 2, 2 };
+    report("old run: four claims over other classes' experts in a row from the cursor (rank 3, whatever their heat)", poolx_ring_window(rk, 0, 4, false) == 4, "");
+    report("cold run: no run over cached experts, one over free, empty and own blocks", poolx_ring_window(rk, 0, 4, true) == -1 && poolx_ring_window(rk, 0, 3, true) == 11, "");
+    // what a block loses: only an expert the cache held before the pass; free, empty and the stream's own writes (tier 2, tier 8 streamed this pass) nothing
+    report("lost value: free, empty, own computed write, own write of the layer computing: 0; cached before the pass: its score",
+           poolx_ring_lost(0, false, 7.0) == 0.0 && poolx_ring_lost(1, false, 7.0) == 0.0 && poolx_ring_lost(2, true, 7.0) == 0.0 && poolx_ring_lost(8, true, 7.0) == 0.0 &&
+           poolx_ring_lost(8, false, 7.0) == 7.0 && poolx_ring_lost(3, false, 7.0) == 7.0 && poolx_ring_lost(4, false, 7.0) == 7.0, "");
+    // the look-ahead: an entry beyond the one needed now and the card's next (cheap) took computed layers' cached experts; level 2 leaves them to the two
+    report("levels 0 and 1: an entry planned ahead takes a cached expert with decode value (the regression)", poolx_ring_cold_ok(0, true, 800.0) && poolx_ring_cold_ok(1, true, 800.0), "");
+    report("level 2: an entry planned ahead takes only blocks that lose nothing; the entries needed now and next take the coldest",
+           !poolx_ring_cold_ok(2, true, 800.0) && !poolx_ring_cold_ok(2, true, 1e-9) && poolx_ring_cold_ok(2, true, 0.0) && poolx_ring_cold_ok(2, false, 800.0), "");
+}
 static void test_regress_room_give_back_chunks() {
     printf("Testing [bug: a block given back with a chunk the driver could not back, Qwen3.8 IQ4_XS room_graphs_clear 2026-11-16] the room's give-back in whole chunks:\n");
     // blocks of 2.24 MiB, chunks of 2 MiB; the room's first unmapped byte 1000 bytes above its first block: giving that block back needs two chunks. The log:
@@ -1284,6 +1318,7 @@ int main(int argc, char ** argv) {
     test_regress_room_shadow_tags();
     test_regress_room_graph_warmup();
     test_regress_room_own_calls();
+    test_regress_ring_cold_order();
     test_regress_room_give_back_chunks();
     test_regress_pool_buffer_limits();
     if (n_failed > 0) {
