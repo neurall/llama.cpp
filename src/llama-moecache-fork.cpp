@@ -18810,7 +18810,7 @@ static bool bell_pool_serve(bell_chain & c, const int32_t * miss, int n) {
 
 // --moe tail-skip=R (0 = off, the default; changes the output): a missed pick at router rank R or lower (ranks count from 0, the picks come
 // sorted by weight, so these are the smallest weights of the top-k) is not computed; its row is zero, the other picks keep their weights.
-// The host then computes only a layer's heavy misses and the card rarely waits for it. Idea from Strata's route tail skip; our own code.
+// The host then computes only a layer's heavy misses and the card rarely waits for it.
 static uint64_t g_bell_n_skip = 0;
 static int bell_tail_skip(ggml_bell * b, int32_t * miss) {
     static const int R = [] { const char * e = moe_opt("tail-skip"); const int r = e ? atoi(e) : 0; return r > 0 ? r : 0; }();

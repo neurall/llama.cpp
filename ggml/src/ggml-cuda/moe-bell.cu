@@ -64,7 +64,7 @@ bool ggml_cuda_moe_bell_supported(const ggml_tensor * op) {
 
 // one block; as ggml_bell_publish: the picks and their blocks into the bell, the layer input when a pick has no block, then seq counts up.
 // One system fence per thread (its own writes: picks, blocks, input, count) and then seq: the old form fenced three times in a row and read seq back
-// over the link (10 us a layer, 2026-11-19 trace; Strata's publish 5.6 us). seq is counted on the card's copy (dseq), the host's is only written.
+// over the link (10 us a layer, 2026-11-19 trace). seq is counted on the card's copy (dseq), the host's is only written.
 static __global__ void k_moe_bell(const int32_t * __restrict__ ids, const int32_t * __restrict__ table, const float * __restrict__ x,
                                   int32_t * __restrict__ slots, ggml_bell * b, uint32_t * __restrict__ dseq, const int n_used, const int n_embd) {
     const int i = threadIdx.x;

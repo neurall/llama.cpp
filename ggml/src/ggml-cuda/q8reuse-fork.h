@@ -1,7 +1,7 @@
 // fork: reuse of a quantized activation (q8_1) between the matvecs of one graph that read the same f32 input.
 //
 // Every MUL_MAT / MUL_MAT_ID on the matvec path (mmvq.cu) quantizes its f32 input before its kernel. A decode layer of Qwen3.8 reads the same input
-// (hc_mixed) in five quantized matvecs, so the same bytes are written five times (trace 2026-11-19: 381 quantize kernels a token, Strata 145).
+// (hc_mixed) in five quantized matvecs, so the same bytes are written five times (trace 2026-11-19: 381 quantize kernels a token).
 // The quantized copy of an input stays valid until a node writes memory that overlaps the input: then its slot is dropped.
 //
 // Pure, no CUDA: tests/test-q8reuse-fork.cpp. Slots are per stream lane (a two-stream graph, ggml-streams-fork.h): a slot written on one stream

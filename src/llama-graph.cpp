@@ -4697,8 +4697,8 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         ggml_flash_attn_ext_set_n_kv_max(cur, static_cast<int32_t>(n_kv_max));
         // fork: from which K/V length the gather runs, as measured at load (llama-dsplit-fork.cpp dsplit_sparse_bench; 0: the backend's own rule). The bench times
         // prompt tiles (512 queries, each its own selection); a one-token pass keeps the backend's rule (twice its selection): its one query gathers just the
-        // selection, the masked pass reads every cell. Qwen3.8 one card, 2026-11-20, gate 19995 cells: decode 80.2 t/s at 4k cells, 75.9 at 14k (Strata
-        // 81.7 / 81.2). --moe sparse-gate-decode=1: the measured gate for one-token passes too, as before
+        // selection, the masked pass reads every cell. Qwen3.8 one card, 2026-11-20, gate 19995 cells: decode 80.2 t/s at 4k cells, 75.9 at 14k.
+        // --moe sparse-gate-decode=1: the measured gate for one-token passes too, as before
         static const bool gate_decode = [] { const char * e = llama_moe_get_opt("sparse-gate-decode"); return e && atoi(e) != 0; }();
         if (const int32_t smin = llama_dsplit_sparse_min_fork(); smin > 0 && n_kv_max > 0 && (q->ne[1] > 1 || gate_decode)) { ggml_flash_attn_ext_set_sparse_min(cur, smin); }
         ggml_prec_set_acc(cur, GGML_PREC_F32);

@@ -33,7 +33,7 @@
 #include "../ggml/src/ggml-common.h"   // iq1s_grid is static const (one copy per TU), so every function here is static too: no ODR clash
 
 #ifndef LLAMA_IQ1_PREFETCH
-#define LLAMA_IQ1_PREFETCH 2048   // bytes ahead in the weight row, 0 = off; not measured here (as IQ2_S: Strata's 2048 on Zen 3)
+#define LLAMA_IQ1_PREFETCH 2048   // bytes ahead in the weight row, 0 = off; not measured here
 #endif
 
 namespace llama_iq1_fork {

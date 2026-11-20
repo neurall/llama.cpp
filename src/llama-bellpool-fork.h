@@ -1,4 +1,4 @@
-// fork: the decode bell's CPU experts on a pool of its own (inspired by Strata's per-core expert pool, our own code).
+// fork: the decode bell's CPU experts on a pool of its own.
 //
 // The bell (src/llama-moecache-fork.cpp, bell_serve) computes a layer's missing experts on the host while the card computes the cached ones. Through
 // ggml_backend_graph_compute that host chain (up, gate, swiglu, down) took ~100 us for 1.7 experts on Qwen3.8 IQ3_S (2026-11-19), the card waited in

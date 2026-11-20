@@ -2,7 +2,7 @@
 //
 // A decode token on one stream runs its kernels one after another although many do not depend on each other: the shared expert beside the routed ones, the
 // delta-net gates beside its input projection, a sublayer's inject weights beside the sublayer. Measured 2026-11-18 (nsys, Qwen3.8 IQ3_S, 2 x RTX 3090): our
-// kernels' times add up to 13.8 ms a token and fill 13.6 ms; Strata's add up to 13.0 ms and fill 10.9 ms, its graph's branches overlap on a card.
+// kernels' times add up to 13.8 ms a token and fill 13.6 ms: next to nothing overlaps.
 //
 // The plan is made from what was launched, not from the graph's ops: a unit is one launch of the backend (a node, or the nodes a fusion ran as one), with the
 // memory it reads and writes. Two units that touch the same memory, at least one of them writing, keep their graph order whatever they are (a data dependency,

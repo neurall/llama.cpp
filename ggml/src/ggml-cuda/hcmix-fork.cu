@@ -4,7 +4,7 @@
 // Unfused (trace 2026-11-19, RTX 3090): quantize, mmvq down, scale, silu, quantize, mmvq up, hc_pre = 7 launches, ~19.7 us a mix, 97 mixes a token.
 // The weights are 2 x 3.3 MB, ~7 us at the card's bandwidth: the rest is launch gaps and two small kernels each too short to fill the card.
 //
-// Here (inspired by Strata's split down / up kernels, own code):
+// Here:
 //   hc_down: grid (row groups, K splits); each block holds its K slice of xn in shared memory and writes partial sums part[ks][r]
 //   hc_up:   every block sums the partials of all rows (L2, a few KB), applies scale + silu, then its rows of W_up, the sigmoid gate and the stream mean
 // The input stays f32 (no q8_1 quantize): the dot reads Q8_0 weights against f32 activations.

@@ -5613,7 +5613,7 @@ static bool ggml_cuda_stream_movable_fork(const ggml_tensor * t) {
     if (t->view_src != nullptr) {
         return false;
     }
-    if (routed) {   // GGML_CUDA_STREAMS_ROUTED=1: the routed experts beside the shared expert and the dense work, as Strata runs them (trace 2026-11-19: its biggest overlap)
+    if (routed) {   // GGML_CUDA_STREAMS_ROUTED=1: the routed experts beside the shared expert and the dense work
         switch (t->op) {
             case GGML_OP_MUL_MAT_ID: case GGML_OP_MOE_BELL: case GGML_OP_SOFT_MAX: case GGML_OP_ARGSORT: case GGML_OP_TOP_K:
                 return true;
@@ -5665,7 +5665,7 @@ static ggml_stream_unit ggml_cuda_stream_unit_fork(const ggml_cgraph * cgraph, i
         u.fills = u.fills || mem_us > 1.5f;   // bound by the bus, not by its launch: it takes every SM for several waves and its end depends on what runs beside it
         if (t->op == GGML_OP_MOE_ROWS) {
             // the launch waits for the host's rows (bell). Costed at 1.5 us the plan kept the shared expert's tail (swiglu, down, gate, mul) behind
-            // that wait (trace 2026-11-19: 30 us mean, p90 81 us); Strata runs its shared expert inside it.
+            // that wait (trace 2026-11-19: 30 us mean, p90 81 us).
             // shortcut: one fixed estimate (GGML_CUDA_STREAMS_ROWS_US, default 30 us), upgrade to the bell's measured wait per layer
             static const float rows_us = [] { const char * e = getenv("GGML_CUDA_STREAMS_ROWS_US"); return e ? (float) atof(e) : 30.0f; }();
             u.cost += rows_us;
