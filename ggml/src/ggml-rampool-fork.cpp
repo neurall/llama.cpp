@@ -122,6 +122,7 @@ struct rp_pool {
     int64_t  rd_win_t0 = 0;
     bool     rd_win_ok = true;
     int      rd_cap = 64;
+    int      rd_running = 0;   // readers in their loop; past the settled count the extra ones leave (the count the log names is the count that reads)
     std::string rd_steps;
     bool                    stop = false;
     std::atomic<uint32_t>   graph{ 2 };
@@ -385,6 +386,7 @@ void rp_reader(rp_pool * p) {
         rp_job j;
         {
             std::unique_lock<std::mutex> lk(p->mu);
+            if (p->rd_tune.settled && p->rd_running > p->rd_tune.n) { p->rd_running--; break; }
             p->work_cv.wait(lk, [p]() { return p->stop || !p->demand.empty() || !p->pf.empty(); });
             if (p->stop) { break; }
             auto & q = p->demand.empty() ? p->pf : p->demand;
@@ -420,7 +422,7 @@ void rp_reader(rp_pool * p) {
                             const int before = p->rd_tune.n;
                             p->rd_tune = rp_tune_step(p->rd_tune, gbs, p->rd_cap);
                             p->rd_steps += " " + std::to_string(before) + ":" + std::to_string(gbs).substr(0, 4);
-                            for (int i = (int) p->readers.size(); i < p->rd_tune.n && !p->stop; ++i) { p->readers.emplace_back(rp_reader, p); }   // they wait for this lock
+                            for (; p->rd_running < p->rd_tune.n && !p->stop; p->rd_running++) { p->readers.emplace_back(rp_reader, p); }   // they wait for this lock
                             if (p->rd_tune.settled) { GGML_LOG_WARN("rampool: readers by window (readers:GB/s, the queue never empty):%s -> %d\n", p->rd_steps.c_str(), p->rd_tune.n); }
                         }
                         p->rd_win_b = 0; p->rd_win_t0 = now; p->rd_win_ok = true;
@@ -665,8 +667,9 @@ void ggml_rampool_fill_fork(void) {
             pieces, sr_blk() >> 10, sr_qd(), drives > 1 ? " on each of two drives" : "");
     {
         std::lock_guard<std::mutex> lk(p->mu);
-        p->rd_tune.n = n_rd; p->rd_cap = std::min(128, 64 * drives); p->rd_win_t0 = rp_now_us();
-        for (int i = 0; i < n_rd; ++i) { p->readers.emplace_back(rp_reader, p); }
+        // the first window starts now and may hold idle time before the first prompt: it is never counted
+        p->rd_tune.n = n_rd; p->rd_cap = std::min(128, 64 * drives); p->rd_win_t0 = rp_now_us(); p->rd_win_ok = false;
+        for (; p->rd_running < n_rd; p->rd_running++) { p->readers.emplace_back(rp_reader, p); }
     }
 }
 
