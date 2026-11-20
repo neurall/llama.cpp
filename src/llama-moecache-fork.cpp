@@ -13034,9 +13034,14 @@ static void cs_tail_moves(moe_cache * mc, int32_t pc, const std::vector<int32_t>
         if (!qap || qB == 0) { continue; }
         std::vector<double>  ds;
         std::vector<int32_t> db;
+        // never a block the entry takes, nor a mover's own block: a straddling block of another class under a claim can be both, and a copy into it queued before
+        // its own copy out would land the wrong expert under its table entry
+        std::vector<uint8_t> skip(ps.owner.size(), 0);
+        if (q == pc) { for (int32_t b : taken) { if ((size_t) b < skip.size()) { skip[(size_t) b] = 1; } } }
+        for (size_t i = i0; i < i1; ++i) { skip[(size_t) mv[i].b] = 1; }
         const int32_t nb = std::min<int32_t>((int32_t) ps.owner.size(), std::min(ps.ring_hi, ps.cs_tail_lo));
         for (int32_t d = 0; d < nb; ++d) {
-            if (q == pc && std::find(taken.begin(), taken.end(), d) != taken.end()) { continue; }
+            if (skip[(size_t) d]) { continue; }
             const int32_t o = ps.owner[d];
             if (o == -1) { ds.push_back(-1.0); db.push_back(d); continue; }
             if (o < 0 || (size_t) o >= mc->layers.size()) { continue; }
