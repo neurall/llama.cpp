@@ -10249,9 +10249,13 @@ void llama_moe_cache_vram_watch_fork(bool prompt) {
             // pins the loader has not made yet keep their page tables' share (the warmup can run before the last reads end)
             typedef size_t (*pending_t)(void);
             auto pend = (pending_t) llama_fork_proc_dev(d.dev, "ggml_backend_fork_pins_pending_fork");
-            // and 32 MiB for kernels CUDA loads on their first use: a load that finds the card full breaks its kernel for the rest of the process, so the backend
-            // asks for 16 MiB free before any graph that may load one (ggml_cuda_kernel_load_guard_fork); given back to the last chunk, a load found 3 MiB (2026-11-17)
-            const size_t keep = rap->room_keep + poolx_pins_vram(pend ? pend() : 0, 0) + ((size_t) 32 << 20);
+            // and 64 MiB for kernels CUDA loads on their first use: a load that finds the card full breaks its kernel for the rest of the process, so the backend
+            // asks for 16 MiB free before any graph that may load one (ggml_cuda_kernel_load_guard_fork); given back to the last chunk, a load found 3 MiB (2026-11-17).
+            // The guard looks before each split: a graph never run before loads its kernels split by split, and DeepSeek V4.1's first DSpark verify step (b16041
+            // gainers 2026-11-20) took 20 MiB in its first 10 splits of CUDA0 from 33 kept free, the 11th found 13; a call that ran splits cannot be taken back
+            // on that cache, the request failed. shortcut: the guard's 16 plus 48 for one new graph's loads, measured on one model; upgrade to the largest
+            // first-run growth stored per model (the VRAM watch's outside growth on calls with a shape not seen yet)
+            const size_t keep = rap->room_keep + poolx_pins_vram(pend ? pend() : 0, 0) + ((size_t) 64 << 20);
             const size_t lo = poolx_room_give_back_chunks(rap->room_lo, rap->room_vsz - rap->room_unmapped, rap->tail_real, f, keep, rap->room_step, rap->room_gran);
             if (lo > rap->room_lo) {   // whole chunks of the free bytes: a block goes back only when every chunk it touches can be backed
                 rap->room_lo_want = lo;
