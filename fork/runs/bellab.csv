@@ -15,3 +15,5 @@ k31-tm,k31,1,pfbest1k,1024,,"--env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1"
 qni4-tm,qn_iq4xs,1,pf12k1k,1024,,"--env PERF_LEDGER=0 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1"
 glm30-sg,glm,2,pf12k4k,4096,"--moe sparse-gate-decode=1",--env PERF_LEDGER=0
 k31-i-mir,k31,2,pfbest1k,1024,,--env LLAMA_MOE_MIRROR=/m2/k
+k31-i-mir-np,k31,2,pfbest1k,1024,"--moe bell-pred=0",--env LLAMA_MOE_MIRROR=/m2/k
+k31-i-pred,k31,2,pfbest1k,1024,,
