@@ -223,6 +223,7 @@ static __global__ void top_k_one_block(const float * __restrict__ src, int * __r
     constexpr int NW    = NT / WARP_SIZE;
     __shared__ int      hist[NW][NBINS];
     __shared__ int      tot[NBINS];
+    __shared__ int      scan[NBINS];
     __shared__ uint32_t s_prefix, s_mask;
     __shared__ int      s_rank, s_gt, s_eq;
 
@@ -243,13 +244,26 @@ static __global__ void top_k_one_block(const float * __restrict__ src, int * __r
             for (int j = 0; j < NW; ++j) { n += hist[j][b]; }
             tot[b] = n;
         }
+        __syncthreads();   // every bin's total before a thread reads another thread's bin below
+        // the bin of the rank-th largest key, as top_k_radix_select's walk from the top bin, but as a scan: thread t holds bin NBINS-1-t and the keys in
+        // the bins above it (one thread walking 256 bins took ~16 of a row's 20 us). Exactly one thread finds its bin; the walk stops at bin 0 as before
+        const int rank0 = s_rank;
+        if (tid < NBINS) { scan[tid] = tot[NBINS - 1 - tid]; }
         __syncthreads();
-        if (tid == 0) {   // as top_k_radix_select
-            int rank = s_rank, bin = NBINS - 1;
-            while (bin > 0 && tot[bin] < rank) { rank -= tot[bin--]; }
-            s_rank   = rank;
-            s_prefix = prefix | ((uint32_t) bin << shift);
-            s_mask   = mask | ((uint32_t) (NBINS - 1) << shift);
+        for (int o = 1; o < NBINS; o <<= 1) {
+            const int v = tid < NBINS && tid >= o ? scan[tid - o] : 0;
+            __syncthreads();
+            if (tid < NBINS) { scan[tid] += v; }
+            __syncthreads();
+        }
+        if (tid < NBINS) {
+            const int incl = scan[tid];
+            const int excl = incl - tot[NBINS - 1 - tid];
+            if (excl < rank0 && (incl >= rank0 || tid == NBINS - 1)) {
+                s_rank   = rank0 - excl;
+                s_prefix = prefix | ((uint32_t) (NBINS - 1 - tid) << shift);
+                s_mask   = mask | ((uint32_t) (NBINS - 1) << shift);
+            }
         }
         __syncthreads();
     }
