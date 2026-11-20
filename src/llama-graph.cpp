@@ -3322,6 +3322,30 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
         // slot ids from the device table, after the CPU split above so they see the JIT's table updates;
         // get_rows batches over ids->ne[1] only when the table has matching ne[2]: flatten
+        // fork: decode read-ahead (Kimi K3.1, 2026-11-20): the next layer's router on this layer's router input, its top picks published on a bell of their
+        // own ahead of this layer's; the host reads the ones the card has no block for into the RAM pool while this layer is served (llama_moe_cache_bell_pred_fork)
+        if (mc_bell && il + 1 < (int) model.layers.size()) {
+            void * llama_moe_cache_bell_pred_fork(const llama_moe_cache_layer_fork * next, int64_t k);   // llama-moecache-fork.cpp (no header edit)
+            const llama_layer & nl = model.layers[il + 1];
+            ggml_tensor * rin = probs_in && probs_in->op == GGML_OP_MUL_MAT ? probs_in->src[1] : mc_inp;
+            const llama_moe_cache_layer_fork * nc = nl.ffn_up_exps && nl.ffn_gate_inp ? llama_moe_cache_lookup_fork(nl.ffn_up_exps) : nullptr;
+            const auto dev_of = [](const ggml_tensor * t) { return t && t->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer)) : nullptr; };
+            const ggml_backend_dev_t bdev = ggml_backend_get_device(mc_bell_b);
+            void * pb = nc && dev_of(nc->dev_table) == bdev && dev_of(nl.ffn_gate_inp) == bdev && nl.ffn_gate_inp->ne[0] == rin->ne[0] && ggml_is_contiguous(rin)
+                      ? llama_moe_cache_bell_pred_fork(nc, n_expert_used) : nullptr;
+            if (pb) {
+                ggml_tensor * pl = ggml_mul_mat(ctx0, nl.ffn_gate_inp, ggml_reshape_2d(ctx0, rin, rin->ne[0], 1));   // [n_expert, 1]
+                if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID) { pl = ggml_sigmoid(ctx0, pl); }
+                if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SQRT_SOFTPLUS) { pl = ggml_sqrt(ctx0, ggml_softplus(ctx0, pl)); }
+                if (nl.ffn_exp_probs_b) { pl = ggml_add(ctx0, pl, nl.ffn_exp_probs_b); }   // the bias ranks, as in the real selection
+                ggml_tensor * pid = ggml_cont(ctx0, ggml_argsort_top_k(ctx0, pl, n_expert_used));   // [n_expert_used, 1]
+                // no input rides along: 4 floats of the router input stand in (the kernel copies x only for a missing pick, the host never reads it)
+                ggml_tensor * pr = ggml_moe_bell(ctx0, pid, nc->dev_table, ggml_view_1d(ctx0, rin, 4, 0), pb);
+                ggml_backend_sched_set_tensor_backend(sched, pr, mc_bell_b);
+                cb(pr, "ffn_moe_bell_pred", il);
+                ggml_build_forward_expand(gf, pr);
+            }
+        }
         if (mc_bell) {
             mc_bell_ids = ggml_reshape_2d(ctx0, ggml_cont(ctx0, sel_dev), n_expert_used, 1);
             mc_slot_ids = ggml_moe_bell(ctx0, mc_bell_ids, mcache->dev_table, mc_inp, mc_bell);   // [n_expert_used, 1]: each pick's block, published to the host
