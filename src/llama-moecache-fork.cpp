@@ -2442,6 +2442,50 @@ void evict_slot(moe_cache * mc, layer_state & lo, int32_t b) {
     if (lo.dropped[v]) { page_hint(mc, lo, v, false); lo.dropped[v] = false; }
 }
 
+// the release's own hot map of a model: hotmaps/<state section>.ini beside the program (run.py packs one per model it measured, the test prompts'
+// settled maps merged), lines "hot.<layer> = c0 c1 ..." like the state file's. A first start without a learned profile used to fill the cache from no counts
+// and learn the hot experts during its first answers (Qwen3.8 IQ3_S one card, 2026-11-20: 75.6-79.0 t/s against 81.1-81.4 from a map; Strata ships an expert
+// profile per model and starts at 81.6). "" when the program's folder is unknown.
+static std::string shipped_hot_path(const std::string & section) {
+    std::string dir;
+#ifdef _WIN32
+    char buf[MAX_PATH];
+    const DWORD n = GetModuleFileNameA(NULL, buf, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) { dir.assign(buf, n); dir = dir.substr(0, dir.find_last_of("\\/") + 1); }
+#else
+    char buf[4096];
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) { dir.assign(buf, (size_t) n); dir = dir.substr(0, dir.find_last_of('/') + 1); }
+#endif
+    if (dir.empty() || section.empty()) { return ""; }
+    std::string name = section;
+    for (char & c : name) { if (!isalnum((unsigned char) c) && c != '-' && c != '.' && c != '_') { c = '_'; } }
+    return dir + "hotmaps/" + name + ".ini";
+}
+
+// the counts of every cache layer from a shipped map, false when the file is missing or any layer's count differs from the model's experts
+static bool shipped_hot_counts(const std::string & path, const moe_cache * mc, std::vector<std::vector<uint64_t>> & counts) {
+    std::ifstream in(path);
+    if (!in) { return false; }
+    std::map<std::string, std::string> kv;
+    for (std::string line; std::getline(in, line); ) {
+        const size_t eq = line.find('=');
+        if (line.empty() || line[0] == '#' || eq == std::string::npos) { continue; }
+        std::string k = line.substr(0, eq);
+        while (!k.empty() && k.back() == ' ') { k.pop_back(); }
+        kv[k] = line.substr(eq + 1);
+    }
+    counts.clear();
+    for (const auto & ls : mc->layers) {
+        std::istringstream is(kv["hot." + std::to_string(parse_layer_from_name(ls.pub.up_src->name))]);
+        std::vector<uint64_t> c;
+        for (uint64_t x; is >> x; ) { c.push_back(x); }
+        if (c.size() != ls.glob_count.size()) { counts.clear(); return false; }
+        counts.push_back(std::move(c));
+    }
+    return !counts.empty();
+}
+
 size_t profile_preload(moe_cache * mc, const llama_model & model) {
     std::vector<std::vector<uint64_t>> counts;
     const char * from = mc->profile.c_str();
@@ -2483,6 +2527,12 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
             }
         }
         from = "GGUF moe_cache.expert_usage";
+    }
+    std::string shipped;
+    if (!ok) {   // no learned profile and none in the GGUF: the map shipped with the program, then learned on as the user's own
+        shipped = shipped_hot_path(moe_state_section(model));
+        ok = !shipped.empty() && shipped_hot_counts(shipped, mc, counts);
+        if (ok) { from = shipped.c_str(); }
     }
     if (const char * f = moe_opt("fill"); f && strcmp(f, "layers") == 0) {
         mc->fill_layers = std::any_of(mc->layers.begin(), mc->layers.end(), [](const layer_state & ls) { return ls.src_dfd[0] >= 0 || ls.src_dfd[1] >= 0 || ls.src_dfd[2] >= 0; });

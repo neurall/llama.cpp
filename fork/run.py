@@ -5726,6 +5726,43 @@ def _linux_modules(W, log):
     return out
 
 
+def _hot_seeds(dst):
+    """hotmaps/<state section>.ini beside the programs: per model file the settled hot maps of the test prompts (fork/hotglobal.py, RUN_HOT_DIR), every prompt
+    weighted the same, each layer's counts scaled to 1e5 (about one 12k prompt's picks, so the user's own use takes over within a request or two), read by the engine when a start has no learned profile of the model (shipped_hot_path in
+    llama-moecache-fork.cpp). Strata ships an expert profile per model; our first start without one ran 75.6-79.0 t/s against 81.1-81.4 from a map
+    (Qwen3.8 IQ3_S one card, 2026-11-20). Returns the files written."""
+    src = os.environ.get("RUN_HOT_DIR", "/p/bw/data/hot-global")
+    out = os.path.join(dst, "hotmaps"); n = 0
+    for mdir in sorted(glob.glob(os.path.join(src, "*"))):
+        maps = []
+        for f in sorted(glob.glob(os.path.join(mdir, "*.ini"))):
+            lines = open(f).read().splitlines()
+            meta = json.loads(lines[0][len("# meta "):]) if lines and lines[0].startswith("# meta ") else {}
+            hot = {}
+            for l in lines[1:]:
+                k, _, v = l.partition("=")
+                if k.strip().startswith("hot."): hot[k.strip()] = [int(x) for x in v.split()]
+            if meta.get("section") and hot: maps.append((meta, hot))
+        maps = [m for m in maps if m[0].get("settled")] or maps   # settled maps when there are any
+        for sec in sorted({m["section"] for m, _ in maps}):        # one file per model file (another size is another model)
+            ms = [h for m, h in maps if m["section"] == sec]
+            keys = sorted(set().union(*ms), key=lambda k: int(k.split(".")[1]))
+            rows_out = []
+            for k in keys:
+                rows = [h[k] for h in ms if k in h]
+                ne = max(len(r) for r in rows); rows = [r for r in rows if len(r) == ne]
+                acc = [0.0] * ne
+                for r in rows:
+                    t = sum(r) or 1
+                    for i, x in enumerate(r): acc[i] += x / t
+                rows_out.append(f"{k} = {' '.join(str(round(x * 1e5 / len(rows))) for x in acc)}\n")
+            os.makedirs(out, exist_ok=True)
+            with open(os.path.join(out, re.sub(r"[^A-Za-z0-9._-]", "_", sec) + ".ini"), "w") as f:
+                f.write(f"# {sec}: {len(ms)} prompt maps merged\n" + "".join(rows_out))
+            n += 1
+    return n
+
+
 def _package_linux(a, W, binp, log):
     """the release archives of a release build: llama-release-b<build>-<commit>-bin-ubuntu-cuda-<toolkit>-x64.tar.gz (binaries, LICENSE, the libomp.so the clang
     build links dynamically) and the matching cudart archive, smoke-started in SMOKE_IMAGES; DEVBUILDS/NAME = both archives unpacked (what users get)"""
@@ -5748,6 +5785,7 @@ def _package_linux(a, W, binp, log):
     dk("-v", f"{REL_OUT}/{C}:/o", "llama-rel-el8", "bash", "-c", "for l in cudart cublas cublasLt; do cp -L /usr/local/cuda/lib64/lib$l.so.13 /o/; done")
     for m in _linux_modules(W, log):
         shutil.copy2(m, os.path.join(REL_OUT, N))
+    print(f"release: {_hot_seeds(os.path.join(REL_OUT, N))} shipped hot maps", flush=True)
     NV = N.replace("-x64", "-vulkan-hip-x64")   # the published name since b15065: CUDA, Vulkan and HIP in one tarball (its folder keeps the CUDA name)
     for d, arc in ((N, NV), (C, C)):
         subprocess.run(["tar", "czf", f"{arc}.tar.gz", d], cwd=REL_OUT, check=True)
@@ -5945,6 +5983,9 @@ def cmd_build(a):
             print(f"release zip {z}: " + (f"OK, N:\\llama.cpp\\release-out and {REL_OUT}" if ok else f"FAILED, see {log}"), flush=True)
             if ok:   # the published zip: + ggml-vulkan.dll, ggml-hip.dll and the ROCm runtime (fork/docker/winpkg-vh.bat on the laptop, same checkout); the CPU+CUDA zip is not published
                 zv = z.replace("-x64.zip", "-vulkan-hip-x64.zip")
+                hs = tempfile.mkdtemp(); _hot_seeds(hs)   # the shipped hot maps into the build folder winpkg-vh.bat zips
+                if os.path.isdir(os.path.join(hs, "hotmaps")):
+                    subprocess.run(["scp", "-q", "-r", os.path.join(hs, "hotmaps"), f"{host}:N:/build/{name}/"], capture_output=True)
                 r = subprocess.run(ssh + [f"N:\\llama.cpp\\fork\\docker\\winpkg-vh.bat {name} {zv}"], capture_output=True, text=True)
                 with open(log, "a") as lf: lf.write(r.stdout + r.stderr)
                 ok = "ZIP_OK" in r.stdout and subprocess.run(["scp", "-q", f"{host}:N:/llama.cpp/release-out/{zv}", os.path.join(REL_OUT, zv)]).returncode == 0
@@ -6027,6 +6068,7 @@ def cmd_build(a):
         elif os.path.exists(dst):
             shutil.rmtree(dst)
         shutil.copytree(binp, dst, symlinks=True)
+        _hot_seeds(dst)   # a dev build starts as a release does: the shipped maps when the state has none
     with open(os.path.join(dst, "BUILD_INFO"), "w") as f:
         f.write(info)
     # the commit built is the one asked for (bug log: --commit HEAD built a 9-day-old commit of another checkout, twice); a mismatch fails the build
