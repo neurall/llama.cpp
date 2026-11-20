@@ -12667,6 +12667,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             }
         }
     }
+    // one row, one block on CUDA (513..16384 columns): sparse attention's block pick at decode
+    for (int64_t n : {513, 3500, 4097, 7000, 16384}) {
+        for (int k : {1, 64, 512}) {
+            test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {n, 1, 1, 1}, k));
+            test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {n, 1, 1, 1}, k, true));
+        }
+    }
     for (int k : {4, 8, 16, 32}) {
         for (int nrows : {1, 8, 16}) {
             test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {202048, nrows, 1, 1}, k));
