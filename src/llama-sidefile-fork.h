@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 static inline std::string llama_side_ne_str_fork(const int64_t * ne) {
@@ -37,4 +38,19 @@ static inline std::vector<std::string> llama_side_paths_fork(const std::string &
         pos = comma + 1;
     }
     return out;
+}
+
+// the state file's section of a model: "<file> <bytes>" as before, then "+<side file>:<bytes>" per side file glued to it. Values stored with one
+// footprint (VRAM need, pass sizes, planner posteriors) are read by exact section, so they never reach a run with other weights in VRAM; the hot
+// map's any-size lookup (llama-moestate-fork.cpp: the name up to the last space) still finds the model's heat, since routing is the model's.
+// sides: (path, bytes); only the file name is kept
+static inline std::string llama_state_section_fork(std::string name, size_t bytes, const std::vector<std::pair<std::string, size_t>> & sides) {
+    for (char & c : name) { if (c == '[' || c == ']' || c == '\n' || c == '\r') { c = '_'; } }
+    std::string s = name + " " + std::to_string(bytes);
+    for (const auto & sd : sides) {
+        std::string f = sd.first.substr(sd.first.find_last_of("/\\") + 1);   // npos + 1 = 0: no directory
+        for (char & c : f) { if (c == '[' || c == ']' || c == '\n' || c == '\r' || c == ' ') { c = '_'; } }   // no space: the any-size cut stays at the model's size
+        s += "+" + f + ":" + std::to_string(sd.second);
+    }
+    return s;
 }
