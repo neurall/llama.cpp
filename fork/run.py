@@ -5702,6 +5702,30 @@ def _build_stock(a):
     print(f"stock build: OK -> {D} (also {lnk})", flush=True)
 
 
+ROCM_LINUX = os.environ.get("PERF_ROCM_LINUX", "/p/bw/tools/rocm-10.1/install")   # TheRock ROCm 10.1 gfx110X-all tarball tree: the HIP module of the Linux release is built against it
+
+
+def _linux_modules(W, log):
+    """libggml-vulkan.so and libggml-hip.so of tree W for the release tarball (fork/docker/build-vk.sh, build-hip.sh in their images), the CUDA build's commit;
+    every published release since b15065 carries both (user 2026-11-20: b16038 went out CUDA-only, 210 MB)"""
+    gitc = _git(W, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    base = ["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp", "-e", "CCACHE_DIR=/ccache", "-e", "CCACHE_MAXSIZE=100G",
+            "-e", f"CCACHE_BASEDIR={W}", "-e", "CCACHE_NOHASHDIR=1", "-v", fcfg.path("ccache") + ":/ccache", "-v", f"{W}:{W}", "-v", f"{gitc}:{gitc}:ro",
+            "-v", os.path.join(W, "fork", "docker") + ":/s:ro"]
+    out = []
+    for img, mnt, script, lib in (("llama-rel-el8-vk", ["-v", "/lib/x86_64-linux-gnu:/hostlib:ro"], "build-vk.sh", "build-linux-vk/bin/libggml-vulkan.so"),
+                                  ("llama-rel-el8-hip", ["-v", f"{ROCM_LINUX}:/opt/rocm-10.1:ro"], "build-hip.sh", "build-linux-hip/bin/libggml-hip.so")):
+        t0 = time.time()
+        with open(log, "a") as lf:
+            rc = subprocess.run(base + mnt + ["--entrypoint", "/bin/bash", img, f"/s/{script}", W], stdout=lf, stderr=subprocess.STDOUT).returncode
+        if rc != 0 or not os.path.exists(os.path.join(W, lib)):
+            errs = [l for l in open(log, errors="replace").read().splitlines() if " error" in l or "Error " in l or "undefined" in l][-8:]
+            sys.exit(f"release: {script} FAILED (exit {rc}), log {log}" + "".join("\n  " + e[:220] for e in errs))
+        print(f"release: {os.path.basename(lib)} built in {time.time() - t0:.0f} s", flush=True)
+        out.append(os.path.join(W, lib))
+    return out
+
+
 def _package_linux(a, W, binp, log):
     """the release archives of a release build: llama-release-b<build>-<commit>-bin-ubuntu-cuda-<toolkit>-x64.tar.gz (binaries, LICENSE, the libomp.so the clang
     build links dynamically) and the matching cudart archive, smoke-started in SMOKE_IMAGES; DEVBUILDS/NAME = both archives unpacked (what users get)"""
@@ -5722,8 +5746,11 @@ def _package_linux(a, W, binp, log):
     shutil.copytree(binp, os.path.join(REL_OUT, N), symlinks=True, dirs_exist_ok=True); shutil.copy2(os.path.join(W, "LICENSE"), os.path.join(REL_OUT, N))
     dk("-v", f"{REL_OUT}/{N}:/o", "llama-rel-el8", "bash", "-c", "cp -L /usr/lib64/libomp.so /o/libomp.so")
     dk("-v", f"{REL_OUT}/{C}:/o", "llama-rel-el8", "bash", "-c", "for l in cudart cublas cublasLt; do cp -L /usr/local/cuda/lib64/lib$l.so.13 /o/; done")
-    for d in (N, C):
-        subprocess.run(["tar", "czf", f"{d}.tar.gz", d], cwd=REL_OUT, check=True)
+    for m in _linux_modules(W, log):
+        shutil.copy2(m, os.path.join(REL_OUT, N))
+    NV = N.replace("-x64", "-vulkan-hip-x64")   # the published name since b15065: CUDA, Vulkan and HIP in one tarball (its folder keeps the CUDA name)
+    for d, arc in ((N, NV), (C, C)):
+        subprocess.run(["tar", "czf", f"{arc}.tar.gz", d], cwd=REL_OUT, check=True)
     with open(log, "a") as lf:
         for img in SMOKE_IMAGES:
             r = subprocess.run(["docker", "run", "--rm", "-e", "LD_LIBRARY_PATH=/c", "-v", f"{REL_OUT}/{N}:/r:ro", "-v", f"{REL_OUT}/{C}:/c:ro", img, "/r/llama-server", "--version"],
@@ -5734,11 +5761,11 @@ def _package_linux(a, W, binp, log):
     if os.path.islink(dst):
         os.remove(dst)
     shutil.rmtree(dst, ignore_errors=True); os.makedirs(dst)
-    for d in (N, C):   # the archives, not the build tree: the numbers are the published artifact's
-        subprocess.run(["tar", "xzf", os.path.join(REL_OUT, f"{d}.tar.gz"), "-C", dst, "--strip-components=1"], check=True)
+    for d, arc in ((N, NV), (C, C)):   # the archives, not the build tree: the numbers are the published artifact's
+        subprocess.run(["tar", "xzf", os.path.join(REL_OUT, f"{arc}.tar.gz"), "-C", dst, "--strip-components=1"], check=True)
         shutil.rmtree(os.path.join(REL_OUT, d), ignore_errors=True)
     _rel_prune()
-    return N, dst
+    return NV, dst
 
 
 def _publish_db(here, push=True):
@@ -5786,6 +5813,9 @@ def cmd_publish(a):
     # 9-character prefix and any further hex digits
     arch = sorted(f for f in os.listdir(REL_OUT) if "llama-release-b" in f and re.search(rf"-{h}[0-9a-f]*-", f))
     if not arch: sys.exit(f"publish: no archives for {h} in {REL_OUT}")
+    arch = [f for f in arch if "-vulkan-hip-" in f or f.startswith("cudart-")]   # CPU+CUDA-only archives of a build are never published
+    if not any("-ubuntu-" in f and f.startswith("llama-") for f in arch) or not any("-win-" in f and f.startswith("llama-") for f in arch):
+        sys.exit(f"publish: {h} needs both vulkan-hip archives (Linux: build --release, Windows: build --release --machine pc3) in {REL_OUT}; found {arch}")
     arch += [f for f in os.listdir(REL_OUT) if f.startswith("cudart-llama-bin-win-") and any("-bin-win-cuda-" in x for x in arch)]   # the shared Windows CUDA runtime has no hash in its name: without it every Windows release ran on the CPU (b14965 and before)
     b = re.search(r"llama-release-b(\d+)-", arch[0]).group(1); tag = f"release-b{b}-{h}-{a.name}"
     gh = ["gh", "-R", "neurall/llama.cpp"]
@@ -5913,6 +5943,13 @@ def cmd_build(a):
                 r = subprocess.run(ssh + [pkg], stdout=lf, stderr=subprocess.STDOUT)
                 ok = "ZIP_OK" in open(log).read() and subprocess.run(["scp", "-q", f"{host}:N:/llama.cpp/release-out/{z}", os.path.join(REL_OUT, z)], stdout=lf, stderr=subprocess.STDOUT).returncode == 0
             print(f"release zip {z}: " + (f"OK, N:\\llama.cpp\\release-out and {REL_OUT}" if ok else f"FAILED, see {log}"), flush=True)
+            if ok:   # the published zip: + ggml-vulkan.dll, ggml-hip.dll and the ROCm runtime (fork/docker/winpkg-vh.bat on the laptop, same checkout); the CPU+CUDA zip is not published
+                zv = z.replace("-x64.zip", "-vulkan-hip-x64.zip")
+                r = subprocess.run(ssh + [f"N:\\llama.cpp\\fork\\docker\\winpkg-vh.bat {name} {zv}"], capture_output=True, text=True)
+                with open(log, "a") as lf: lf.write(r.stdout + r.stderr)
+                ok = "ZIP_OK" in r.stdout and subprocess.run(["scp", "-q", f"{host}:N:/llama.cpp/release-out/{zv}", os.path.join(REL_OUT, zv)]).returncode == 0
+                if ok: os.remove(os.path.join(REL_OUT, z))
+                print(f"release zip {zv}: " + ("OK" if ok else f"FAILED ({', '.join(x for x in ('BUILD_VK_FAILED', 'BUILD_HIP_FAILED') if x in r.stdout) or 'packaging'}), see {log}"), flush=True)
         if ok and a.release:   # N:\rel\latest always points at the newest release build (a junction, no admin rights needed)
             subprocess.run(ssh + [f"if exist N:\\rel\\latest rmdir N:\\rel\\latest & mklink /J N:\\rel\\latest N:\\build\\{name}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"build {name} on pc3 ({short}): {'OK, N:\\build\\' + name if ok else 'FAILED, see ' + log}", flush=True)
