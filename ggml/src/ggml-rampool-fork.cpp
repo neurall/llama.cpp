@@ -69,6 +69,7 @@ struct rp_rec {
 struct rp_tensor {
     const void * key  = nullptr;
     int          fd   = -1, dfd = -1;   // the file; the same file opened O_DIRECT, -1: not possible here
+    int          dfd2 = -1;             // a copy of the file on another drive, O_DIRECT (rp_mirror_fd), -1: none
     size_t       off  = 0, esz = 0;     // where element 0 lies, element bytes
     size_t       pad  = 0;              // bytes a kernel reads past an element: its block is esz + pad and carries them (the next element's; zeros behind the last)
     int64_t      n    = 0;
@@ -106,6 +107,9 @@ struct rp_pool {
     ggml_rampool_heat_t heat = nullptr;
     void * ud = nullptr;
     std::map<int, int> dfd_of;          // file handle -> its O_DIRECT handle
+    std::map<int, int> dfd2_of;         // file handle -> the O_DIRECT handle of its copy on another drive (-1: none)
+    std::atomic<int>      mir_n[2] = { {0}, {0} };   // slice reads in flight on the files' drive [0] and on the copies' drive [1]
+    std::atomic<uint64_t> mir_b[2] = { {0}, {0} };   // bytes read from each
     int    n_threads = 0;
 
     std::mutex              mu;         // tables, queue and records; held for microseconds
@@ -164,6 +168,34 @@ size_t rp_request_bytes(int fd) {
     return 0;
 }
 
+// A second drive (LLAMA_MOE_MIRROR=DIR): a file of the same name and size in DIR is a copy of this one. K3.1 on PC1 (2026-11-20) reads at its one
+// drive's rate in the pool fill, the prompt stream and decode (3.4 GiB a token at 5.4 GB/s); it reads layer by layer and a layer lies in one file, so files
+// spread over two drives would still be read one drive at a time. With a copy every slice goes to the drive with fewer reads in flight (rp_reader): the
+// faster drive empties its queue sooner and so takes the larger share. Files without a copy are read as before.
+// shortcut: an environment variable and no check of the copy's bytes; a --moe key and a checksum at first use when this becomes a user feature
+static int rp_mirror_fd(int fd) {
+#if defined(__linux__)
+    const char * dir = getenv("LLAMA_MOE_MIRROR");
+    if (!dir || !*dir || fd < 0) { return -1; }
+    char link[64], path[4096];
+    snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
+    const ssize_t n = readlink(link, path, sizeof path - 1);
+    if (n <= 0) { return -1; }
+    path[n] = 0;
+    const char * base = strrchr(path, '/');
+    if (!base) { return -1; }
+    const std::string mp = std::string(dir) + base;
+    struct stat a, b;
+    if (fstat(fd, &a) != 0 || stat(mp.c_str(), &b) != 0 || a.st_size != b.st_size || (a.st_dev == b.st_dev && a.st_ino == b.st_ino)) { return -1; }
+    const int m = open_direct(mp.c_str());
+    if (m >= 0) { fprintf(stderr, "rampool: mirror: %s is read from both drives\n", mp.c_str()); }
+    return m;
+#else
+    (void) fd;
+    return -1;
+#endif
+}
+
 // THE WRITER: bytes [off, off + n) of the file into [dst, dst + n). Whole sectors go straight into dst; the sectors a slice shares with its neighbours (the slices of a tensor do not start on
 // sector edges) go through the reader's bounce buffer so nothing is written outside dst. Requests of p->rq bytes each. Without O_DIRECT a plain pread.
 bool rp_read(rp_pool * p, int dfd, int fd, char * dst, size_t n, uint64_t off, char * bounce, size_t bounce_n) {
@@ -209,6 +241,16 @@ bool rp_read(rp_pool * p, int dfd, int fd, char * dst, size_t n, uint64_t off, c
         pos += got;
     }
     return true;
+}
+
+// rp_read from the less busy drive when the file has a copy (rp_mirror_fd): the faster drive empties its queue sooner and so takes the larger share
+static bool rp_read_m(rp_pool * p, const rp_tensor & t, char * dst, size_t n, uint64_t off, char * bounce, size_t bounce_n) {
+    const int drv = t.dfd2 >= 0 && p->mir_n[1].load(std::memory_order_relaxed) < p->mir_n[0].load(std::memory_order_relaxed) ? 1 : 0;
+    p->mir_n[drv]++;
+    const bool ok = rp_read(p, drv ? t.dfd2 : t.dfd, t.fd, dst, n, off, bounce, bounce_n);
+    p->mir_n[drv]--;
+    if (ok) { p->mir_b[drv] += n; }
+    return ok;
 }
 
 void rp_thread_setup() {
@@ -382,7 +424,7 @@ void rp_reader(rp_pool * p) {
         // O_DIRECT: a buffered read leaves a second copy in the page cache, which then pushes out the slices the pool does not hold (rampool3, GLM 3.5 warm decode 13.0 -> 6.5 t/s)
         const size_t pad = j.e + 1 < t.n ? t.pad : 0;   // the next element's first bytes come along; behind the last element zeros
         if (t.pad > pad) { memset(dst + t.esz, 0, t.pad); }
-        const bool ok = bounce != nullptr && rp_read(p, t.dfd, t.fd, dst, t.esz + pad, t.off + (uint64_t) j.e * t.esz, bounce, bn);
+        const bool ok = bounce != nullptr && rp_read_m(p, t, dst, t.esz + pad, t.off + (uint64_t) j.e * t.esz, bounce, bn);
         {
             std::lock_guard<std::mutex> lk(p->mu);
             if (ok) {
@@ -429,6 +471,9 @@ void ggml_rampool_add_fork(const void * key, int fd, size_t file_off, int64_t n,
     auto d = p->dfd_of.find(fd);
     if (d == p->dfd_of.end()) { d = p->dfd_of.emplace(fd, open_direct_fd(fd)).first; }
     t->dfd = d->second;
+    auto m = p->dfd2_of.find(fd);
+    if (m == p->dfd2_of.end()) { m = p->dfd2_of.emplace(fd, t->dfd >= 0 ? rp_mirror_fd(fd) : -1).first; }
+    t->dfd2 = m->second;
     if (p->rq == 0) { p->rq = rp_request_bytes(fd); }
     p->by_key[key] = t.get();
     p->tensors.push_back(std::move(t));
@@ -567,7 +612,7 @@ void ggml_rampool_fill_fork(void) {
             const size_t i = next.fetch_add(1);
             if (i >= spaced.size()) { break; }
             const range & r = spaced[i];
-            if (bounce == nullptr || !rp_read(p, r.t->dfd, r.t->fd, r.dst, r.n, r.off, bounce, bn)) { bad++; }
+            if (bounce == nullptr || !rp_read_m(p, *r.t, r.dst, r.n, r.off, bounce, bn)) { bad++; }
             if (ck_left[r.ck].fetch_sub(1) == 1 && g_rp_chunk_done) {   // the chunk's last read: a failed one too (a failed fill drops the blocks below, the pin is harmless)
                 const rp_class & c = p->cls[r.t->cls];
                 g_rp_chunk_done(c.chunks[r.ck - ck0[r.t->cls]], p->ud);
@@ -622,6 +667,7 @@ void ggml_rampool_close_fork(void) {
     for (auto & t : p->readers) { t.join(); }
 #ifndef _WIN32
     for (const auto & kv : p->dfd_of) { if (kv.second >= 0) { close(kv.second); } }
+    for (const auto & kv : p->dfd2_of) { if (kv.second >= 0) { close(kv.second); } }
 #endif
     delete p;
     g_rp = nullptr;
@@ -1008,6 +1054,9 @@ void ggml_rampool_stats_fork(struct ggml_rampool_stats * s, bool reset) {
         for (const auto & c : p->cls) { s->used += (uint64_t) (c.n_slots - c.free.size()) * c.size; }
     }
     if (reset) {
+        if (p->mir_b[1].load() > 0) {   // after the fill, at each request's end and at exit: the split so far
+            GGML_LOG_WARN("rampool: mirror: %.1f GiB read from the files' drive, %.1f GiB from the copies' drive since the pool opened\n", p->mir_b[0].load() / 1073741824.0, p->mir_b[1].load() / 1073741824.0);
+        }
         p->st_asked = 0; p->st_hit = 0; p->st_cold = 0; p->st_refused = 0; p->st_evicted = 0; p->st_cold_b = 0; p->st_wait_us = 0; p->st_pp_hit = 0; p->st_pp_miss = 0;
     }
 }
