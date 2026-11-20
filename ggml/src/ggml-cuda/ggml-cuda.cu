@@ -8602,7 +8602,7 @@ static int ggml_backend_cuda_last_oom_fork(int * device, size_t * bytes, double 
 // resources requested for launch" at the CUDA graph's instantiation, "unknown error" launched directly (micro test, RTX 3090, CUDA 13.2). The room libllama gives
 // CUDA after that out-of-memory cannot help the call. A kernel loads only in a graph that is not a replay of a CUDA graph (its first run, which runs directly,
 // or its capture), so before such a graph a card with the fork's room must have room for a kernel's code: else the out-of-memory comes now, before any of the
-// graph runs or loads, and libllama grows CUDA's room and runs the call again (fit = -1, CUDA's own memory). libllama keeps 32 MiB free after a give-back, so
+// graph runs or loads, and libllama grows CUDA's room and runs the call again (fit = -1, CUDA's own memory). libllama keeps 64 MiB free after a give-back, so
 // this rarely trips. After 4 trips in a row without room (the room at its most) the graph runs as before.
 static constexpr size_t GGML_CUDA_LOAD_ROOM_FORK = (size_t) 16 << 20;
 static void ggml_cuda_kernel_load_guard_fork(int device) {
