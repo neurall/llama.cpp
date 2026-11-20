@@ -1,6 +1,7 @@
 #include "../ggml/src/ggml-read-fork.h"
 #include "llama-model-loader.h"
 #include "llama-hcq8-fork.h"
+#include "llama-sidefile-fork.h"
 #include "llama-backend-fork.h"
 #include "llama-moestate-fork.h"
 #include <map>
@@ -715,6 +716,45 @@ llama_model_loader::llama_model_loader(
             }
 
             LLAMA_LOG_INFO("%s: additional %d GGUFs metadata loaded.\n",  __func__, n_split - 1);
+        }
+
+        // fork: --moe tensor-file=PATH[,PATH]: a side GGUF's tensors replace the model's of the same name and shape, its type and bytes are read
+        // (llama-sidefile-fork.h). The side file is one more source file, so every reader that follows a weight's file index (mmap, O_DIRECT, the
+        // expert cache's file offsets, the memory-fit probe) takes the side bytes without knowing about it.
+        if (const char * tf = llama_moe_get_opt("tensor-file")) {
+            std::set<std::string> taken;
+            for (const std::string & path : llama_side_paths_fork(tf)) {
+                struct gguf_init_params side_params = {
+                    /*.no_alloc = */ true,
+                    /*.ctx      = */ &ctx,
+                };
+                gguf_context_ptr ctx_gguf { gguf_init_from_file(path.c_str(), side_params) };
+                if (!ctx_gguf) {
+                    throw std::runtime_error(format("--moe tensor-file: cannot read the GGUF %s", path.c_str()));
+                }
+                files.emplace_back(new llama_file(path.c_str(), "rb", use_direct_io));
+                contexts.emplace_back(ctx);
+                const uint16_t idx = (uint16_t) (files.size() - 1);
+                size_t n = 0, b_model = 0, b_side = 0;
+                for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
+                    const auto it = weights_map.find(cur->name);
+                    const std::string why = llama_side_tensor_refusal_fork(cur->name, cur->ne, it == weights_map.end() ? nullptr : it->second.tensor->ne, taken.count(cur->name) > 0);
+                    if (!why.empty()) {
+                        throw std::runtime_error(format("--moe tensor-file %s: %s", path.c_str(), why.c_str()));
+                    }
+                    taken.insert(cur->name);
+                    b_model += ggml_nbytes(it->second.tensor);
+                    b_side  += ggml_nbytes(cur);
+                    n_bytes  = n_bytes - ggml_nbytes(it->second.tensor) + ggml_nbytes(cur);
+                    it->second = llama_tensor_weight(files.back().get(), idx, ctx_gguf.get(), cur);
+                    n++;
+                }
+                if (n == 0) {
+                    throw std::runtime_error(format("--moe tensor-file %s: the file holds no tensors", path.c_str()));
+                }
+                LLAMA_LOG_INFO("%s: side file %s: %zu tensors replace the model's, %.2f GiB in the model -> %.2f GiB from the side file\n", __func__,
+                        path.c_str(), n, b_model / 1073741824.0, b_side / 1073741824.0);
+            }
         }
     } else if (file != nullptr) {
         struct ggml_context * ctx = NULL;
