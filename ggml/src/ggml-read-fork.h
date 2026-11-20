@@ -337,6 +337,13 @@ static inline const sr_srcs * sr_srcs_of(int fd) {
 #endif
 }
 
+// --multissd given: the async engines size their queues for several drives (128 reads in flight a thread), else for one (32: the AIO contexts every reader
+// thread keeps stay as small as before, fs.aio-max-nr counts them)
+static inline bool sr_multi_on() {
+    static const bool on = [] { const char * s = getenv("LLAMA_MOE_SSD"), * m = getenv("LLAMA_MOE_MIRROR"); return (s && *s) || (m && *m); }();
+    return on;
+}
+
 // the drives the file behind fd is read from (1: no other)
 static inline int sr_drives(int fd) { const sr_srcs * s = sr_srcs_of(fd); return s ? s->n_drives : 1; }
 
@@ -405,10 +412,11 @@ struct aio_ctx_t { aio_context_t ctx = 0; ~aio_ctx_t() { if (ctx) { syscall(SYS_
 static inline bool aio_read_range(int fd, uint8_t * buf, size_t beg, size_t total, size_t need, int qd = sr_qd(), size_t blk = sr_blk(), size_t gap = sr_gap()) {
     constexpr int QDMAX = 128;   // qd in flight on each drive the file is read from (--multissd: 4 drives at 32; more drives share the 128)
     if (!g_aio_ok.load(std::memory_order_relaxed)) { return false; }
+    const int cap = sr_multi_on() ? QDMAX : 32;
     const sr_srcs * S = sr_srcs_of(fd);
-    const int nd = S ? S->n_drives : 1, per = std::max(1, std::min(std::max(qd, 1), QDMAX / nd)), QD = std::min(per * nd, QDMAX);
+    const int nd = S ? S->n_drives : 1, per = std::max(1, std::min(std::max(qd, 1), cap / nd)), QD = std::min(per * nd, cap);
     thread_local aio_ctx_t c;
-    if (!c.ctx && syscall(SYS_io_setup, QDMAX, &c.ctx) != 0) { c.ctx = 0; g_aio_ok.store(0); return false; }
+    if (!c.ctx && syscall(SYS_io_setup, cap, &c.ctx) != 0) { c.ctx = 0; g_aio_ok.store(0); return false; }
     iocb cbs[QDMAX]; iocb * ps[1]; io_event ev[QDMAX];
     int free_slot[QDMAX]; int n_free = QD; int slot_file[QDMAX];
     for (int i = 0; i < QD; ++i) { free_slot[i] = i; }
@@ -585,11 +593,12 @@ struct uring_t {
 static inline bool uring_read_range(int fd, uint8_t * buf, size_t beg, size_t total, size_t need, int qd = sr_qd(), size_t blk = sr_blk(), size_t gap = sr_gap()) {
     constexpr unsigned QDMAX = 128;   // as aio_read_range: qd on each drive the file is read from
     if (!g_uring_ok.load(std::memory_order_relaxed)) { return false; }
+    const int cap = sr_multi_on() ? (int) QDMAX : 32;
     const sr_srcs * S = sr_srcs_of(fd);
-    const int nd = S ? S->n_drives : 1, per = std::max(1, std::min(std::max(qd, 1), (int) QDMAX / nd));
-    const unsigned QD = (unsigned) std::min(per * nd, (int) QDMAX);
+    const int nd = S ? S->n_drives : 1, per = std::max(1, std::min(std::max(qd, 1), cap / nd));
+    const unsigned QD = (unsigned) std::min(per * nd, cap);
     thread_local uring_t r; thread_local bool made = false;
-    if (!made) { made = true; if (!r.init(QDMAX)) { g_uring_ok.store(0); } }
+    if (!made) { made = true; if (!r.init((unsigned) cap)) { g_uring_ok.store(0); } }
     if (!g_uring_ok.load(std::memory_order_relaxed)) { return false; }
     const std::vector<sr_piece> pcs = sr_pieces(total, blk, gap);
     sr_sched sc(S, pcs, beg, per);
