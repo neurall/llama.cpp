@@ -1357,7 +1357,8 @@ static void mul_mat_vec_q_switch_ncols_dst(
                             const int rpb = calc_rows_per_block(type, c_ncols_dst, table_id, c_small_k, nw);
                             gd.x = (nrows_x + rpb - 1) / rpb;
                             const auto go = [&](auto nw_tag) {
-                                mul_mat_vec_q_switch_fusion<type, c_ncols_dst, c_small_k, false, decltype(nw_tag)::value>(
+                                // from the tag: MSVC does not see the enclosing lambda's constexpr c_small_k as a constant here
+                                mul_mat_vec_q_switch_fusion<type, c_ncols_dst, decltype(small_k_tag)::value, false, decltype(nw_tag)::value>(
                                     vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
                                     channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst, sample_ratio_fd,
                                     stride_sample_x, stride_sample_y, stride_sample_dst, gd, bd, 0, ids_stride, stream);
