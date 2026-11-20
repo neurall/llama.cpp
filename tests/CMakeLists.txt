@@ -190,6 +190,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-rampool-fork.cpp)   # the RAM pool's resize between requests (ggml/src/ggml-rampool-fork.cpp), no GPU
     llama_build_and_test(test-moetopic-fork.cpp)
     llama_build_and_test(test-pass-fork.cpp)
+    llama_build_and_test(test-read-fork.cpp)   # the read wrapper's several drives (--multissd): holders, issue order as a schedule, no I/O
     llama_build_and_test(test-gpu-fork.cpp LINK llama)
     llama_build_and_test(test-split-fork.cpp)
     llama_build_and_test(test-rls-fork.cpp)   # the planner's estimator (src/llama-rls-fork.h)

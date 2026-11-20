@@ -14597,6 +14597,7 @@ static void rd_shape_bench(const char * path, unsigned long long dev, const std:
         LLAMA_LOG_WARN("moe-cache: machine: SSD reads %s KiB blocks, %s KiB gaps, %s in flight (stored)\n", b.c_str(), g.c_str(), q.c_str());
         return;
     }
+    struct one_file { one_file() { g_sr_one_file = true; } ~one_file() { g_sr_one_file = false; } } solo;   // this drive alone, not its copies (--multissd): the values are per drive
     const int dfd = open_direct(path);
     if (dfd < 0) { return; }
 #ifdef _WIN32

@@ -2534,6 +2534,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_MOE_EXPERT_CACHE"));
     add_opt(common_arg(
+        {"--multissd"}, "DIR[:SHARE],...",
+        "the model's files also in these directories, on other drives, under their names and sizes: whole, or trimmed to a share of every layer's experts (sparse files, "
+        "fork/run.py ssd place writes them; SHARE is the placement's, optional: by default each drive's share of the summed read speed). Every expert read then goes, "
+        "block by block, to the least busy drive that holds it, N drives side by side. The original files stay whole. Linux.",
+        [](common_params &, const std::string & value) {
+            setenv("LLAMA_MOE_SSD", value.c_str(), 1);   // read by ggml-read-fork.h in every library that reads model bytes
+        }
+    ).set_env("LLAMA_ARG_MULTISSD"));
+    add_opt(common_arg(
         {"--moe"}, "KEY=VAL,...",
         "MoE expert cache options, comma separated. slots=N (slots per expert layer, same as --moe-expert-cache: 0 = no cache, -1 = size from free VRAM, unset = automatic), pf-slots=N (H2D prefetch staging slots, same as --prefetch-experts-slots), up-max=N (max expert uploads per layer and decode step), recent=N (tokens of recent usage "
         "the cache scores by, default 64), pred-top=M (prefetch confident experts among the top M predicted for the next layers, 0 = off), "

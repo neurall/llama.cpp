@@ -8073,6 +8073,12 @@ def last_run_rec(r, HW):
     return dict(res=res, rid=top[1], st=STOCK_REC[0], lt=run_times(top[1])[1])
 
 
+def cmd_ssd(a):
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import ssd_place
+    return ssd_place.main([a.model, a.dirs] + (["--trim"] if a.trim else []) + (["--dry"] if a.dry else []))
+
+
 def cmd_onepass(a):
     """`run.py onepass [-b BUILD] [--write]`: the best one-pass input prompt of every model, from the runs of the list `run onepass -b BUILD` (fork/runs/onepass.csv: every model at 12k down to 4k, two
     runs of 64 answer tokens each; the first run is cold, the last warm and decides). Per model: the sizes that ran in ONE pass (pf_passes = 1 in the last run), the biggest of them whose prompt
@@ -12239,6 +12245,8 @@ if __name__ == "__main__":
     sx = sp.add_parser("status", help="the running list in the -nrt table: done today, running now, queued next (with the expected time), the queue daemon's waiting tasks; nothing is started")
     sx.add_argument("list", nargs="?", help="a list name (fork/runs/NAME.csv); none = the list that runs now, else the last one")
     sx.add_argument("rest", nargs=argparse.REMAINDER, help="run options of the list (-b BUILD ...)")
+    sd = sp.add_parser("ssd", help="place a model's experts on more drives for llama-server --multissd (fork/ssd_place.py): MODEL DIR[:SHARE],... ; SHARE optional, by default each drive's share of the summed read speed (fio)")
+    sd.add_argument("model"); sd.add_argument("dirs"); sd.add_argument("--trim", action="store_true", help="punch the rest out of whole copies already there"); sd.add_argument("--dry", action="store_true")
     op = sp.add_parser("onepass", help="the best one-pass input prompt of every model from the runs of `run onepass -b BUILD` (pass count and prompt speed per size); --write stores it in models.ini")
     op.add_argument("-b", "--build", default="latest"); op.add_argument("--write", action="store_true")
     cb = sp.add_parser("calib", help="find every model's biggest one-pass input prompt by halving from 12k, then bisecting and store best_prompt.<N>gpu in models.ini")
@@ -12297,7 +12305,7 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     rc = {"run": cmd_run, "publish": cmd_publish, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "gen": cmd_gen, "judge": cmd_judge, "stats": cmd_stats, "test": cmd_test, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "experiment": cmd_experiment, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
+     "show": cmd_show, "gen": cmd_gen, "judge": cmd_judge, "stats": cmd_stats, "test": cmd_test, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "experiment": cmd_experiment, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "ssd": cmd_ssd, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
     # the command's result is the process's exit code: dropped, a failed cell exited 0 and every list said "failed: none" under FAIL rows (bug log, 4 times)
     sys.exit(rc if isinstance(rc, int) and not isinstance(rc, bool) else 0)

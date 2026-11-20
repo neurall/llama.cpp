@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 #include <cerrno>
@@ -153,48 +154,303 @@ static inline bool sr_pread(int fd, char * buf, size_t beg, size_t total, size_t
     return true;
 }
 
+// ---- several drives: llama-server --multissd DIR[:SHARE],... (env LLAMA_MOE_SSD; LLAMA_MOE_MIRROR=DIR, the older one-copy name) ----
+// A model file may lie once more in other directories, under its name and size, on other drives: whole, or trimmed to a share of every layer's experts (a sparse
+// file, what it lacks is a hole: fork/ssd_place.py writes them, SHARE is its; SEEK_DATA tells this reader which bytes a file holds). One read keeps a queue on
+// every drive (sr_sched): each drive takes the next piece it holds while it has fewer than qd of this read in flight, the least busy drive first, so N drives read
+// side by side and a faster drive, which empties its queue sooner, takes more of the pieces two drives hold. Every reader of this wrapper gets the drives: the
+// RAM pool's fill and readers, the stream's reads, the loader. The original stays whole (any piece has a file to go to; the edge sectors and mapped reads only
+// know the original): a trimmed original is refused, and a copy whose sampled bytes differ from the original's, or that is sparse where the file system cannot
+// say where its holes are, is not used.
+// Kimi K3.1 on PC1, 2026-11-20: one drive 5.4-6.1 GB/s; a whole copy on a second drive (4.3 GB/s) through one in-order queue: 3.97 + 3.16 GB/s in the prompt stream.
+constexpr int SR_MAX_SRC = 16;   // files of one model file, its own included; also the most drives
+struct sr_srcs {
+    int      n = 0, n_drives = 1;
+    uint64_t size = 0;
+    int      fd[SR_MAX_SRC];                                    // [0] is -1: the caller's own descriptor
+    int      drive[SR_MAX_SRC];                                 // index of its drive (block device)
+    std::vector<std::pair<uint64_t, uint64_t>> held[SR_MAX_SRC];   // the sorted [start, end) ranges the file holds; empty: all of it
+};
+
+// [lo, hi) inside one of the sorted ranges r; an empty list holds everything
+static inline bool sr_holds(const std::vector<std::pair<uint64_t, uint64_t>> & r, uint64_t lo, uint64_t hi) {
+    if (r.empty() || lo >= hi) { return true; }
+    const auto it = std::upper_bound(r.begin(), r.end(), lo, [](uint64_t v, const std::pair<uint64_t, uint64_t> & x) { return v < x.first; });
+    return it != r.begin() && hi <= std::prev(it)->second;
+}
+
+// the file a block goes to: of the n files, those that hold it (holds[i]), the one whose drive has the fewest bytes in flight (q[drive[i]]); ties: the first. -1: none
+static inline int sr_pick(int n, const bool * holds, const int * drive, const uint64_t * q) {
+    int best = -1;
+    for (int i = 0; i < n; ++i) { if (holds[i] && (best < 0 || q[drive[i]] < q[drive[best]])) { best = i; } }
+    return best;
+}
+
+// "DIR[:SHARE],DIR[:SHARE],..." -> (directory, share of each layer's experts it holds; 0: not given, the placement takes each drive's share of the summed read
+// speed). The share is the text after the last ':' when it is a number in (0, 1], so Windows paths (C:\m) keep their drive letter. Trailing separators are dropped.
+static inline std::vector<std::pair<std::string, double>> sr_parse_ssd(const char * s) {
+    std::vector<std::pair<std::string, double>> v;
+    if (!s) { return v; }
+    const std::string all(s);
+    for (size_t pos = 0; pos < all.size();) {
+        size_t c = all.find(',', pos);
+        if (c == std::string::npos) { c = all.size(); }
+        std::string e = all.substr(pos, c - pos);
+        pos = c + 1;
+        while (!e.empty() && e.front() == ' ') { e.erase(0, 1); }
+        while (!e.empty() && e.back() == ' ') { e.pop_back(); }
+        double share = 0.0;
+        const size_t k = e.rfind(':');
+        if (k != std::string::npos && k + 1 < e.size()) {
+            char * end = nullptr;
+            const double x = strtod(e.c_str() + k + 1, &end);
+            if (end && *end == 0 && x > 0.0 && x <= 1.0) { share = x; e.resize(k); }
+        }
+        while (e.size() > 1 && (e.back() == '/' || e.back() == '\\')) { e.pop_back(); }
+        if (!e.empty()) { v.push_back({ e, share }); }
+    }
+    return v;
+}
+
+inline std::atomic<uint64_t> g_sr_q[SR_MAX_SRC];   // bytes in flight per drive (the readers of this library)
+inline thread_local bool g_sr_one_file = false;     // this thread reads only the file it names (the drive shape probe measures one drive)
+inline std::atomic<uint64_t> g_sr_b[SR_MAX_SRC];   // bytes read per drive
+
+#if defined(__linux__)
+#include <map>
+#include <mutex>
+#include <sys/stat.h>
+inline std::mutex g_sr_mu;
+inline std::vector<uint64_t> g_sr_dev;   // drive index -> its block device
+inline std::map<std::pair<uint64_t, uint64_t>, sr_srcs *> g_sr_of;   // (device, inode) of a file -> its files elsewhere (nullptr: none); built once, kept
+
+// shortcut: drives are told apart by the file system's device (st_dev), so two partitions of one disk count as two drives; map through /sys/dev/block when that matters
+static inline int sr_drive_of(uint64_t dev) {   // under g_sr_mu
+    for (size_t i = 0; i < g_sr_dev.size(); ++i) { if (g_sr_dev[i] == dev) { return (int) i; } }
+    if (g_sr_dev.size() >= (size_t) SR_MAX_SRC) { return -1; }
+    g_sr_dev.push_back(dev);
+    return (int) g_sr_dev.size() - 1;
+}
+
+// the byte ranges a file holds (SEEK_DATA / SEEK_HOLE); empty: all of it (no hole, or the file system cannot say)
+static inline std::vector<std::pair<uint64_t, uint64_t>> sr_data_ranges(int fd, uint64_t size) {
+    std::vector<std::pair<uint64_t, uint64_t>> v;
+    for (off_t pos = 0; (uint64_t) pos < size;) {
+        const off_t d = lseek(fd, pos, SEEK_DATA);
+        if (d < 0) {
+            if (errno == ENXIO) { break; }
+            return {};
+        }
+        off_t h = lseek(fd, d, SEEK_HOLE);
+        if (h < 0) { h = (off_t) size; }
+        v.push_back({ (uint64_t) d, (uint64_t) h });
+        pos = h;
+    }
+    if (v.size() == 1 && v[0].first == 0 && v[0].second >= size) { v.clear(); }
+    return v;
+}
+
+// a copy holds the original's bytes: 4 KiB at the start, middle and end of its first, middle and last range (of the whole file when it holds all) compared
+static inline bool sr_same_bytes(int fa, int fb, const std::vector<std::pair<uint64_t, uint64_t>> & held, uint64_t size) {
+    std::vector<std::pair<uint64_t, uint64_t>> r = held;
+    if (r.empty()) { r.push_back({ 0, size }); }
+    void * m = nullptr;
+    if (posix_memalign(&m, 4096, 8192) != 0) { return false; }
+    char * a = (char *) m, * b = a + 4096;
+    bool same = true;
+    for (size_t k : { (size_t) 0, r.size() / 2, r.size() - 1 }) {
+        const uint64_t lo = (r[k].first + 4095) / 4096 * 4096, hi = r[k].second / 4096 * 4096;
+        if (hi < lo + 4096) { continue; }
+        for (uint64_t o : { lo, (lo + (hi - lo) / 2) / 4096 * 4096, hi - 4096 }) {
+            if (sr_pread1(fa, a, 4096, o) != 4096 || sr_pread1(fb, b, 4096, o) != 4096 || memcmp(a, b, 4096) != 0) { same = false; }
+        }
+    }
+    free(m);
+    return same;
+}
+#endif
+
+// the files of the file behind fd on other drives, once per file (nullptr: no --multissd, or the file lies nowhere else)
+static inline const sr_srcs * sr_srcs_of(int fd) {
+#if defined(__linux__)
+    static const std::vector<std::pair<std::string, double>> dirs = [] {
+        const char * s = getenv("LLAMA_MOE_SSD");
+        return sr_parse_ssd(s && *s ? s : getenv("LLAMA_MOE_MIRROR"));
+    }();
+    struct stat st;
+    if (dirs.empty() || g_sr_one_file || fd < 0 || fstat(fd, &st) != 0) { return nullptr; }
+    std::lock_guard<std::mutex> lk(g_sr_mu);
+    const auto key = std::make_pair((uint64_t) st.st_dev, (uint64_t) st.st_ino);
+    if (const auto it = g_sr_of.find(key); it != g_sr_of.end()) { return it->second; }
+    sr_srcs * s = nullptr;
+    char link[64], path[4096];
+    snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
+    const ssize_t pn = readlink(link, path, sizeof path - 1);
+    const char * base = pn > 0 ? (path[pn] = 0, strrchr(path, '/')) : nullptr;
+    if (base) {
+        auto * t = new sr_srcs();
+        t->size = (uint64_t) st.st_size;
+        t->n = 1; t->fd[0] = -1; t->drive[0] = sr_drive_of((uint64_t) st.st_dev); t->held[0] = sr_data_ranges(fd, t->size);
+        if (!t->held[0].empty()) {   // the original must hold every byte: the edge sectors and mapped reads do not come through here yet
+            fprintf(stderr, "read: --multissd: %s has holes (a trimmed original): its copies are not used, keep the original whole and trim the copies\n", path);
+            delete t;
+            g_sr_of[key] = nullptr;
+            return nullptr;
+        }
+        std::string row;
+        for (const auto & d : dirs) {
+            const std::string p = d.first + base;
+            struct stat b;
+            if (t->n >= SR_MAX_SRC || stat(p.c_str(), &b) != 0 || (uint64_t) b.st_size != t->size || (b.st_dev == st.st_dev && b.st_ino == st.st_ino)) { continue; }
+            const int dr = sr_drive_of((uint64_t) b.st_dev);
+            const int f2 = dr >= 0 ? open_direct(p.c_str()) : -1;
+            if (f2 < 0) { continue; }
+            t->fd[t->n] = f2; t->drive[t->n] = dr; t->held[t->n] = sr_data_ranges(f2, t->size);
+            uint64_t hb = 0;
+            for (const auto & r : t->held[t->n]) { hb += r.second - r.first; }
+            if (t->held[t->n].empty()) { hb = t->size; }
+            const char * why = t->held[t->n].empty() && (uint64_t) b.st_blocks * 512 + ((uint64_t) 1 << 20) < t->size
+                ? "is sparse, but its file system cannot say where the holes are" : sr_same_bytes(fd, f2, t->held[t->n], t->size) ? nullptr : "differs from the original";
+            if (why) {   // its holes would read as zeros, or it is another version of the file: wrong weights, never slower ones
+                fprintf(stderr, "read: --multissd: %s %s: not used\n", p.c_str(), why);
+                close(f2);
+                continue;
+            }
+            row += " " + p + " (drive " + std::to_string(dr) + ", " + std::to_string((int) (100.0 * (double) hb / (double) std::max<uint64_t>(1, t->size) + 0.5)) + "% of its bytes)";
+            t->n++;
+        }
+        bool seen[SR_MAX_SRC] = {};
+        t->n_drives = 0;
+        for (int i = 0; i < t->n; ++i) { if (!seen[t->drive[i]]) { seen[t->drive[i]] = true; t->n_drives++; } }
+        if (t->n > 1) {
+            fprintf(stderr, "read: --multissd: %s is read from %d drives:%s\n", path, t->n_drives, row.c_str());
+            s = t;
+        } else {
+            delete t;
+        }
+    }
+    g_sr_of[key] = s;
+    return s;
+#else
+    (void) fd;   // shortcut: Linux only (readlink of /proc/self/fd, SEEK_DATA); Windows reads its one drive
+    return nullptr;
+#endif
+}
+
+// the drives the file behind fd is read from (1: no other)
+static inline int sr_drives(int fd) { const sr_srcs * s = sr_srcs_of(fd); return s ? s->n_drives : 1; }
+
+// the descriptor and drive for the block [lo, hi) of the file behind fd: one of its files that holds it, the least busy drive. drive -1: fd itself, no accounting
+static inline int sr_src_fd(const sr_srcs * s, int fd, uint64_t lo, uint64_t hi, int * drive) {
+    *drive = -1;
+    if (!s) { return fd; }
+    bool h[SR_MAX_SRC]; uint64_t q[SR_MAX_SRC];
+    hi = std::min<uint64_t>(hi, s->size);
+    for (int i = 0; i < s->n; ++i) { h[i] = sr_holds(s->held[i], lo, hi); }
+    for (int d = 0; d < SR_MAX_SRC; ++d) { q[d] = g_sr_q[d].load(std::memory_order_relaxed); }
+    const int i = sr_pick(s->n, h, s->drive, q);
+    if (i < 0) { return fd; }   // the original holds everything (sr_srcs_of): not reached
+    *drive = s->drive[i];
+    return i == 0 ? fd : s->fd[i];
+}
+
+// The issue order of one read [beg, beg + total) cut into pieces pcs (the spaced order), over the files of S (nullptr: the one file, pieces in order): next() gives the
+// file and piece to read now, from the drives with fewer than per_drive of this read in flight, the one with the fewest bytes in flight (q[drive], every reader)
+// first; each drive takes the next piece in order that it holds and no drive took. done() when a read of that file finished.
+struct sr_sched {
+    const sr_srcs * S; const std::vector<sr_piece> & pcs; uint64_t beg; int per_drive; size_t left;
+    std::vector<uint8_t> taken; size_t cur[SR_MAX_SRC] = {}; int on[SR_MAX_SRC] = {};
+    sr_sched(const sr_srcs * s, const std::vector<sr_piece> & p, uint64_t b, int pd) : S(s), pcs(p), beg(b), per_drive(std::max(pd, 1)), left(p.size()), taken(s ? p.size() : 0, 0) {}
+    int drive(int f) const { return S ? S->drive[f] : 0; }
+    bool next(const uint64_t * q, int * file, size_t * piece) {
+        int best = -1; size_t bj = 0;
+        for (int f = 0; f < (S ? S->n : 1) && left > 0; ++f) {
+            if (on[drive(f)] >= per_drive) { continue; }
+            size_t j = cur[f];
+            if (S) {
+                while (j < pcs.size() && (taken[j] || !sr_holds(S->held[f], beg + pcs[j].off, std::min<uint64_t>(beg + pcs[j].off + pcs[j].n, S->size)))) { ++j; }
+                cur[f] = j;
+            }
+            if (j < pcs.size() && (best < 0 || (q && q[drive(f)] < q[drive(best)]))) { best = f; bj = j; }
+        }
+        if (best < 0) { return false; }
+        if (S) { taken[bj] = 1; }
+        cur[best] = bj + 1; on[drive(best)]++; left--;
+        *file = best; *piece = bj;
+        return true;
+    }
+    void done(int f) { on[drive(f)]--; }
+};
+
+// "drive i: X GiB" of every drive this library read from, "" when it read from one
+static inline std::string sr_drive_bytes() {
+    std::string r;
+    int n = 0;
+    for (int d = 0; d < SR_MAX_SRC; ++d) { if (g_sr_b[d].load() > 0) { n++; } }
+    if (n < 2) { return r; }
+    for (int d = 0; d < SR_MAX_SRC; ++d) {
+        const uint64_t b = g_sr_b[d].load();
+        if (b > 0) { r += (r.empty() ? "" : ", ") + std::string("drive ") + std::to_string(d) + ": " + std::to_string((int) (b / 1073741824.0 * 10 + 0.5) / 10.0).substr(0, 6) + " GiB"; }
+    }
+    return r;
+}
+
 // --moe read-aio=0 turns the async engine off on every platform (it also switches itself off when the system refuses it); on since 2026-11-06: one thread, 32 reads in flight, the spaced order
 inline std::atomic<int> g_aio_ok{1};
 
-// kernel AIO, ONE thread, 32 reads in flight (a new one the moment one finishes), the pieces in the spaced order
+// kernel AIO, ONE thread, 32 reads in flight on each drive the file is read from (a new one the moment one finishes), the pieces in the spaced order (sr_sched)
 #ifdef SR_HAVE_AIO
 struct aio_ctx_t { aio_context_t ctx = 0; ~aio_ctx_t() { if (ctx) { syscall(SYS_io_destroy, ctx); } } };
 // bytes [beg, beg + total) of fd into buf (4096-aligned); `need` = bytes that exist (a short block past it is the end of the file). False: nothing usable, the caller reads again with pread.
 static inline bool aio_read_range(int fd, uint8_t * buf, size_t beg, size_t total, size_t need, int qd = sr_qd(), size_t blk = sr_blk(), size_t gap = sr_gap()) {
-    constexpr int QDMAX = 32;
-    const int QD = std::min(std::max(qd, 1), QDMAX);
+    constexpr int QDMAX = 128;   // qd in flight on each drive the file is read from (--multissd: 4 drives at 32; more drives share the 128)
     if (!g_aio_ok.load(std::memory_order_relaxed)) { return false; }
+    const sr_srcs * S = sr_srcs_of(fd);
+    const int nd = S ? S->n_drives : 1, per = std::max(1, std::min(std::max(qd, 1), QDMAX / nd)), QD = std::min(per * nd, QDMAX);
     thread_local aio_ctx_t c;
     if (!c.ctx && syscall(SYS_io_setup, QDMAX, &c.ctx) != 0) { c.ctx = 0; g_aio_ok.store(0); return false; }
     iocb cbs[QDMAX]; iocb * ps[1]; io_event ev[QDMAX];
-    int free_slot[QDMAX]; int n_free = QD;
+    int free_slot[QDMAX]; int n_free = QD; int slot_file[QDMAX];
     for (int i = 0; i < QD; ++i) { free_slot[i] = i; }
     const std::vector<sr_piece> pcs = sr_pieces(total, blk, gap);   // blocks with gaps, then the gaps: no two neighbours in flight together
-    size_t next = 0; int infl = 0; bool bad = false;
-    while (next < pcs.size() || infl > 0) {
-        while (!bad && next < pcs.size() && n_free > 0) {
+    sr_sched sc(S, pcs, beg, per);
+    uint64_t q[SR_MAX_SRC] = {};
+    int infl = 0; bool bad = false, sent = false;
+    while (sc.left > 0 || infl > 0) {
+        int f = 0; size_t j = 0;
+        while (!bad && n_free > 0) {
+            if (S) { for (int d = 0; d < SR_MAX_SRC; ++d) { q[d] = g_sr_q[d].load(std::memory_order_relaxed); } }
+            if (!sc.next(S ? q : nullptr, &f, &j)) { break; }
             const int k = free_slot[--n_free];
-            const sr_piece & pc = pcs[next]; const size_t want = pc.n;
+            const sr_piece & pc = pcs[j]; const size_t want = pc.n;
+            slot_file[k] = f;
             memset(&cbs[k], 0, sizeof(iocb));
-            cbs[k].aio_lio_opcode = IOCB_CMD_PREAD; cbs[k].aio_fildes = (uint32_t) fd;
+            cbs[k].aio_lio_opcode = IOCB_CMD_PREAD; cbs[k].aio_fildes = (uint32_t) (f == 0 ? fd : S->fd[f]);
             cbs[k].aio_buf = (uint64_t) (uintptr_t) (buf + pc.off); cbs[k].aio_nbytes = want; cbs[k].aio_offset = (int64_t) (beg + pc.off);
             cbs[k].aio_data = (uint64_t) pc.off;
             ps[0] = &cbs[k];
             if (syscall(SYS_io_submit, c.ctx, 1L, ps) != 1) {
-                ++n_free; bad = true;
-                if (infl == 0 && next == 0) { g_aio_ok.store(0); }   // the very first submit refused: not on this kernel
+                ++n_free; sc.done(f); bad = true;
+                if (!sent) { g_aio_ok.store(0); }   // the very first submit refused: not on this kernel
                 break;
             }
-            ++next; ++infl;
+            sent = true; ++infl;
+            if (S) { g_sr_q[S->drive[f]].fetch_add(want, std::memory_order_relaxed); }
         }
-        if (infl == 0) { break; }
+        if (infl == 0) { bad = bad || sc.left > 0; break; }   // pieces no file holds (not reached: the original holds all of them), or a refused submit
         const long got = syscall(SYS_io_getevents, c.ctx, 1L, (long) QD, ev, (struct timespec *) nullptr);
         if (got < 0) { if (errno == EINTR) { continue; } bad = true; g_aio_ok.store(0); break; }   // a lost context cannot be drained
         for (long e = 0; e < got; ++e) {
             const iocb * cb = (const iocb *) (uintptr_t) ev[e].obj;
+            const int k = (int) (cb - cbs);
             const size_t off = (size_t) ev[e].data, want = cb->aio_nbytes;
             if (ev[e].res < 0 || ((size_t) ev[e].res < want && off + (size_t) ev[e].res < need)) { bad = true; }
-            free_slot[n_free++] = (int) (cb - cbs); --infl;
+            sc.done(slot_file[k]);
+            if (S) {
+                g_sr_q[S->drive[slot_file[k]]].fetch_sub(want, std::memory_order_relaxed);
+                if (ev[e].res > 0) { g_sr_b[S->drive[slot_file[k]]].fetch_add((uint64_t) ev[e].res, std::memory_order_relaxed); }
+            }
+            free_slot[n_free++] = k; --infl;
         }
     }
     return !bad;
@@ -327,35 +583,43 @@ struct uring_t {
 };
 // bytes [beg, beg + total) of fd (4096-aligned) into buf, 32 reads in flight, the pieces in the spaced order. False: nothing usable, the caller falls back.
 static inline bool uring_read_range(int fd, uint8_t * buf, size_t beg, size_t total, size_t need, int qd = sr_qd(), size_t blk = sr_blk(), size_t gap = sr_gap()) {
-    constexpr unsigned QDMAX = 32;
-    const unsigned QD = (unsigned) std::min(std::max(qd, 1), (int) QDMAX);
+    constexpr unsigned QDMAX = 128;   // as aio_read_range: qd on each drive the file is read from
     if (!g_uring_ok.load(std::memory_order_relaxed)) { return false; }
+    const sr_srcs * S = sr_srcs_of(fd);
+    const int nd = S ? S->n_drives : 1, per = std::max(1, std::min(std::max(qd, 1), (int) QDMAX / nd));
+    const unsigned QD = (unsigned) std::min(per * nd, (int) QDMAX);
     thread_local uring_t r; thread_local bool made = false;
     if (!made) { made = true; if (!r.init(QDMAX)) { g_uring_ok.store(0); } }
     if (!g_uring_ok.load(std::memory_order_relaxed)) { return false; }
     const std::vector<sr_piece> pcs = sr_pieces(total, blk, gap);
-    size_t offs[QDMAX]; size_t wants[QDMAX]; unsigned free_slot[QDMAX]; unsigned n_free = QD;
+    sr_sched sc(S, pcs, beg, per);
+    uint64_t q[SR_MAX_SRC] = {};
+    size_t offs[QDMAX]; size_t wants[QDMAX]; unsigned free_slot[QDMAX]; unsigned n_free = QD; int slot_file[QDMAX];
     for (unsigned i = 0; i < QD; ++i) { free_slot[i] = i; }
-    size_t next = 0; unsigned infl = 0; bool bad = false;
-    while (next < pcs.size() || infl > 0) {
+    unsigned infl = 0; bool bad = false;
+    while (sc.left > 0 || infl > 0) {
         unsigned queued = 0; unsigned tail = *r.sq_tail;
-        while (!bad && next < pcs.size() && n_free > 0) {
+        int f = 0; size_t j = 0;
+        while (!bad && n_free > 0) {
+            if (S) { for (int d = 0; d < SR_MAX_SRC; ++d) { q[d] = g_sr_q[d].load(std::memory_order_relaxed); } }
+            if (!sc.next(S ? q : nullptr, &f, &j)) { break; }
             const unsigned k = free_slot[--n_free];
-            const sr_piece & pc = pcs[next];
-            offs[k] = pc.off; wants[k] = pc.n;
+            const sr_piece & pc = pcs[j];
+            offs[k] = pc.off; wants[k] = pc.n; slot_file[k] = f;
+            if (S) { g_sr_q[S->drive[f]].fetch_add(pc.n, std::memory_order_relaxed); }
             const unsigned idx = tail & *r.sq_mask;
             io_uring_sqe * s = &r.sqes[idx];
             memset(s, 0, sizeof *s);
-            s->opcode = IORING_OP_READ; s->fd = fd; s->addr = (uint64_t) (uintptr_t) (buf + pc.off); s->len = (uint32_t) pc.n;
+            s->opcode = IORING_OP_READ; s->fd = f == 0 ? fd : S->fd[f]; s->addr = (uint64_t) (uintptr_t) (buf + pc.off); s->len = (uint32_t) pc.n;
             s->off = (uint64_t) (beg + pc.off); s->user_data = k;
             r.sq_array[idx] = idx;
-            ++tail; ++queued; ++next; ++infl;
+            ++tail; ++queued; ++infl;
         }
         if (queued) {
             __atomic_store_n(r.sq_tail, tail, __ATOMIC_RELEASE);
             if (syscall(SYS_io_uring_enter, r.fd, queued, 0u, 0u, nullptr, 0) < 0 && errno != EINTR) { bad = true; g_uring_ok.store(0); break; }
         }
-        if (infl == 0) { break; }
+        if (infl == 0) { bad = bad || sc.left > 0; break; }
         unsigned head = *r.cq_head;
         if (__atomic_load_n(r.cq_tail, __ATOMIC_ACQUIRE) == head) {   // nothing done yet: wait for one
             if (syscall(SYS_io_uring_enter, r.fd, 0u, 1u, IORING_ENTER_GETEVENTS, nullptr, 0) < 0 && errno != EINTR) { bad = true; g_uring_ok.store(0); break; }
@@ -365,6 +629,11 @@ static inline bool uring_read_range(int fd, uint8_t * buf, size_t beg, size_t to
             const io_uring_cqe * c = &r.cqes[head & *r.cq_mask];
             const unsigned k = (unsigned) c->user_data;
             if (c->res < 0 || ((size_t) c->res < wants[k] && offs[k] + (size_t) c->res < need)) { bad = true; }
+            sc.done(slot_file[k]);
+            if (S) {
+                g_sr_q[S->drive[slot_file[k]]].fetch_sub(wants[k], std::memory_order_relaxed);
+                if (c->res > 0) { g_sr_b[S->drive[slot_file[k]]].fetch_add((uint64_t) c->res, std::memory_order_relaxed); }
+            }
             free_slot[n_free++] = k; --infl; ++head;
         }
         __atomic_store_n(r.cq_head, head, __ATOMIC_RELEASE);
@@ -452,5 +721,10 @@ static inline bool sr_read(int fd, char * buf, size_t beg, size_t total, size_t 
     if (uring && total >= ((size_t) 512 << 10) && uring_read_range(fd, (uint8_t *) buf, beg, total, need)) { return true; }
 #endif
     if (total >= ((size_t) 512 << 10) && async_read_range(fd, (uint8_t *) buf, beg, total, need)) { return true; }
-    return sr_pread(fd, buf, beg, total, need);
+    int d = -1;   // one read at a time: from the least busy drive that holds the whole span (--multissd), the original when that read fails
+    const int f = sr_src_fd(sr_srcs_of(fd), fd, beg, beg + total, &d);
+    if (d >= 0) { g_sr_q[d].fetch_add(total, std::memory_order_relaxed); }
+    const bool ok = sr_pread(f, buf, beg, total, need);
+    if (d >= 0) { g_sr_q[d].fetch_sub(total, std::memory_order_relaxed); if (ok) { g_sr_b[d].fetch_add(total, std::memory_order_relaxed); } }
+    return ok || (f != fd && sr_pread(fd, buf, beg, total, need));
 }
