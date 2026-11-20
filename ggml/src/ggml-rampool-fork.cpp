@@ -115,6 +115,14 @@ struct rp_pool {
     std::deque<rp_job>      demand;     // what callers wait for
     std::deque<rp_job>      pf;         // reads ahead for predicted later layers: a reader takes one only when no demand waits
     std::vector<std::thread> readers;
+    // the readers' own count (rp_tune_step on their rate): windows of >= 1 s and >= 1 GiB in which every take left work in the queue; a reader holds one
+    // slice (about 5 reads in flight), a fill thread about 32, so the fill's count says little about theirs (K3.1: 8 readers 41 in flight, b15843's 16 86)
+    rp_thread_tune rd_tune;
+    uint64_t rd_win_b = 0;
+    int64_t  rd_win_t0 = 0;
+    bool     rd_win_ok = true;
+    int      rd_cap = 64;
+    std::string rd_steps;
     bool                    stop = false;
     std::atomic<uint32_t>   graph{ 2 };
     std::atomic<size_t>     memal{ 4 };  // memory alignment O_DIRECT takes here: 4 bytes on NVMe (queue/dma_alignment); an EINVAL raises it, the reader then goes through its bounce buffer
@@ -382,6 +390,7 @@ void rp_reader(rp_pool * p) {
             auto & q = p->demand.empty() ? p->pf : p->demand;
             j = q.front();
             q.pop_front();
+            if (p->demand.empty() && p->pf.empty()) { p->rd_win_ok = false; }   // the readers kept up: this window says nothing about more of them
             rp_rec & r = j.t->rec[j.e];
             if (r.state != RP_READING || r.claimed) { continue; }
             r.claimed = true;
@@ -402,6 +411,21 @@ void rp_reader(rp_pool * p) {
                 p->st_cold_b += t.esz;
                 p->rd_cold_b += t.esz;
                 c.cold += t.esz;
+                if (!p->rd_tune.settled) {
+                    p->rd_win_b += t.esz;
+                    const int64_t now = rp_now_us();
+                    if (now - p->rd_win_t0 >= 1000000 && p->rd_win_b >= ((uint64_t) 1 << 30)) {
+                        if (p->rd_win_ok) {
+                            const double gbs = (double) p->rd_win_b / ((double) (now - p->rd_win_t0) / 1e6) / 1e9;
+                            const int before = p->rd_tune.n;
+                            p->rd_tune = rp_tune_step(p->rd_tune, gbs, p->rd_cap);
+                            p->rd_steps += " " + std::to_string(before) + ":" + std::to_string(gbs).substr(0, 4);
+                            for (int i = (int) p->readers.size(); i < p->rd_tune.n && !p->stop; ++i) { p->readers.emplace_back(rp_reader, p); }   // they wait for this lock
+                            if (p->rd_tune.settled) { GGML_LOG_WARN("rampool: readers by window (readers:GB/s, the queue never empty):%s -> %d\n", p->rd_steps.c_str(), p->rd_tune.n); }
+                        }
+                        p->rd_win_b = 0; p->rd_win_t0 = now; p->rd_win_ok = true;
+                    }
+                }
             } else {
                 GGML_LOG_WARN("rampool: a read of %zu bytes at %llu failed: %s\n", t.esz, (unsigned long long) (t.off + (uint64_t) j.e * t.esz), strerror(errno));
                 c.owner[r.slot] = rp_owner();
@@ -639,7 +663,11 @@ void ggml_rampool_fill_fork(void) {
     const int n_rd = std::max({ p->n_threads * drives, p->n_tuned, (int) std::min<size_t>(64, ((size_t) drives * sr_qd() + pieces - 1) / pieces) });
     GGML_LOG_WARN("rampool: %d readers (slices from %.2f MiB: %zu blocks of %zu KiB each, %d in flight wanted%s)\n", n_rd, esz_min == SIZE_MAX ? 0.0 : esz_min / 1048576.0,
             pieces, sr_blk() >> 10, sr_qd(), drives > 1 ? " on each of two drives" : "");
-    for (int i = 0; i < n_rd; ++i) { p->readers.emplace_back(rp_reader, p); }
+    {
+        std::lock_guard<std::mutex> lk(p->mu);
+        p->rd_tune.n = n_rd; p->rd_cap = std::min(128, 64 * drives); p->rd_win_t0 = rp_now_us();
+        for (int i = 0; i < n_rd; ++i) { p->readers.emplace_back(rp_reader, p); }
+    }
 }
 
 void ggml_rampool_close_fork(void) {
