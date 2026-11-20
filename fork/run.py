@@ -5854,6 +5854,12 @@ def cmd_publish(a):
     arch = [f for f in arch if "-vulkan-hip-" in f or f.startswith("cudart-")]   # CPU+CUDA-only archives of a build are never published
     if not any("-ubuntu-" in f and f.startswith("llama-") for f in arch) or not any("-win-" in f and f.startswith("llama-") for f in arch):
         sys.exit(f"publish: {h} needs both vulkan-hip archives (Linux: build --release, Windows: build --release --machine pc3) in {REL_OUT}; found {arch}")
+    for f in arch:   # every program archive carries the shipped hot maps (a first start fills its cache from them)
+        if not f.startswith("llama-"): continue
+        p = os.path.join(REL_OUT, f)
+        names = subprocess.run(["unzip", "-Z1", p] if f.endswith(".zip") else ["tar", "tzf", p], capture_output=True, text=True).stdout
+        if "hotmaps/" not in names:
+            sys.exit(f"publish: {f} has no hotmaps/ (the release build packs them from {os.environ.get('RUN_HOT_DIR', '/p/bw/data/hot-global')})")
     arch += [f for f in os.listdir(REL_OUT) if f.startswith("cudart-llama-bin-win-") and any("-bin-win-cuda-" in x for x in arch)]   # the shared Windows CUDA runtime has no hash in its name: without it every Windows release ran on the CPU (b14965 and before)
     b = re.search(r"llama-release-b(\d+)-", arch[0]).group(1); tag = f"release-b{b}-{h}-{a.name}"
     gh = ["gh", "-R", "neurall/llama.cpp"]
