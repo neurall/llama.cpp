@@ -117,3 +117,5 @@ q1-p14k-sg,qwen38,2,pf14k1k,1024,"--moe sparse-gate-decode=1 -bs",--env CUDA_VIS
 q1-g2k-sg,qwen38,2,pf12k1k,2048,"--moe sparse-gate-decode=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-tr4k,qwen38,1,pf12k1k,2048,"-bs","--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none --delay=30 --duration=4 --kill=none -o /p/bw/data/nsys/q1tr4k-%p --force-overwrite=true'"
 q1-tr14k,qwen38,1,pf14k1k,1024,"-bs","--env CUDA_VISIBLE_DEVICES=0 --wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none --delay=36 --duration=4 --kill=none -o /p/bw/data/nsys/q1tr14k-%p --force-overwrite=true'"
+q1-q8log2,qwen38,1,pf1k,256,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_Q8_REUSE_LOG=1
+q1-opprof,qwen38,1,pf1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_OP_PROFILE=128

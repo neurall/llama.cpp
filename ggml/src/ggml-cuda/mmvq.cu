@@ -1717,8 +1717,12 @@ void ggml_cuda_mul_mat_vec_q(
         const int64_t s12 = src1->nb[2] / ts_src1;
         const int64_t s13 = src1->nb[3] / ts_src1;
         // fork: the graph's other matvecs of this input may have quantized it already (GGML_CUDA_Q8_REUSE=1, ggml-cuda.cu)
-        const int64_t q8_ne[4] = { ne10, ne11, ne12, ne13 };
-        const int64_t q8_s[3]  = { s11, s12, s13 };
+        // a contiguous input quantizes to the same bytes however its rows split over ne11..ne13 (quantize_q8_1 writes row after row), so it is keyed by its
+        // row count: Qwen3.8 reads one input as [2560, 1, 2] and as [2560, 2, 1], and 303 of 400 lookups missed (2026-11-20, q1-q8log)
+        const bool    q8_flat  = s11 == ne10 && s12 == s11*ne11 && s13 == s12*ne12;
+        const int64_t q8_rows  = ne11*ne12*ne13;
+        const int64_t q8_ne[4] = { ne10, q8_flat ? q8_rows : ne11, q8_flat ? 1 : ne12, q8_flat ? 1 : ne13 };
+        const int64_t q8_s[3]  = { s11, q8_flat ? s11*q8_rows : s12, q8_flat ? s11*q8_rows : s13 };
         bool q8_hit = false;
         src1_q8 = (char *) ggml_cuda_q8_reuse_fork(ctx.device, ctx.curr_stream_no, src1_d, q8_ne, q8_s, ggml_nbytes(src1), q8_bytes, &q8_hit);
         if (src1_q8 == nullptr) {
