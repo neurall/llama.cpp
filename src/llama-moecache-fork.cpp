@@ -14,6 +14,7 @@
 #include "llama-estimate-fork.h"   // the planner's strategy estimators: metrics in, time per token out
 #include "llama-splitplan-fork.h"  // the dense split's pure rules (llama_dsplit_may_take_call_fork)
 #include "llama-moe-fetchlist-fork.h"   // the predictor's ordered fetch list (decode and prompt passes)
+#include "llama-moeopts-fork.h"   // the --moe items, arg.cpp's rule
 
 #include "llama-impl.h"
 #include "llama-model.h"
@@ -16159,11 +16160,7 @@ void llama_moe_cache_step_fork() {
 void llama_moe_set_options(const char * opts) {
     // "NAME=value,NAME=value": tuner knobs (MARGIN, GATE, WAIT, BIG, ...); a name given here is never tuned
     knobs(); // environment first
-    std::string s = opts ? opts : "";
-    for (size_t pos = 0; pos < s.size();) {
-        const size_t comma = s.find(',', pos);
-        const std::string kv = s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
-        pos = comma == std::string::npos ? s.size() : comma + 1;
+    for (const std::string & kv : llama_moe_opt_items_fork(opts ? opts : "")) {   // arg.cpp's items: a list stays one value (it was cut to its first word here)
         const size_t eq = kv.find('=');
         if (eq == std::string::npos) { continue; }
         std::string name = kv.substr(0, eq);

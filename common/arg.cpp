@@ -4,6 +4,7 @@
 #include "chat.h"
 #include "common.h"
 #include "cpu-topo-fork.h"   // fork: common_cpu_allowed_count_fork
+#include "../src/llama-moeopts-fork.h"   // fork: the --moe items, the engine's rule too
 #include "download.h"
 #include "http.h"
 #include "json-schema-to-grammar.h"
@@ -2550,14 +2551,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "upload-share, ... (and any other LLAMA_MOE_CACHE_<NAME> setting: POLICY, PREDICT_AHEAD, ...: --moe policy=lru). A knob given here is never self-tuned. autotune=0: no self-tuning (same as -at off).",
         [](common_params & params, const std::string & value) {
             // a word without '=' continues the value before it: --moe kv-fallback=k8v8,k4v4,ram is one key with a list (the KV tier list), not a key 'k4v4'
-            std::vector<std::string> items;
-            for (size_t pos = 0; pos < value.size();) {
-                const size_t comma = value.find(',', pos);
-                const std::string tok = value.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
-                pos = comma == std::string::npos ? value.size() : comma + 1;
-                if (tok.find('=') == std::string::npos && !items.empty()) { items.back() += "," + tok; } else { items.push_back(tok); }
-            }
-            for (const std::string & kv : items) {
+            for (const std::string & kv : llama_moe_opt_items_fork(value)) {
                 const size_t eq = kv.find('=');
                 if (eq == std::string::npos) {
                     throw std::invalid_argument("--moe: expected KEY=VAL, got '" + kv + "'");
