@@ -7,6 +7,7 @@
 
 #include "../../quants.h"
 #include "../../ggml-cpu-impl.h"
+#include "q8k-avx2-fork.h"   // fork
 
 #include <math.h>
 #include <string.h>
@@ -520,8 +521,14 @@ void quantize_row_q8_1(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, i
 }
 
 // placeholder implementation for Apple targets
+// fork: AVX2 path byte-identical to the ref (q8k-avx2-fork.h, tests/test-q8k-avx2-fork.cpp); the ref was 2.5 us per 2560 floats on Zen 2, in every
+// decode layer whose missed experts run on the CPU
 void quantize_row_q8_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+#if defined(__AVX2__)
+    quantize_row_q8_K_avx2_fork(x, (block_q8_K *) y, k);
+#else
     quantize_row_q8_K_ref(x, y, k);
+#endif
 }
 
 //===================================== Dot products =================================

@@ -1,0 +1,51 @@
+run 30534 | rel_vk_exit_nodriver | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 12.77 t/s | prompt 440.6 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 280+280 W | 2026-11-17 23:20:45
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params)` with no body. So I should note that the file appears incomplete.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Issues:
+- If `min_items > max_items` (invalid input), behavior is undefined-ish. E.g., `min_items=5, max_items=3` would produce `{5,3}` which is invalid grammar. No validation.
+- If `min_items > 0 && max_items == 0`, returns "" — but that's arguably wrong: if min_items > 0 and max_items == 0, the schema is contradictory; returning empty silently accepts. Actually wait, `max_items == 0` returns "" regardless of min_items. If min_items is 2 and max_items is 0, that's a contradictory schema; returning "" means the grammar matches nothing? Actually returning "" as a rule content... Hmm, in the array case: `"[" space " space "]"` — the repetition returns "", so the rule becomes `"[" space  space "]"` which matches an empty array. But the schema says min_items=2, max_items=0, which is impossible. So the grammar would accept an empty array, which is wrong (should accept nothing). Minor edge case.
+- Negative min_items? If min_items is negative, `{ -1, ...}` would be produced. Callers pass `arr.min_items` directly. If min_items is negative... In KIND_ARRAY, `arr.min_items` is used directly. If it's negative, `build_repetition` with min_items=-1 and no max: falls to `{` branch producing `{-1,}`. Invalid. Probably schema validation upstream ensures non-negative, but defensive check would be good.
+- Recursion: `build_repetition` calls itself with max_items - 1. If max_items is huge (e.g., INT_MAX-1?), has_max is true when max_items != INT_MAX. So max_items = INT_MAX - 1 → has_max true → recursion with max_items - 1 each time... wait no. Let's trace: with separator, `build_repetition(item, min, max)` calls `build_repetition(sep_item, min-1 or 0, max-1)`. If max is large (say 1000000), this recurses 1000000 times → stack overflow. Actually each recursion decrements max by 1, so recursion depth = max_items. For large max_items with a separator, this could blow the stack. E.g., schema with `"maxItems": 100000` and separator... Actually wait, where is build_repetition called with a separator? In KIND_ARRAY: `build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space")`. So an array schema with maxItems = 100000 would recurse 100000 deep → stack overflow. Hmm, but each recursion level also builds a string, so it would be O(n) string building too. This is a potential DoS / crash with adversarial schemas. Actually let me check: recursion happens once per level, and each level decrements max_items by 1. So depth = max_items. With max_items = 100000,

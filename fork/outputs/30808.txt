@@ -1,0 +1,41 @@
+run 30808 | pool_copy_own_card_vk | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 29.6 t/s | prompt 992.1 t/s | 1024 tokens | args: -np 1 --moe swap-lead=-2,wait-swaps=0,upload-wait=0,idle-up=0 | power 280+280 W | 2026-11-18 11:51:46
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params) {` with no body. So I should note that the file appears incomplete.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+}
+```
+
+Issues:
+- If `max_items == 0` but `min_items > 0`, this is contradictory (schema requires at least min_items but at most 0 items). The function returns "" which would make the grammar unmatchable — actually returning "" means the rule matches empty string, which conflicts with min_items > 0. This is arguably a schema validation issue, but silently producing an empty rule could be surprising. Actually wait — if max_items == 0 and min_items == 0, returning "" is correct (empty repetition). If min_items > 0 and max_items == 0, the schema is unsatisfiable; returning "" silently produces a grammar that doesn't enforce min_items. Hmm, actually returning "" means the grammar accepts zero items, which violates min_items. But the schema itself is contradictory, so any behavior is "wrong". Still, worth noting.
+
+- Negative `min_items`? If min_items is negative... `min_items == 0 ? 0 : min_items - 1` in the separator branch. For arrays, `arr.min_items` could be negative? In KIND_ARRAY, `arr.min_items` is used directly: `build_repetition(item_rule_name, arr.min_items, max_items, ...)`. If min_items is negative, we'd get `{ -1, ...}` which is invalid grammar. Let me check: `int max_items = arr.max_items < 0 ? std::numeric_limits<int>::max() : arr.max_items;` — max_items is guarded, but min_items is not guarded. If `arr.min_items` is negative (e.g., -1 meaning unspecified?), we'd produce `item_rule{-1,}` which is invalid GBNF. Hmm, but maybe the schema parsing guarantees min_items >= 0. Worth flagging as a potential issue.
+
+- In the separator branch: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. If max_items == 1 and min_items == 1 with separator: result = item + " " + build_repetition("(sep item)", 0, 0) → inner returns "" (max_items==0). So result = "item " + "" = "item " — trailing space! Wait: `auto result = item_rule + " " + build_repetition(...)`. If the inner build_repetition returns "", result is `item_rule + " "` — a trailing space in the grammar. Is a trailing space meaningful in GBNF? In GBNF, whitespace outside of quotes... Actually in llama.cpp's GBNF, spaces between rule elements are generally ignored? Hmm, actually in GBNF grammar text, whitespace is generally insignificant except within quoted literals. Let me think. In llama.cpp grammar parser, whitespace between symbols is skipped. So "item " with trailing space is harmless. But wait — actually there's a subtlety: `build_repetition("(" + separator_rule + " " + item_rule + ")", ...)` — the separator_rule itself is like `"," space` which contains a space. OK.
+
+  Actually wait, there's a real bug potential: if max_items == 1 and min_items == 0 with separator: result = item + " " + build_repetition("(sep item)", 0, 0) = item + " " + "" then result = "(" + result + ")?" = "(item )?" — trailing space inside parens, harmless in GBNF.
+
+  Hmm, but what about min_items == 1, max_items == 1 with separator: result = item + " " + build_repetition("(sep item)", 0, 0) = "item " — then no "?" appended since min

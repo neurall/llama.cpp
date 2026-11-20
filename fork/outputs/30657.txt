@@ -1,0 +1,40 @@
+run 30657 | rel_vk_exit_nodriver | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 35.31 t/s | prompt 746.8 t/s | 1024 tokens | args: -np 1 -lm pin | power 200+200 W | 2026-11-18 05:10:26
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General Observations
+
+1. **`build_repetition` function:**
+   - The function handles separator-based repetition. When `min_items == 0` and there's a separator, it wraps the result in `(...)?`. This seems correct.
+   - When `max_items == 0`, returns empty string - correct.
+   - The separator case: `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", ...)` - this builds `item (sep item)*` pattern. Looks correct.
+
+2. **`build_min_max_int` function:**
+   - This is a complex function that builds regex-like rules for integer ranges.
+   - The `uniform_range` lambda handles digit-by-digit range matching.
+   - There's a potential issue: when `min_value < 0 && max_value < 0`, it negates both and recurses. But what about `min_value == INT64_MIN`? `-min_value` would overflow. Let me check... Actually, `min_value < 0 && max_value < 0` - if `min_value` is `INT64_MIN`, then `-min_value` would be `INT64_MIN` again (overflow). This is a potential bug.
+   - Wait, actually `std::numeric_limits<int64_t>::min()` is `-9223372036854775808`. Negating it would overflow. So `-min_value` when `min_value == INT64_MIN` is undefined behavior.
+
+3. **`uniform_range` lambda:**
+   - The `to_reached` variable is declared inside the lambda but used across iterations... wait, no, it's declared fresh each time the lambda is called. Actually, looking more carefully, `to_reached` is declared inside the lambda body, so it's fresh each call. That's fine.
+   - The logic seems complex but I'd need to trace through examples to verify correctness.
+
+4. **`_add_rule` method:**
+   - When a rule name already exists with a different content, it appends a number suffix. The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds the first index where either the name doesn't exist or the content matches. This seems correct.
+
+5. **`_visit_pattern` method:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good pattern for rollback.
+   - However, `_refs_being_resolved` is not snapshotted/restored. If a pattern conversion triggers ref resolution that fails, the refs set might be left in an inconsistent state. Though looking at the code, `_visit_pattern` calls `_pattern_to_rule` which doesn't seem to resolve refs, so this might not be an issue in practice.
+
+6. **`_pattern_to_rule` method:**
+   - The `transform` lambda is recursive (via `std::function`), which is correct for handling nested groups.
+   - The character class parsing: when encountering `[`, it reads until `]`. But it doesn't handle `]` as the first character in a class (which is valid in regex - `[]abc]` means `]`, `a`, `b`, `c`). This could be a bug.
+   - Actually wait, looking at the code: `while (i < length && sub_pattern[i] != ']')` - this stops at the first `]`. In regex, `[]abc]` is valid and means the character class containing `]`, `a`, `b`, `c`. But this code would stop at the first `]`, treating `[]` as an empty class. This is a potential bug.
+   - The `{` parsing: reads until `}`. Similar issue with `}` as first character, but that's less common.
+   - The `|` handling: `seq.emplace_back("|", false)` - this adds a pipe as a non-literal. Then in `join_seq`, it joins with spaces. So `a|b` becomes `a | b`. This seems correct for GBNF.
+   - The `*`, `+`, `?` handling: applies to the last element in seq. If the last element is a literal, it wraps it in quotes first via `to_rule`. This seems correct.
+   - The `{n,m}` handling: for non-literal items, it creates a sub-rule. For literal items, it

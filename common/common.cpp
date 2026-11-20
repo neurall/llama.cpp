@@ -5,6 +5,7 @@
 #include "build-info.h"
 #include "common.h"
 #include "../src/llama-backend-fork.h"
+#include "../src/llama-sidefile-fork.h"
 #include "cpu-topo-fork.h"
 
 #include "../src/llama-ext.h"
@@ -1506,13 +1507,21 @@ static size_t      g_moe_auto_vram_free = 0; // free VRAM when this run chose it
 
 // The placement records live in the engine's state file (llama_state_*, one INI section per model):
 //   [<model file> <bytes>]  place.g<gpus>x<GiB of the largest GPU>g.v2.stock|cache = <ms/prompt token> <ms/generated token> <runs>  and  .decided
+//   with --moe tensor-file: [<model file> <bytes>+<side file>:<bytes>...], the side files' weights are another footprint (llama-sidefile-fork.h)
 // moe_auto_path() returns "<section>\x1f<key prefix>"; the same section is handed to the engine for its own keys (hot experts, tuner)
 static std::string moe_auto_path(const common_params & params, size_t model_size, int n_gpu, size_t vram_max) {
     std::string name = params.model.path;
     const size_t sl = name.find_last_of("/\\");
     if (sl != std::string::npos) { name = name.substr(sl + 1); }
-    for (auto & c : name) { if (c == '[' || c == ']' || c == '\n' || c == '\r') { c = '_'; } }
-    const std::string section = name + " " + std::to_string(model_size);
+    std::vector<std::pair<std::string, size_t>> sides;
+    if (const char * tf = llama_moe_get_opt("tensor-file")) {
+        for (const std::string & p : llama_side_paths_fork(tf)) {
+            std::error_code ec;
+            const size_t sz = (size_t) std::filesystem::file_size(p, ec);
+            sides.push_back({ p, ec ? 0 : sz });
+        }
+    }
+    const std::string section = llama_state_section_fork(name, model_size, sides);
     llama_state_set_model(section.c_str());
     const std::string place = "place.g" + std::to_string(n_gpu) + "." + (g_gpu_id.empty() ? std::to_string(((g_gpu_total_max ? g_gpu_total_max : vram_max) + ((size_t) 1 << 29)) >> 30) + "g" : g_gpu_id) + ".v3";
     llama_state_set_place(place.c_str());   // the engine keeps the seen link bandwidth under it

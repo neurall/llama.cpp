@@ -4,7 +4,10 @@
 //   prefetch       ppx_stage_slots  : staging slots behind the graph (at least 2 or none, inside the lendable bytes, at most the configured number)
 //   prompt passes  ppx_equal_pass   : equal passes, never a nearly empty last pass
 //   dense split    ppx_ds_edge      : the token ranges of the cards (both non-empty, each at least the minimum when the pass allows)
-//   stream chunks  ppx_pick_chunks  : the chunk count of a staging=0 stream call (ring reserve against passes against entries)
+//   stream chunks  ppx_pick_chunks  : the chunk count of a staging=0 stream call (ring reserve against passes against entries; a pass costs its link upload or
+//                                     its SSD reads, ppx_stream_pass_us)
+//   checkpoint cut ppx_cut_last     : the last pass of a request cut off as its own call (fewest passes, the cut on a 256-cell pad, the last pass never longer
+//                                     than the equal ones when the passes before it can take the pad)
 //
 // build: cmake --build <dir> --target test-pass-fork;  run: ctest -R test-pass-fork   or   test-pass-fork [iterations] [seed]
 #include "../src/llama-passplan-fork.h"
@@ -122,6 +125,56 @@ static void test_hot_cache() {
 }
 
 // ---- prefetch staging ---------------------------------------------------------------------------------------------------------------------------
+// the picks of a step from one scan (poolx_pick_order) against a scan a pick (poolx_pick_slot), while picked blocks are taken as the cache step takes them
+static void test_hot_order() {
+    printf("Testing the hot cache's picks of a step from one scan:\n");
+    std::mt19937_64 rng(g_seed + 17);
+    long bad = 0, n_pick = 0, n_take = 0, n_rescan = 0; std::string first;
+    for (long it = 0; it < g_iters; ++it) {
+        const int N = 1 + (int) (rng() % 60), NL = 1 + (int) (rng() % 4);
+        hot_state h; h.ps.owner.resize(N); h.busy.resize(N); h.expert.resize(N); h.rank.resize(N);
+        const bool with_free = rng() % 4 == 0;
+        for (int b = 0; b < N; ++b) {
+            const int r = (int) (rng() % 10);
+            h.ps.owner[b] = r == 0 ? -2 : r == 1 ? -3 : r == 2 && with_free ? -1 : (int32_t) (rng() % NL);
+            if (h.ps.owner[b] == -1 && rng() % 4 != 0) { h.ps.free.push_back(b); }   // one in four free blocks is not in the stack
+            h.busy[b]   = rng() % 6 == 0;
+            h.expert[b] = rng() % 8 == 0 ? -1 : (int32_t) (1000 * b + (int32_t) (rng() % 64));   // an expert id of its own a block
+            h.rank[b]   = rng() % 5 == 0 ? -1.0 : (double) (rng() % 12);                          // few values: equal ranks are common
+        }
+        const int32_t n_active = (int32_t) (rng() % (N + 1));
+        const auto busy   = [&](int32_t, int32_t b) { return h.busy[b] != 0; };
+        const auto expert = [&](int32_t, int32_t b) { return h.expert[b]; };
+        const auto rank   = [&](int32_t, int32_t e) { return h.rank[e / 1000]; };
+        poolx_pick_order ord;
+        const size_t cap = (size_t) (rng() % 6);
+        poolx_pick_order_make(ord, h.ps, n_active, busy, expert, rank, cap);
+        for (int k = 0; k < 12; ++k) {
+            double b0 = 0, b1 = 0;
+            const poolx_pick want = poolx_pick_slot(h.ps, n_active, busy, expert, rank, b0);
+            const size_t before = ord.i_ranked;
+            const poolx_pick got  = poolx_pick_order_next(ord, h.ps, n_active, busy, expert, rank, b1);
+            n_pick++;
+            n_rescan += ord.cut && ord.i_ranked == ord.ranked.size() && before <= ord.ranked.size();
+            if (want.slot != got.slot || want.owner != got.owner || b0 != b1) {
+                if (bad++ == 0) { first = fmt("pick %d of a step: a scan gives block %d (owner %d, rank %g), the order block %d (owner %d, rank %g)", k, want.slot, want.owner, b0, got.slot, got.owner, b1); }
+                break;
+            }
+            if (want.slot < 0) { break; }
+            if (rng() % 4 != 0) {   // taken, as the step does: out of the free stack, another layer's now, its upload in flight
+                n_take++;
+                const int32_t b = want.slot;
+                h.ps.free.erase(std::remove(h.ps.free.begin(), h.ps.free.end(), b), h.ps.free.end());
+                h.ps.owner[b] = (int32_t) (rng() % NL);
+                h.expert[b]   = -1;
+                h.busy[b]     = 1;
+            }
+        }
+    }
+    report("the order of one scan gives every pick a scan of its own gives", bad == 0, first);
+    printf("  (%ld picks, %ld blocks taken, %ld picks past a cut list)\n", n_pick, n_take, n_rescan);
+}
+
 static void test_prefetch() {
     printf("Testing prefetch staging slots:\n");
     std::mt19937_64 rng(g_seed + 1);
@@ -248,6 +301,73 @@ static void test_stream_chunks() {
             report("equal times (within 1%): the fewer passes", b3 == 1, fmt("pick %d: %.2f %.2f s", b3, us3[0] / 1e6, us3[1] / 1e6));
         }
     }
+    {   // Kimi K3.1 IQ1_S, 13k prompt (12558 tokens), two cards, rows k31-i-mir 2026-11-20. Chunks 1/2/3/4/6/8, a layer on one card (share 1). The drives stream the
+        // experts the RAM pool does not hold, 290 GiB a pass, at about 6.5 GB/s together (passes took 46-50 s); the link upload is 20.5 s a pass.
+        const double up = 20495e3, ssd_b = 290.0 * 1073741824.0;
+        const int extra[6] = { 0, 1, 2, 3, 5, 7 };
+        double us[6];
+        // request 2, caps measured, compute measured 5814 us a token (581 a further entry)
+        const uint32_t cap[6] = { 0, 2272, 3264, 3776, 4160, 4352 };
+        const int b0 = ppx_pick_chunks(12558, cap, extra, 6, ppx_stream_pass_us(up, 0.0, 0.0), 5814.0, 581.4, us);
+        report("K3.1 priced by the link alone: 3 chunks, 4 passes (what ran)", b0 == 2, fmt("pick %d", b0));
+        const int b1 = ppx_pick_chunks(12558, cap, extra, 6, ppx_stream_pass_us(up, ssd_b, 6.5), 5814.0, 581.4, us);
+        report("K3.1 with the drives' 290 GiB a pass: 8 chunks, 3 passes", b1 == 5,
+                fmt("pick %d: %.0f %.0f %.0f %.0f %.0f s", b1, us[1] / 1e6, us[2] / 1e6, us[3] / 1e6, us[4] / 1e6, us[5] / 1e6));
+        // request 1, first call: no pass measured yet, caps estimated, compute calculated 1651 us a token
+        const uint32_t cap_e[6] = { 0, 2656, 3616, 4064, 4416, 4544 };
+        const int b2 = ppx_pick_chunks(12558, cap_e, extra, 6, ppx_stream_pass_us(up, ssd_b, 6.82), 1651.0, 165.1, us);
+        report("K3.1 caps estimated, no error known: 6 chunks (3 passes planned; measured 4160 < 4186 ran 4)", b2 == 4, fmt("pick %d", b2));
+        double err[6];
+        ppx_cap_err(cap_e, cap, 6, err);
+        report("K3.1 estimate error per chunk count from the next pick: 6 chunks 6.2% (4416 / 4160), 8 chunks 4.4%",
+                err[0] == 0.0 && err[4] > 0.061 && err[4] < 0.063 && err[5] > 0.043 && err[5] < 0.045, fmt("%.4f %.4f %.4f", err[1], err[4], err[5]));
+        const int b3 = ppx_pick_chunks(12558, cap_e, extra, 6, ppx_stream_pass_us(up, ssd_b, 6.82), 1651.0, 165.1, us, err);
+        report("K3.1 caps estimated, error known: 8 chunks, 3 passes", b3 == 5, fmt("pick %d", b3));
+        const uint32_t est3[3] = { 100, 0, 300 }, now3[3] = { 80, 40, 330 };
+        double e3[3];
+        ppx_cap_err(est3, now3, 3, e3);
+        report("estimate error: a cap that fell 100 -> 80 is 25% high; none for one that rose or could not run", std::abs(e3[0] - 0.25) < 1e-12 && e3[1] == 0.0 && e3[2] == 0.0);
+        report("the SSD part: the slower of link and drives; none without a rate",
+                ppx_stream_pass_us(20e6, 650e9, 6.5) == 100e6 && ppx_stream_pass_us(20e6, 65e9, 6.5) == 20e6 && ppx_stream_pass_us(20e6, 650e9, 0.0) == 20e6);
+    }
+}
+
+// ---- the server's checkpoint cut before the last pass ------------------------------------------------------------------------------------------
+static void test_pass_cut() {
+    printf("Testing the checkpoint cut before the last pass:\n");
+    std::mt19937_64 rng(g_seed + 6);
+    long bad = 0, n_up = 0, n_down = 0; std::string first;
+    auto fail = [&](const std::string & s) { if (bad++ == 0) { first = s; } };
+    for (long it = 0; it < g_iters; ++it) {
+        const uint32_t cap = 64 + (uint32_t) (rng() % 16000);
+        uint32_t n = 1 + (uint32_t) (rng() % 120000);
+        if (it % 2) { n = (2 + (uint32_t) (rng() % 8)) * cap - (uint32_t) (rng() % std::min<uint32_t>(cap, 300)); }   // passes nearly full: little room before the cut or in the last pass
+        const uint32_t end = n + (uint32_t) (rng() % 60000);
+        auto passes = [&](uint32_t m) { return (m + cap - 1) / cap; };
+        const uint32_t k = passes(n), p = (n + k - 1) / k;
+        const uint32_t q = ppx_cut_last(n, end, 256, passes);
+        if (q == 0 || q > n || q > cap) { fail(fmt("n %u cap %u: last pass %u", n, cap, q)); continue; }
+        if (k == 1) { if (q != n) { fail(fmt("n %u cap %u: one pass cut to %u", n, cap, q)); } continue; }
+        if (passes(n - q) != k - 1) { fail(fmt("n %u cap %u: %u passes before the last, %u planned", n, cap, passes(n - q), k - 1)); continue; }
+        const uint32_t r = (end - p) % 256;
+        const bool up_ok = r > 0 && p > 256 - r && passes(n - (p - (256 - r))) == k - 1;
+        const bool down_ok = r > 0 && p + r < n && passes(p + r) == 1;
+        if ((r == 0 || up_ok || down_ok) && (end - q) % 256 != 0) { fail(fmt("n %u end %u cap %u: cut at %u off its pad though one was in reach", n, end, cap, end - q)); }
+        if (up_ok && q > p) { fail(fmt("n %u end %u cap %u: last pass %u grew though the passes before it take the pad", n, end, cap, q)); }
+        n_up += q < p; n_down += q > p;
+    }
+    report("the last pass fits; no pass more than the equal ones; on a pad when one is in reach; shorter before longer", bad == 0, first);
+    report("the run met both moves (shorter, longer)", n_up > 100 && n_down > 100, fmt("%ld shorter, %ld longer", n_up, n_down));
+    {   // Kimi K3.1 2026-11-20 (rows k31-i): 12558 tokens before the 4-token tail; cap at the request's end estimated 4416 (6 chunks), measured 4160 after the first passes
+        auto est = [](uint32_t m) { return (m + 4416 - 1) / 4416; };
+        const uint32_t q = ppx_cut_last(12558, 12558, 256, est);
+        report("K3.1 12558 tokens: the last pass fits the cap measured later (4160), the cut on a pad", q <= 4160 && (12558 - q) % 256 == 0, fmt("last pass %u, cut at %u", q, 12558 - q));
+        report("K3.1: the two passes before the cut stay two", est(12558 - q) == 2, fmt("%u", est(12558 - q)));
+    }
+    report("one pass: the call is the pass", ppx_cut_last(3000, 3000, 256, [](uint32_t m) { return (m + 4095) / 4096; }) == 3000);
+    report("no plan: 0", ppx_cut_last(3000, 3000, 256, [](uint32_t) { return 0u; }) == 0);
+    report("passes before full, no room in the last: the equal cut, off a pad", ppx_cut_last(8000, 8000, 256, [](uint32_t m) { return (m + 3999) / 4000; }) == 4000);
+    report("passes before full, room in the last: the cut moves down to the pad", ppx_cut_last(8000, 8106, 256, [](uint32_t m) { return (m + 4049) / 4050; }) == 4010);
 }
 
 // ---- a graph's bytes from the sizes measured ---------------------------------------------------------------------------------------------------
@@ -309,10 +429,12 @@ int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
     test_hot_cache();
+    test_hot_order();
     test_prefetch();
     test_passes();
     test_dense_split();
     test_stream_chunks();
+    test_pass_cut();
     test_lend_line();
     test_split_class();
     if (n_failed > 0) {

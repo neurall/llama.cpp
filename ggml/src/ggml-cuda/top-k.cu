@@ -209,6 +209,81 @@ static __global__ void top_k_radix_gather(
     }
 }
 
+// fork: one row in one block, the radix select above in a single launch. Decode in sparse attention picks the top blocks of one row per layer
+// (Qwen3.8, 12 layers a token): the CUB sort below 4096 columns took 20 us a row and the radix path above (11 launches) 32 us; one block reads the row
+// from L2 five times instead (2026-11-20 trace, one card: 243 and 390 us a token at 4k and 14k cells). Same selection as the radix path: every key above the
+// k-th, then that many of the keys equal to it; the order is not defined. A histogram per warp: the first passes put most keys in a few bins.
+#ifndef GGML_CUDA_TOP_K_ONE_BLOCK_MAX
+#    define GGML_CUDA_TOP_K_ONE_BLOCK_MAX 16384
+#endif // GGML_CUDA_TOP_K_ONE_BLOCK_MAX
+
+template<int NT>
+static __global__ void top_k_one_block(const float * __restrict__ src, int * __restrict__ dst, const int ncols, const int k) {
+    constexpr int NBINS = 256;
+    constexpr int NW    = NT / WARP_SIZE;
+    __shared__ int      hist[NW][NBINS];
+    __shared__ int      tot[NBINS];
+    __shared__ int      scan[NBINS];
+    __shared__ uint32_t s_prefix, s_mask;
+    __shared__ int      s_rank, s_gt, s_eq;
+
+    const int tid = threadIdx.x;
+    const int w   = tid / WARP_SIZE;
+    if (tid == 0) { s_prefix = 0; s_mask = 0; s_rank = k; s_gt = 0; s_eq = 0; }
+    for (int shift = 32 - 8; shift >= 0; shift -= 8) {
+        for (int i = tid; i < NW * NBINS; i += NT) { (&hist[0][0])[i] = 0; }
+        __syncthreads();
+        const uint32_t prefix = s_prefix, mask = s_mask;
+        for (int c = tid; c < ncols; c += NT) {
+            const uint32_t key = top_k_float_to_ordered(src[c]);
+            if ((key & mask) == prefix) { atomicAdd(&hist[w][(key >> shift) & (NBINS - 1)], 1); }
+        }
+        __syncthreads();
+        for (int b = tid; b < NBINS; b += NT) {
+            int n = 0;
+            for (int j = 0; j < NW; ++j) { n += hist[j][b]; }
+            tot[b] = n;
+        }
+        __syncthreads();   // every bin's total before a thread reads another thread's bin below
+        // the bin of the rank-th largest key, as top_k_radix_select's walk from the top bin, but as a scan: thread t holds bin NBINS-1-t and the keys in
+        // the bins above it (one thread walking 256 bins took ~16 of a row's 20 us). Exactly one thread finds its bin; the walk stops at bin 0 as before
+        const int rank0 = s_rank;
+        if (tid < NBINS) { scan[tid] = tot[NBINS - 1 - tid]; }
+        __syncthreads();
+        for (int o = 1; o < NBINS; o <<= 1) {
+            const int v = tid < NBINS && tid >= o ? scan[tid - o] : 0;
+            __syncthreads();
+            if (tid < NBINS) { scan[tid] += v; }
+            __syncthreads();
+        }
+        if (tid < NBINS) {
+            const int incl = scan[tid];
+            const int excl = incl - tot[NBINS - 1 - tid];
+            if (excl < rank0 && (incl >= rank0 || tid == NBINS - 1)) {
+                s_rank   = rank0 - excl;
+                s_prefix = prefix | ((uint32_t) (NBINS - 1 - tid) << shift);
+                s_mask   = mask | ((uint32_t) (NBINS - 1) << shift);
+            }
+        }
+        __syncthreads();
+    }
+    const uint32_t kth  = s_prefix;
+    const int      rank = s_rank;
+    for (int c = tid; c < ncols; c += NT) {   // as top_k_radix_gather
+        const uint32_t key = top_k_float_to_ordered(src[c]);
+        if (key > kth) {
+            dst[atomicAdd(&s_gt, 1)] = c;
+        } else if (key == kth) {
+            const int pos = atomicAdd(&s_eq, 1);
+            if (pos < rank) { dst[k - rank + pos] = c; }
+        }
+    }
+}
+
+static bool top_k_one_block_fits(const int64_t ncols, const int64_t nrows) {
+    return nrows == 1 && ncols > GGML_CUDA_TOP_K_NCOLS_THRESHOLD_BITONIC && ncols <= GGML_CUDA_TOP_K_ONE_BLOCK_MAX;
+}
+
 // fork: shared with the scratch mirror below (ggml_cuda_top_k_scratch_fork)
 static constexpr int TOP_K_RADIX_BITS = 8;
 static int top_k_radix_blocks_per_row(const int ncols) {
@@ -321,6 +396,11 @@ void ggml_cuda_op_top_k(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
         }
     }
 
+    if (top_k_one_block_fits(ncols, nrows)) {
+        top_k_one_block<512><<<1, 512, 0, stream>>>(src0_d, dst_d, (int) ncols, (int) k);
+        return;
+    }
+
     if (nrows > GGML_CUDA_TOP_K_NROWS_THRESHOLD) {
         top_k_radix_cuda(pool, src0_d, dst_d, ncols, nrows, k, stream);
         return;
@@ -401,6 +481,9 @@ size_t ggml_cuda_top_k_scratch_fork(const ggml_tensor * dst, size_t top) {
         if (ncols_pad * sizeof(int) <= ggml_cuda_info().devices[device].smpb) {
             return top_k_argsort_scratch_fork(ncols, nrows, false, top);
         }
+    }
+    if (top_k_one_block_fits(ncols, nrows)) {
+        return top;   // no pool memory
     }
     if (nrows > GGML_CUDA_TOP_K_NROWS_THRESHOLD) {
         return top_k_radix_scratch_fork((int) ncols, nrows, top);

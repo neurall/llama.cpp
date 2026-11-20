@@ -74,8 +74,13 @@ static inline int32_t poolx_first_window(const std::vector<uint8_t> & ok, int32_
 // come). The best ranks first (free, empty, own computed, other class), then cached experts already computed, then a layer to come: at a pass's start every block
 // holds one, and the window must still form there (2026-11-14, Qwen3.8 12k: gated on "the tiered pick would take them too", 0 of 123 entries found a run, the
 // scattered picks kept the class scattered). -1: no run that long, the caller picks blocks one by one.
-static inline int32_t poolx_ring_window(const std::vector<int8_t> & rank, int32_t from, int32_t n) {
-    for (int lim : { 3, 5, 6 }) {
+// cold (--moe ring-cold=1): a run takes only blocks that displace no cached expert (free, empty, the stream's own computed writes); the rest go one by one, coldest first
+static inline int32_t poolx_ring_window(const std::vector<int8_t> & rank, int32_t from, int32_t n, bool cold = false) {
+    static const int lims[] = { 3, 5, 6 }, lims_cold[] = { 2 };
+    const int * L = cold ? lims_cold : lims;
+    const size_t nl = cold ? 1 : 3;
+    for (size_t li = 0; li < nl; ++li) {
+        const int lim = L[li];
         std::vector<uint8_t> ok(rank.size());
         for (size_t j = 0; j < rank.size(); ++j) { ok[j] = rank[j] >= 0 && rank[j] <= lim; }
         const int32_t j0 = poolx_first_window(ok, from, n);
@@ -175,11 +180,46 @@ static inline double poolx_victim_rank(bool on, bool all, size_t o, size_t jli, 
 // entry's copies stay in runs), a cached one coldest first within its layer.
 static inline double poolx_ring_victim(size_t o, size_t jli, size_t n, double s, bool streamed) { return poolx_rank_next_use(o, jli, n, streamed ? 0.0 : s, 2); }
 // the order taken: by tier rank, then the lower rank (poolx_ring_victim; a claim over a pending expert by its nearest pending layer, the furthest first); equal
-// ranks keep the cursor's order (stable sort)
-static inline bool poolx_ring_before(int tier_x, double rank_x, int tier_y, double rank_y) {
-    const int rx = poolx_ring_rank(tier_x), ry = poolx_ring_rank(tier_y);
+// ranks keep the cursor's order (stable sort). cold (--moe ring-cold=1, user 2026-11-20: "prefetch to gaps or coldest"): a cached expert of a computed layer
+// (tier 3) and a claim over computed or empty bytes of another class (tier 5) share one rank and go by the decode score of what they displace, the coldest
+// first (rank_x: victim_score of the expert, of a claim the hottest expert under its bytes), not by next use or by the cursor
+static inline int poolx_ring_rank_of(int tier, bool cold) { return cold && tier == 3 ? poolx_ring_rank(5) : poolx_ring_rank(tier); }
+// ring-cold: the decode value taking a block loses, the score s of the expert the cache held there before this pass; free and empty blocks and the stream's own
+// writes of this pass (tier 2, and tier 8 when streamed this pass) lose nothing
+static inline double poolx_ring_lost(int tier, bool up_now, double s) { return tier <= 2 || (tier == 8 && up_now) ? 0.0 : s; }
+// --moe ring-cold=2: an entry planned beyond the one needed now and the card's next (poolx_ring_cheap) takes only blocks that lose nothing; those two take the
+// coldest. Qwen3.8 IQ3_S one card, 4k prompt, 2026-11-20: the entries planned ahead took computed layers' cached experts as cheap blocks (7770 claims, 1442
+// cached experts a pass) and the prompt left 3732 experts (7.1 GB, 248 of the layers' top 10) to refill in decode
+static inline bool poolx_ring_cold_ok(int level, bool cheap, double lost) { return !(level >= 2 && cheap && lost > 0.0); }
+// --moe cs-tail=1 (user 2026-11-20: "staging moved to moecache tail. moving used moes after use to closest gaps based on their hotness after whole layer processed
+// in pp freeing space for uploader again", "just 1 layer", "rest layers prefetch to gaps or coldest", "don't drop anything"): the blocks behind the floor (one entry
+// of the largest class, cs_ring_floor) are the stream's upload area, taken before every other block; and every expert of the pass's layers in a block the stream
+// takes moves card to card first, into a block of its class outside the tail, the hottest into the coldest (free and empty first), while it scores higher than what
+// lies there. The entry after a tail entry takes gaps or the coldest outside the tail (ring-cold).
+// A tail block taken first: free, empty, an expert of a queued layer (it moves out first), another class's bytes over nothing of a layer to come; never the last
+// queued entry's own (tier 8: its compute may still read it, the entry would wait for it) nor a layer's to come (4, 6)
+static inline bool poolx_tail_first(int tier) { return tier <= 3 || tier == 5 || tier == 9; }
+// The moves out of the blocks the stream takes (cs-tail), one class: the movers' scores hottest first into the destinations' scores (free and empty: -1) coldest
+// first, while the mover scores higher. Returns (mover, destination) index pairs.
+static inline std::vector<std::pair<size_t, size_t>> poolx_tail_moves(const std::vector<double> & mover, const std::vector<double> & dest) {
+    std::vector<size_t> a(mover.size()), b(dest.size());
+    std::iota(a.begin(), a.end(), (size_t) 0);
+    std::iota(b.begin(), b.end(), (size_t) 0);
+    std::stable_sort(a.begin(), a.end(), [&](size_t x, size_t y) { return mover[x] > mover[y]; });
+    std::stable_sort(b.begin(), b.end(), [&](size_t x, size_t y) { return dest[x] < dest[y]; });
+    std::vector<std::pair<size_t, size_t>> out;
+    for (size_t i = 0; i < a.size() && i < b.size() && mover[a[i]] > dest[b[i]]; ++i) { out.push_back({ a[i], b[i] }); }
+    return out;
+}
+static inline bool poolx_ring_before(int tier_x, double rank_x, int tier_y, double rank_y, bool cold = false) {
+    const int rx = poolx_ring_rank_of(tier_x, cold), ry = poolx_ring_rank_of(tier_y, cold);
     if (rx != ry) { return rx < ry; }
     return rank_x < rank_y;
+}
+// --moe cs-tail: the upload area's blocks (poolx_tail_first) before every other block, the rest as poolx_ring_before
+static inline bool poolx_ring_before_tail(bool tail_x, int tier_x, double rank_x, bool tail_y, int tier_y, double rank_y, bool cold) {
+    if (tail_x != tail_y) { return tail_x; }
+    return poolx_ring_before(tier_x, rank_x, tier_y, rank_y, cold);
 }
 
 template <class P> static size_t poolx_lend_round(const P & ap, size_t bytes) {
@@ -313,15 +353,19 @@ static inline size_t poolx_room_give_back_chunks(size_t room_lo, size_t first_un
     }
     return e;
 }
-// After a call: a shape class lent the whole tail area (not seen yet) counts the call and is seen after its second, when its CUDA graphs exist too (ggml
-// instantiates a graph's CUDA graph at the graph's second call). The room gives back only when no class is mid-warmup (returns true): a give-back after the
-// first call measured CUDA's use before the graphs existed (GLM 3.0, build room_tag_fix 2026-11-16: 346 -> 189 MiB after the first decode token, 1 MiB
-// free, all 42 decode graphs of the two cards ran out of VRAM at the second token and ran without CUDA graphs from then on).
+// After a call: a shape class lent the whole tail area (not seen yet) counts its own passes (`ran`: the class of every pass the call ran) and is seen after
+// its second, when its CUDA graphs exist too (ggml instantiates a graph's CUDA graph at the graph's second call). Until it is seen, each of its passes gets
+// the whole tail area again at its lend (room_lend), before anything of it runs, so the room may give back after any call. GLM 3.0 (build room_tag_fix
+// 2026-11-16: all 42 decode graphs ran out of VRAM at the second token) had its shape seen after its FIRST call; until 2026-11-19 every call counted for
+// every pending class and the room gave back only with nothing pending: a prompt's shapes were seen two decode tokens later, their second calls (the next
+// request) got no room at the lend and found 15 MiB free, the kernel-load guard tripped in the middle of a prompt, and a recurrent model cannot take that
+// call back (Qwen3.8 on two cards, verify list, HTTP 500 on every second request). Returns true when no class is pending.
 struct poolx_room_lent { int64_t cls; int calls; };
-static inline bool poolx_room_after_call(std::vector<poolx_room_lent> & pending, std::vector<int64_t> & seen) {
+static inline bool poolx_room_after_call(std::vector<poolx_room_lent> & pending, std::vector<int64_t> & seen, const std::vector<int64_t> & ran) {
     size_t k = 0;
     for (poolx_room_lent p : pending) {
-        if (++p.calls >= 2) { seen.push_back(p.cls); } else { pending[k++] = p; }
+        p.calls += (int) std::count(ran.begin(), ran.end(), p.cls);
+        if (p.calls >= 2) { seen.push_back(p.cls); } else { pending[k++] = p; }
     }
     pending.resize(k);
     return pending.empty();
@@ -531,6 +575,67 @@ static poolx_pick poolx_pick_slot(const PS & ps, int32_t n_active, Busy busy, Ex
         if (r >= 0 && r < best) { best = r; p.slot = b; p.owner = o; }
     }
     return p;
+}
+
+// The picks of one step from one scan. poolx_pick_slot scans every block of the class for each pick: a decode step of Qwen3.8 made 9 to 21 picks of about 40 us
+// each (335 to 854 us a token on the thread the card waits for, 2026-11-19). Between the picks of a step only the picked blocks change (their upload is in
+// flight, or they left the free stack) and the ranks of the others stay, so the order of one scan answers every pick as a scan of its own would: a free block of the
+// stack first, then the first block of the scan without a cached expert, then the lowest rank, the lower block among equals. cap: how many ranked blocks are kept (a
+// step takes no more than its budget); when they run out and blocks were left out, the pick is a scan again (exact, never a guess).
+struct poolx_pick_order {
+    struct ent { double r; int32_t b, o, e; };
+    std::vector<ent>     ranked;   // evictable blocks, the pick order; a block is skipped once it is busy or holds another expert
+    std::vector<int32_t> empty;    // blocks without a cached expert, in scan order
+    size_t i_ranked = 0, i_empty = 0;
+    bool   cut = false;            // more evictable blocks than cap: the list is not all of them
+};
+template <class PS, class Busy, class Expert, class Rank>
+static void poolx_pick_order_make(poolx_pick_order & ord, const PS & ps, int32_t n_active, Busy busy, Expert expert, Rank rank, size_t cap) {
+    ord.ranked.clear(); ord.empty.clear();
+    ord.i_ranked = ord.i_empty = 0;
+    ord.cut = false;
+    const auto less = [](const poolx_pick_order::ent & x, const poolx_pick_order::ent & y) { return x.r < y.r || (x.r == y.r && x.b < y.b); };
+    for (int32_t b = 0; b < n_active; ++b) {
+        const int32_t o = ps.owner[b];
+        if (o < -1) { continue; }
+        if (o < 0) { ord.empty.push_back(b); continue; }
+        if (busy(o, b)) { continue; }
+        const int32_t e = expert(o, b);
+        if (e < 0) { ord.empty.push_back(b); continue; }
+        const double r = rank(o, e);
+        if (r < 0) { continue; }
+        const poolx_pick_order::ent c = { r, b, o, e };
+        if (ord.ranked.size() < cap) {
+            ord.ranked.push_back(c);
+            std::push_heap(ord.ranked.begin(), ord.ranked.end(), less);   // the highest of the kept ones on top
+        } else {
+            ord.cut = true;
+            if (cap > 0 && less(c, ord.ranked.front())) {
+                std::pop_heap(ord.ranked.begin(), ord.ranked.end(), less);
+                ord.ranked.back() = c;
+                std::push_heap(ord.ranked.begin(), ord.ranked.end(), less);
+            }
+        }
+    }
+    std::sort_heap(ord.ranked.begin(), ord.ranked.end(), less);
+}
+// the pick poolx_pick_slot would make now, from the order (the same busy, expert and rank as at its making)
+template <class PS, class Busy, class Expert, class Rank>
+static poolx_pick poolx_pick_order_next(poolx_pick_order & ord, const PS & ps, int32_t n_active, Busy busy, Expert expert, Rank rank, double & best) {
+    best = 1e300;
+    poolx_pick p;
+    int32_t top = -1;
+    for (int32_t b : ps.free) { if (b > top && b < (int32_t) ps.owner.size() && ps.owner[b] == -1) { top = b; } }
+    if (top >= 0) { p.slot = top; best = 0; return p; }
+    for (; ord.i_empty < ord.empty.size(); ++ord.i_empty) {
+        const int32_t b = ord.empty[ord.i_empty], o = ps.owner[b];
+        if (o == -1 || (o >= 0 && !busy(o, b) && expert(o, b) < 0)) { p.slot = b; best = 0; return p; }
+    }
+    for (; ord.i_ranked < ord.ranked.size(); ++ord.i_ranked) {
+        const poolx_pick_order::ent & c = ord.ranked[ord.i_ranked];
+        if (ps.owner[c.b] == c.o && !busy(c.o, c.b) && expert(c.o, c.b) == c.e) { p.slot = c.b; p.owner = c.o; best = c.r; return p; }
+    }
+    return ord.cut ? poolx_pick_slot(ps, n_active, busy, expert, rank, best) : p;
 }
 
 // ---- the prompt chain: which blocks of a class a layer's misses may take -------------------------------------------------------------------------

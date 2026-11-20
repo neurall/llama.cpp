@@ -38,7 +38,7 @@ Tests:
 Compare decode t/s only between runs with the same output md5 (tetris/chat): the text
 decides the cache hit rate. LLAMA_MOE_CACHE_DETERMINISTIC=1 makes a build repeat itself.
 """
-import argparse, atexit, math, csv, glob, hashlib, io, json, os, random, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request
+import argparse, atexit, math, csv, glob, hashlib, io, json, os, random, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request, urllib.error
 
 import types, collections, tempfile
 __import__("faulthandler").register(signal.SIGUSR1, all_threads=True)   # kill -USR1 PID: every thread's stack to stderr (a run hung between rows, 2026-11-10)
@@ -906,7 +906,7 @@ consistent best = the highest value that at least two runs agree on within 5% (a
             con.execute("ALTER TABLE runs ADD COLUMN stats_ok INTEGER")   # NULL = a new record: the cell statistics (run.py runlog-all) are stale and rebuilt on the next query (run.py runq); the rebuild sets 1
         con.execute("DROP VIEW IF EXISTS cells")
         con.execute("""CREATE VIEW cells AS SELECT stem, hw, test, build, MAX(bno) AS bno, COUNT(*) AS n, ROUND(consistent(tps), 2) AS tps, ROUND(consistent(pp), 1) AS pp,
-                   ROUND(MAX(tps), 2) AS tps_max, MIN(ts) AS first, MAX(ts) AS last FROM runs WHERE okf = 1 AND tps IS NOT NULL GROUP BY stem, hw, test, build""")
+                   ROUND(MAX(tps), 2) AS tps_max, MIN(ts) AS first, MAX(ts) AS last FROM runs WHERE okf = 1 AND tps IS NOT NULL""" + ONE_REQ + " GROUP BY stem, hw, test, build")
     def ins(cols):
         """named-column INSERT: ALTER TABLE appends new columns after stem/okf, so position is not safe"""
         return "INSERT INTO runs (" + ", ".join(q(c) for c in cols) + ", stem, okf) VALUES (" + ",".join("?" * (len(cols) + 2)) + ")"
@@ -1102,7 +1102,7 @@ consistent best = the highest value that at least two runs agree on within 5% (a
                 show(con.execute(q, ("%" + a[1] + "%",) + ((a[2],) if len(a) > 2 else ())))
             elif a[0] == "bestpl":   # bestpl MODEL TEST PL: like best, but only the rows measured at one power limit (like 280+280); the limit is the live reading at the time of the row
                 q = ("SELECT test, build, bno, hw, COUNT(*) AS n, ROUND(consistent(tps), 2) AS tps, ROUND(consistent(pp), 1) AS pp, ROUND(MAX(tps), 2) AS tps_max, substr(MIN(ts),1,10) AS first, substr(MAX(ts),1,10) AS last "
-                 "FROM runs WHERE stem LIKE ? AND test = ? AND pl = ? AND okf = 1 AND tps IS NOT NULL GROUP BY test, build, hw ORDER BY last DESC")
+                 "FROM runs WHERE stem LIKE ? AND test = ? AND pl = ? AND okf = 1 AND tps IS NOT NULL" + ONE_REQ + " GROUP BY test, build, hw ORDER BY last DESC")
                 show(con.execute(q, ("%" + a[1] + "%", a[2], a[3])))
             elif a[0] == "runs":
                 q = "SELECT substr(ts,1,16) AS ts, hw, test, build, rep, tps, pp, hit, campaign FROM runs WHERE stem LIKE ? AND okf = 1" + (" AND test = ?" if len(a) > 2 else "") + (" AND build LIKE ?" if len(a) > 3 else "") + " ORDER BY ts DESC"
@@ -1497,7 +1497,7 @@ def stop(p):
         p.wait()
 
 
-POWER_DAY, POWER_NIGHT = (220, 280), (200, 200)   # W per GPU (GPU0 = x4 card, GPU1 = x16): 07:00-23:50 and 23:50-07:00 (user 2026-10-18; the x4 card's small fan is loud at night)
+POWER_DAY, POWER_NIGHT = (280, 280), (280, 280)   # user 2026-11-19: "stay 280 280" (one-card decode campaign; was day 220/280, night 200/200). W per GPU (GPU0 = x4 card, GPU1 = x16)
 
 
 def power_schedule(now=None):
@@ -1747,6 +1747,12 @@ def decisions(log):
     # the real maximum: the smaller of the engine's pass ceiling (the size its compute buffer was reserved for) and the pass the RAM allows ("prompt pass N tokens
     # (cut from M to fit)"), the last of each in the log; the auto setup's first pick above (16384 on DeepSeek-V4.1) never ran when either is smaller
     lims = [int(x[-1]) for x in (re.findall(r"limit (\d+) from the pinned-mask budget", log), re.findall(r"fits the ceiling (\d+)", log), re.findall(r"prompt pass (\d+) tokens \(cut from", log)) if x]
+    # --moe staging=0: the stream's own cap at the request's end cells, the picked chunk count's "N: P passes of at most CAP" of the last "stream of" line
+    # (Kimi K3.1: ceiling 5056, the stream held 4352 at 8 chunks; the ceiling alone sized a 13k prompt as 2 passes of 5056)
+    sc = re.findall(r"stream of \d+ tokens to \d+ cells: a layer in (\d+) chunks? \(.*?by chunks: (.*?); upload", log)
+    if sc:
+        c = re.search(rf"(?:^|; ){sc[-1][0]}: \d+ passes of at most (\d+)", sc[-1][1])
+        if c: lims.append(int(c.group(1)))
     if lims:
         d["ubatch_max"] = min(lims)
     rows = []
@@ -2206,6 +2212,8 @@ ANSWER_FILE = os.environ.get("PERF_ANSWER")   # a file: post() also writes the r
 WATCH_LOG = None   # server log of the running server: post() takes its growth as progress, the server is asked (/slots) only while the log is silent (decode writes nothing per token)
 
 
+OURS_SQL = " and build not like 'stock%' and build not like 'strata%'"   # our rows: not stock, not another engine (strata-*, the 3-way gainers2 runs of 2026-11-18)
+ONE_REQ = " and coalesce(args,'') not glob '*-np [2-9]*' and coalesce(args,'') not glob '*-np [1-9][0-9]*'"   # one request at a time only: a --par row is the aggregate of N answers (2026-10-16 probe: Qwen IQ3_S 101-131 t/s), no cell's best or reference
 HWF = [""]   # " and hw='pc2'" while a list runs: stock, earlier-build and reference rows of the machine that measured (pc2 numbers must not be divided by pc1 stock)
 # a host whose hardware changed keeps its name: rows before the change are another machine (2026-11-12 PC1: Ryzen 7 3700X with 2-channel RAM and x16 + x4 became a
 # Threadripper PRO 3975WX with 8-channel RAM and 2 x16; stock decode 13.99 -> 30.01 t/s on MiMo 12k, so an old stock row doubled our gains)
@@ -2226,6 +2234,12 @@ def stock_arm_sql():
     return " and coalesce(args,'') like '%moe-cache-mib%'" if os.environ.get("STOCK_MOE") else " and coalesce(args,'') not like '%moe-cache-mib%'"
 
 
+def stock_cell_sql(gen):
+    """the query of `run LIST -nrt` for a stock row of a cell (model, test) on this machine's current hardware (HWF[0]: the date scope, one request at a time) whose answer length is within half and double of gen"""
+    return ("select 1 from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'"
+            + stock_arm_sql() + HWF[0] + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " limit 1")
+
+
 def stock_moe_args(spec):
     """-sm MIB[,SHARE] -> the server arguments of upstream's expert cache"""
     mib, _, share = spec.partition(",")
@@ -2234,11 +2248,11 @@ def stock_moe_args(spec):
 
 def hw_filter(hw):
     if hw == "pc1" and os.environ.get("RUN_SIMJOE") and os.environ.get("JOE_REF") == "joe":   # --joe-ref joe: stock and reference rows of simjoe's own machine (pc1joe..., the same link cap), measured here with -sc
-        return f" and hw='{os.environ['PERF_HW']}'"
+        return f" and hw='{os.environ['PERF_HW']}'" + ONE_REQ
     if hw == "pc1" and os.environ.get("RUN_SIMJOE"):   # simjoe rows against the old desktop's (PC1 before its change) at the same power (user 2026-11-15: "why dont we see best old runs on same prompt and pl")
         # shortcut: the power of the list's start; a list crossing 23:50 compares its night cells with day rows, split such a list in two
-        return f" and hw='pc1' and ts < '{HW_SINCE['pc1']}' and pl='{'+'.join(map(str, sorted(power_targets(joe_widths([16, 16])))))}'"
-    return f" and hw='{hw}'" + (f" and ts >= '{HW_SINCE[hw]}'" if hw in HW_SINCE else "")
+        return f" and hw='pc1' and ts < '{HW_SINCE['pc1']}' and pl='{'+'.join(map(str, sorted(power_targets(joe_widths([16, 16])))))}'" + ONE_REQ
+    return f" and hw='{hw}'" + (f" and ts >= '{HW_SINCE[hw]}'" if hw in HW_SINCE else "") + ONE_REQ
 def row_hw():
     """the machine the cell's rows are stored under: simjoe's own (pc1joe...), else the list's"""
     return os.environ["PERF_HW"] if os.environ.get("RUN_SIMJOE") and os.environ.get("PERF_HW") else (re.search(r"hw='(\w+)'", HWF[0]) or [0, 'pc1'])[1]
@@ -5327,7 +5341,7 @@ def cmd_bench(a):
                     HOT_TEST["v"] = a.test
                     if hot_settle and not build.startswith("stock"):
                         import hotglobal
-                        if hotglobal.is_settled(model, a.test):
+                        if i > a.rep_from and hotglobal.is_settled(model, a.test):   # never before the cell's first run: a cell without a result is a failed cell (vkgain, 2026-11-18: 6 cells whose map another cell had settled)
                             print(f"hot map {a.test}: settled, no more runs of this cell", flush=True); continue
                     run_cell(build, a.test, env, False, args, True, a.note, warm=warm)
                     if hot_global() and not build.startswith("stock"):
@@ -5551,11 +5565,14 @@ def regress_promote(name, src, med, n, camp, old, why):
         f.write(f"{time.strftime('%F %T')},{name},{med:.2f},{n},{camp},{old or ''},{why}\n")
 
 
-def regress_list_verdict(rows, label, ref, src, tol):
+def regress_list_verdict(rows, label, ref, src, tol, commit=None):
     """verdict of the regress list for build `label` against the best build `ref`: per ppl cell (same model and args) the median tps of each build;
     the worst ratio decides. Prints the table, promotes a build that is above 1/tol in every cell with ranges not overlapping. Returns the exit code."""
     cells = {}
     names = {label, os.path.basename(str(src).rstrip("/"))}   # the run log names a build by its directory (rel_x), the label is branch-commit: both are this build
+    if commit:   # `run regress -nrt` skips cells a build of the same commit ran today: those rows are this code's (one with uncommitted changes is not)
+        names |= {x.get("build") for x in rows if x.get("test") == "ppl" and x.get("commit") == commit and x.get("patch", "0") in ("", "0") and x.get("build") != ref}
+    print(f"regress: rows of {', '.join(sorted(n for n in names if n))}")
     for x in rows:
         if x.get("test") == "ppl" and x.get("ok") != "0" and num(x, "tps") is not None and (x.get("build") in names or x.get("build") == ref):
             cells.setdefault((x["model"], x["args"]), {}).setdefault(x["build"], []).append(num(x, "tps"))
@@ -5991,7 +6008,8 @@ def cmd_build(a):
             sys.exit(r.returncode)
         cur = os.path.join(BEST, "current")
         ref = os.path.basename(os.path.realpath(cur)) if os.path.exists(cur) else None
-        sys.exit(regress_list_verdict(csv_load("run-history.csv"), regress_label(dst), ref, dst, 0.97))
+        bi = dict(l.strip().split("=", 1) for l in open(os.path.join(dst, "BUILD_INFO")) if "=" in l)
+        sys.exit(regress_list_verdict(csv_load("run-history.csv"), regress_label(dst), ref, dst, 0.97, bi.get("commit") if bi.get("patch", "0") == "0" else None))
 
 
 def cmd_quick(a):
@@ -6279,7 +6297,7 @@ def cell_expect_1(model, test, n, build, warm=True):
                 sc = v[0][4]
                 out.append((len(v), ((span + min(v)[2]) + one if len(v) == n else (span + min(v)[2]) * n / len(v) + one) * sc))
             return out
-        kind = (" and build like 'stock%'", ()) if str(build).startswith("stock") else (" and build not like 'stock%'", ())   # stock loads and runs quite differently from ours: a stock cell is estimated from stock cells (any stock build), ours from ours
+        kind = (" and build like 'stock%'", ()) if str(build).startswith("stock") else (" and build not like 'stock%' and build not like 'strata%'", ())   # stock loads and runs quite differently from ours: a stock cell is estimated from stock cells (any stock build), ours from ours
         w = spans((" and build=?", (build,))) or spans(kind)
         if not w and cls: cls_off[0] = True; w = spans((" and build=?", (build,))) or spans(kind)   # no history on this class yet: any machine's is better than no bar
         if not w and gq: gq = ""; w = spans((" and build=?", (build,))) or spans(kind)   # no run of that length yet: the shorter runs of the test are better than no bar (the bar passes 100% and re-estimates)
@@ -7244,7 +7262,7 @@ def older_gainers(model, test, cur_bno, st, gm, limit=2):
     if not model or not test or not st or not str(cur_bno).isdigit(): return []
     try:
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
-        rows = c.execute("select coalesce(nullif(\"commit\",''), build), bno, tps, pp, start_ts, rowid from runs where model=? and test=? and build not like 'stock%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and bno<? and bno>=? and coalesce(env,'') not like '%warmpass%' and n_gen between ? and ?",
+        rows = c.execute("select coalesce(nullif(\"commit\",''), build), bno, tps, pp, start_ts, rowid from runs where model=? and test=? and build not like 'stock%' and build not like 'strata%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and bno<? and bno>=? and coalesce(env,'') not like '%warmpass%' and n_gen between ? and ?",
                          (os.path.basename(model), ALIASES.get(test, test), int(cur_bno), OLDER_MIN_BNO, (ALIAS_TOKENS.get(test) or 0) // 2, (ALIAS_TOKENS.get(test) or 10**9) * 2)).fetchall()
     except sqlite3.Error: return []
     by = {}
@@ -7327,7 +7345,7 @@ def pass_curves(model, build):
     try:
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
         runs, last = {}, {}
-        for b, test, k, tok, us in c.execute("select build, test, k, tokens, us_tok from passes where model=? and build!=? and build not like 'stock%'" + HWF[0] + " order by rowid", key[:2]):
+        for b, test, k, tok, us in c.execute("select build, test, k, tokens, us_tok from passes where model=? and build!=? and build not like 'stock%' and build not like 'strata%'" + HWF[0] + " order by rowid", key[:2]):
             if (b, test) not in runs or k <= last[(b, test)]: runs[(b, test, len(runs))] = runs.pop((b, test), None) or []   # k restarts at 1: the next run of the cell
             runs.setdefault((b, test), []).append((tok, us)); last[(b, test)] = k
         for pts in runs.values():
@@ -7373,7 +7391,7 @@ def best_by_time(model, build, mix=None):
     if not model or not build: return None
     try:
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
-        rows = c.execute("select tps, pp, build, n_gen, note, pl, bno, rowid from runs where model=? and build not like 'stock%' and build!=? and cast(ok as integer)=1 and tps is not null and pp is not null and note like '%prompt_n=%'" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'"
+        rows = c.execute("select tps, pp, build, n_gen, note, pl, bno, rowid from runs where model=? and build not like 'stock%' and build not like 'strata%' and build!=? and cast(ok as integer)=1 and tps is not null and pp is not null and note like '%prompt_n=%'" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'"
                          " and not (coalesce(out_chars,'') != '' and coalesce(n_gen,0) > 0 and cast(out_chars as integer) * 2 < n_gen)", (os.path.basename(model), str(build))).fetchall()
     except sqlite3.Error: return None
     best = None
@@ -7406,7 +7424,7 @@ def best_prev(model, test, build, asked=0):
         # for a 64-token cell); the decode speed is compared only within about the same answer length (a longer answer decodes at a longer context)
         # an answer of less than half a character per token is no text (the deep-seek release without -c answered token 0: 7 characters for 1024 tokens at 43.7 t/s,
         # and every DeepSeek cell after the fix showed 0.5x "vs best" against it, 2026-10-26); rows without a recorded answer stay in
-        rows = c.execute("select tps, pp, build, n_gen from runs where model=? and test=? and build not like 'stock%' and build!=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'"
+        rows = c.execute("select tps, pp, build, n_gen from runs where model=? and test=? and build not like 'stock%' and build not like 'strata%' and build!=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'"
                          " and not (coalesce(out_chars,'') != '' and coalesce(n_gen,0) > 0 and cast(out_chars as integer) * 2 < n_gen)",
                          (os.path.basename(model), ALIASES.get(test, test), str(build))).fetchall()
     except sqlite3.Error: return None
@@ -7428,7 +7446,7 @@ def ours_reference(model, test):
     import sqlite3
     c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")); mo = os.path.basename(model); t = ALIASES.get(test, test); gen = ALIAS_TOKENS.get(test)
     w = " and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""
-    o = c.execute("select build, max(ts) from runs where model=? and test=? and build not like 'stock%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + "" + w + " group by build order by max(ts) desc limit 1", (mo, t)).fetchone()
+    o = c.execute("select build, max(ts) from runs where model=? and test=? and build not like 'stock%' and build not like 'strata%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + "" + w + " group by build order by max(ts) desc limit 1", (mo, t)).fetchone()
     if not o: return None
     v = c.execute("select tps, pp, bno, start_ts, rowid from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null and ts >= datetime(?, '-30 minutes')" + HWF[0] + "" + w + " order by ts", (mo, t, o[0], o[1])).fetchall()   # the newest session only: an older run of other settings (a longer prompt, a short answer) is not the reference
     return dict(t=max(x[0] for x in v), p=max(x[1] for x in v if x[1]) if any(x[1] for x in v) else None, id=v[-1][4], bno=int(v[-1][2]) if v[-1][2] else "?", date=str(v[-1][3] or o[1])[:10])
@@ -7438,7 +7456,7 @@ def known_gain(model, test):
     """overall gain (geometric mean of decode and prompt gain) of the newest build of ours over the newest official stock row, both from runs.db; 0 when either is missing"""
     import sqlite3
     c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")); mo = os.path.basename(model); t = ALIASES.get(test, test); gen = ALIAS_TOKENS.get(test)
-    ours = c.execute("select build, max(ts) from runs where model=? and test=? and build not like 'stock%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " group by build order by max(ts) desc limit 1", (mo, t)).fetchone()
+    ours = c.execute("select build, max(ts) from runs where model=? and test=? and build not like 'stock%' and build not like 'strata%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " group by build order by max(ts) desc limit 1", (mo, t)).fetchone()
     if not ours: return 0
     v = c.execute("select tps, pp from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + "" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), (mo, t, ours[0])).fetchall() or c.execute("select tps, pp from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + "", (mo, t, ours[0])).fetchall()
     st = c.execute("select tps, pp from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + stock_arm_sql() + HWF[0] + "" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " order by ts desc limit 1", (mo, t)).fetchone()
@@ -7766,7 +7784,7 @@ def resolve_build(name):
     import sqlite3
     num = int(name.lstrip("b")); st_dir = os.path.join(DEVBUILDS, f"stock-b{num}-official")
     if os.path.isdir(st_dir): return os.path.basename(st_dir)
-    for (bn,) in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select build from runs where bno=? and build not like 'stock%' order by ts desc", (num,)):
+    for (bn,) in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select build from runs where bno=? and build not like 'stock%' and build not like 'strata%' order by ts desc", (num,)):
         if os.path.isdir(os.path.join(DEVBUILDS, bn)): return bn
     sys.exit(f"build {name}: no build directory in {DEVBUILDS} was measured under that number (a build name works, e.g. um3d)")
 
@@ -8041,7 +8059,7 @@ def last_run_rec(r, HW):
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
         top = None
         for use_gen, use_hw in ((True, True), (False, True), (False, False)):
-            q = "select campaign, rowid, bno, start_ts from runs where model=? and test=? and build " + ("like 'stock-b%-official'" if stock else "not like 'stock%'") + " and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'" + (" and hw=?" if use_hw else "") + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen and use_gen else "") + " order by start_ts desc limit 1"
+            q = "select campaign, rowid, bno, start_ts from runs where model=? and test=? and build " + ("like 'stock-b%-official'" if stock else "not like 'stock%' and build not like 'strata%'") + " and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'" + (" and hw=?" if use_hw else "") + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen and use_gen else "") + " order by start_ts desc limit 1"
             top = c.execute(q, (os.path.basename(r["model"]), ALIASES.get(r["test"], r["test"])) + ((HW,) if use_hw else ())).fetchone()
             if top: break
         if not top: return {}
@@ -8053,6 +8071,12 @@ def last_run_rec(r, HW):
     except Exception: STOCK_REC[0] = None
     if STOCK_REC[0] and top[2]: STOCK_REC[0]["ob"] = int(top[2]); STOCK_REC[0]["od"] = str(top[3])[:10]   # the build that made the run, not the one this list will run
     return dict(res=res, rid=top[1], st=STOCK_REC[0], lt=run_times(top[1])[1])
+
+
+def cmd_ssd(a):
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import ssd_place
+    return ssd_place.main([a.model, a.dirs] + (["--trim"] if a.trim else []) + (["--dry"] if a.dry else []))
 
 
 def cmd_onepass(a):
@@ -8406,6 +8430,7 @@ def run_list(name, argv):
     ap.add_argument("-s", "--stock", action="store_true", help="run on the newest official ggml-org release binary (pulled once into devbuilds/stock-bNNNNN-official; stock-latest points to it)")
     ap.add_argument("-w", "--warm", action="store_true", help="a warm-up pass before the measured runs (same prompt again; stored with temp=warmpass, not in the statistics); default off")
     ap.add_argument("-ledger", "--ledger", action="store_true", help="the pool write ledger on in every cell (who wrote which bytes of a card's pool, when): a debug record, about 25%% slower decode; printed at the start, recorded in the row (PERF_LEDGER=1); off by default, never turned on by a build name")
+    ap.add_argument("-clampasses", "--clamp-passes", action="store_true", help="pfbest cells: the best prompt cut to whole passes of the engine's newest measured pass maximum for this model and VRAM (runs.db ubatch_max with the stream's chunk cap, clamp_passes): a best prompt a sliver past k passes runs k, not k+1; each cut is printed")
     ap.add_argument("-gh", "--global-hot", action="store_true", help="every server starts from the hot-expert map of its (model, test), the same for every build (fork/hotglobal.py): written into the state the start reads, learned from the runs until it settles, then frozen; a speed difference between builds is then the code, not the map")
     ap.add_argument("--hot-settle", action="store_true", help="-gh, and every cell repeats until its hot map is settled (the hottest experts of each layer change by under 1%% twice in a row; at most RUN_HOT_SETTLE_MAX = 8 runs): one pass per prompt and model, before the builds are compared")
     ap.add_argument("-cs", "--clean-state", action="store_true", help="every cell starts from an EMPTY learned state of its own (bench --clean-state) on a server of its own: run 1 is the cold start of a new user, run 2 runs on the same server (warm). Two builds compared this way learn from zero on the same prompt, so they should arrive at the same speed (reg tests); the user's state file is not touched. No cell inherits another's state (an A/B of two builds read in run order once gave a 37%% gap that was only the shared state file)")
@@ -8487,7 +8512,19 @@ def run_list(name, argv):
         if not _sel(r): continue
         was = r["test"]; r["test"] = best_test(r["model"], r["test"], remote=o.machine.split("-")[0] != "pc1")
         if re.fullmatch(r"pfbest\d*k?", was or "") and o.machine.split("-")[0] == "pc1" and best_prompt_tokens(r["model"]) and "PERF_PTOK" not in (r.get("extra") or ""):
-            r["extra"] = ((r.get("extra") or "") + f" --env PERF_PTOK={best_prompt_tokens(r['model'])} --env PERF_PNAME={best_prompt_label(best_prompt_tokens(r['model']))}-{model_alias(r['model'])}").strip()   # pf9k1k is only the label: the prompt is the stored best, 8900 tokens, not 9000
+            _pt = best_prompt_tokens(r["model"])
+            if o.clamp_passes and (_cap := latest_pass_cap(r["model"], o.machine)):
+                _pt2, _k = clamp_passes(_pt, _cap)
+                if _pt2 != _pt:
+                    print(col("1;94", f"{r['name']}: best prompt {_pt} tokens is {_pt / _cap:.2f} passes of the newest pass maximum {_cap}: cut to {_pt2} ({_k} whole pass{'es' if _k > 1 else ''})"
+                                      f"{'' if o.dry else ', stored as its bestpp and maxpp'}"), flush=True)
+                    if not o.dry:   # stored (this hardware's models.ini): the next run starts at the cut size without -clampasses
+                        _sec = model_alias(r["model"])
+                        _e = bestpp_entries((fcfg.models_ini().get(_sec) or {}).get("bestpp", "")).get(int(hw_key()[:-1]))
+                        if _e: ini_set_bestpp(_sec, _pt2, *_e[1:])
+                        ini_set_maxpp(_sec, _cap)
+                _pt = _pt2
+            r["extra"] = ((r.get("extra") or "") + f" --env PERF_PTOK={_pt} --env PERF_PNAME={best_prompt_label(_pt)}-{model_alias(r['model'])}").strip()   # pf9k1k is only the label: the prompt is the stored best, 8900 tokens, not 9000
         if r["test"] != was and was != r["test"] and (r["model"], r["test"]) not in _picked and not o.status:
             _picked.add((r["model"], r["test"]))   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
     if o.test: rows = [r for r in rows if r["test"] in {x if x.startswith("pf") or x in {r2["test"] for r2 in rows} else "pf" + x for x in o.test.split(",")}]   # best1k = pfbest1k (plain names, no pf prefix)
@@ -8527,7 +8564,7 @@ def run_list(name, argv):
         import sqlite3
         gen = int(r["tokens"]) if r.get("tokens") else None
         try:
-            q = "select 1 from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'" + stock_arm_sql() + " and hw='" + HW + "'" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " limit 1"
+            q = stock_cell_sql(gen)
             c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")); a = (os.path.basename(r["model"]), ALIASES.get(r["test"], r["test"]))
             for tb in ("runs", "bad_runs"):   # failed runs are moved to bad_runs (run.py bad-runs)
                 try:
@@ -8728,11 +8765,13 @@ def run_list(name, argv):
         if CELL_LINES and not o.dry: open(f"{QDIR}/{o.build}-{name}.list.txt", "a").write("\n".join(CELL_LINES) + "\n")   # the screen shows only the current cell; the finished cells' lines go here
         if not o.dry: kept_kill()   # the kept server holds the pool: it goes before the unmount
         if not o.no_pool and not o.dry and os.path.ismount("/mnt/huge1g"):
+            # under a --wrap like nsys the server outlives the cell and maps the pool: "target is busy" (2026-11-19 trace cells; waiting 2 min for it
+            # did not help, nsys keeps it until its own end). The pool then stays for the next list, which takes it down at its end
             try:
                 import contextlib, io
                 with contextlib.redirect_stdout(io.StringIO()): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
                 print("pool ->0g", flush=True)
-            except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
+            except (SystemExit, subprocess.CalledProcessError) as e: print(f"pool: unmount failed: {e}", flush=True)
     print(f"[{name}] {len(rows)} cells, failed: {', '.join(bad) or 'none'}")
     return 1 if bad else 0
 
@@ -8960,6 +8999,8 @@ def best_prompt_chat(post, text, n, name):
         try:
             t = json.load(open(fp))["messages"][-1]["content"]
             if count(t) == n: return t
+        except urllib.error.HTTPError as e:
+            if e.code == 404: return t   # an engine without /tokenize (Strata): the stored prompt was cut by a llama.cpp server with the same tokenizer
         except (OSError, ValueError, KeyError, IndexError): pass
     while count(text) < n: text = text + text
     lo, hi = 0, len(text)
@@ -9002,6 +9043,28 @@ def best_prompt_ids(post, text, n, name):
             f.write(f"\n[{name}]\npath = {fp}\nlen = {n}\nin = {round(n / 1000)}k\nout = 1k\n")
         ini_put(name.rsplit("-", 1)[-1], "bestprompt", f"{name} {n}")   # beside bestpp in this hardware's models.ini: the prompts.ini section and the token count its file is cut to
     return ids
+
+
+def clamp_passes(tokens, cap):
+    """-clampasses: (tokens, passes) of a prompt cut to whole passes of at most cap tokens. k = round(tokens / cap) passes: when k x cap <= tokens the prompt is cut
+    to k x cap (the sliver past them would cost a whole pass, twice the time of a one-pass prompt), else it already fits k equal passes and stays. No cap: unchanged."""
+    if not cap or cap <= 0: return tokens, 0
+    if tokens <= cap: return tokens, 1
+    k = max(1, int(tokens / cap + 0.5))
+    return (k * cap, k) if k * cap <= tokens else (tokens, -(-tokens // cap))
+
+
+def latest_pass_cap(model_path, machine="pc1"):
+    """the engine's real pass maximum of the newest run of this model on this machine with the VRAM in use (runs.db ubatch_max: the smallest of its ceilings and the
+    stream's chunk cap, decisions()); None when no run recorded one"""
+    try:
+        g = int(hw_key()[:-1])
+        con = sqlite3.connect(f"file:{RUNS_DB}?mode=ro", uri=True)
+        for um, vm in con.execute("select ubatch_max, vram_mib from runs where model = ? and hw = ? and ubatch_max > 0 and vram_mib > 0 order by ts desc limit 50",
+                                  (model_path, machine.split("-")[0])):
+            if abs(round(float(vm) / 1024) - g) <= 1: return int(um)
+    except (sqlite3.Error, ValueError, TypeError): pass
+    return None
 
 
 def best_prompt_tokens(model_path):
@@ -11535,6 +11598,14 @@ def _tool_selftest():
             failed.append(msg)
 
 
+    # 0. -clampasses: a best prompt a sliver past whole passes runs the whole passes, one that fits its equal passes stays (fork/run.py clamp_passes)
+    _ns = runpy.run_path(RUN, run_name="run_selftest_import")
+    _cp = _ns["clamp_passes"]
+    check(_cp(12000, 11900) == (11900, 1), "clamp_passes: 12000 tokens at a pass maximum of 11900 run one pass of 11900, not two")
+    check(_cp(12562, 4352) == (12562, 3), "clamp_passes: Kimi K3.1 12562 tokens at 4352 stay, three equal passes of 4188")
+    check(_cp(10000, 4900) == (9800, 2), "clamp_passes: 10000 at 4900 run two passes of 4900, not three")
+    check(_cp(12000, 7000) == (12000, 2) and _cp(8000, 16384) == (8000, 1) and _cp(8000, None) == (8000, 0), "clamp_passes: fits as it is, one pass, no maximum known")
+
     # 1. compile, help
     py_compile.compile(RUN, doraise=True)
     check(True, "run.py compiles")
@@ -12174,6 +12245,8 @@ if __name__ == "__main__":
     sx = sp.add_parser("status", help="the running list in the -nrt table: done today, running now, queued next (with the expected time), the queue daemon's waiting tasks; nothing is started")
     sx.add_argument("list", nargs="?", help="a list name (fork/runs/NAME.csv); none = the list that runs now, else the last one")
     sx.add_argument("rest", nargs=argparse.REMAINDER, help="run options of the list (-b BUILD ...)")
+    sd = sp.add_parser("ssd", help="place a model's experts on more drives for llama-server --multissd (fork/ssd_place.py): MODEL DIR[:SHARE],... ; SHARE optional, by default each drive's share of the summed read speed (fio)")
+    sd.add_argument("model"); sd.add_argument("dirs"); sd.add_argument("--trim", action="store_true", help="punch the rest out of whole copies already there"); sd.add_argument("--dry", action="store_true")
     op = sp.add_parser("onepass", help="the best one-pass input prompt of every model from the runs of `run onepass -b BUILD` (pass count and prompt speed per size); --write stores it in models.ini")
     op.add_argument("-b", "--build", default="latest"); op.add_argument("--write", action="store_true")
     cb = sp.add_parser("calib", help="find every model's biggest one-pass input prompt by halving from 12k, then bisecting and store best_prompt.<N>gpu in models.ini")
@@ -12232,7 +12305,7 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     rc = {"run": cmd_run, "publish": cmd_publish, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "gen": cmd_gen, "judge": cmd_judge, "stats": cmd_stats, "test": cmd_test, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "experiment": cmd_experiment, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
+     "show": cmd_show, "gen": cmd_gen, "judge": cmd_judge, "stats": cmd_stats, "test": cmd_test, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "experiment": cmd_experiment, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "ssd": cmd_ssd, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
     # the command's result is the process's exit code: dropped, a failed cell exited 0 and every list said "failed: none" under FAIL rows (bug log, 4 times)
     sys.exit(rc if isinstance(rc, int) and not isinstance(rc, bool) else 0)

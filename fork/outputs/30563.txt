@@ -1,0 +1,51 @@
+run 30563 | thread_search_after_refill_vk | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 13.53 t/s | prompt 262.6 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 200+200 W | 2026-11-18 01:18:48
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params)` with no body. So I should note that the file appears incomplete.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+```
+
+Issues:
+- If `max_items == 0` but `min_items > 0`, this returns "" which is unsatisfiable — the schema is contradictory (min > max). Returning "" silently produces an empty rule that can never match. Actually wait — returning "" as the rule content means the rule is empty string. In GBNF, an empty rule... hmm. Actually the caller does `build_repetition(item_rule_name, arr.min_items, max_items, ...)` and embeds it. If min_items > 0 and max_items == 0, the schema is invalid (min > max), and this silently produces something that can't match. It might be worth validating or warning. Actually, in the original llama.cpp code (this looks like llama.cpp's json-schema-to-grammar), the same behavior exists. Let me check the original: yes, in llama.cpp's `build_repetition`, same code. So this is inherited behavior.
+
+- `min_items` could be negative? Callers pass `arr.min_items` which could be negative? In KIND_ARRAY, `arr.min_items` is used directly. If min_items is negative... `build_repetition(item_rule_name, arr.min_items, max_items, ...)`. Hmm, if min_items < 0, then `item_rule + "{" + std::to_string(min_items) + ...` would produce `{-1,}` which is invalid grammar. Actually wait, for min_items == 0 && max_items == 1 → "?". For min_items < 0... falls to the general case producing `{min,}`. Negative min in GBNF repetition `{n,m}` — probably invalid. But maybe schema parsing guarantees min_items >= 0. Worth noting as a defensive check.
+
+- In the separator branch: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. If `max_items == 1` and `min_items == 1` with separator: has_max true, so recursion with max_items = 0 → returns "". So result = item_rule + " " + "" = item_rule + " ". Hmm wait: `result = item_rule + " " + build_repetition(...)`. If the inner returns "", result is `item_rule + " "` — trailing space! That's a bug? Let me check: min_items=1, max_items=1, separator non-empty. Inner call: build_repetition("(sep item)", 0, 0) → max_items == 0 → return "". So result = item_rule + " ". Then min_items != 0, so no "?" appended. Result: `item_rule ` with trailing space. In GBNF, trailing space... the grammar rule would be e.g. `"foo" ` — trailing whitespace in the rule text. GBNF parser might tolerate trailing space? Actually the rule content ends with a space character which is just whitespace in the grammar text, likely harmless but sloppy. Hmm, but wait — actually is it? The rule string is `item_rule + " "`. When this is embedded in a larger rule like `"[" space "foo"  space "]"`, the extra space is just formatting. GBNF treats whitespace as insignificant. So harmless but sloppy. Actually wait, let me double check the original llama.cpp code... In llama.cpp:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Same. And the separator branch:
+
+```cpp
+    auto result = item

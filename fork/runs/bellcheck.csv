@@ -1,0 +1,29 @@
+name,model,n,test,tokens,args,extra
+ol-off,olmoe,1,pf1k,256,"--moe sim-vram=1280",
+ol-bell,olmoe,1,pf1k,256,"--moe sim-vram=1280,bell=1",
+qni3-off,qwen38,2,pfbest1k,1024,,
+qni3-bell,qwen38,2,pfbest1k,1024,"--moe bell=1",
+qni4-off,qn_iq4xs,2,pfbest1k,1024,,
+qni4-bell,qn_iq4xs,2,pfbest1k,1024,"--moe bell=1",
+ol-bell-1card,olmoe,1,pf1k,256,"--moe sim-vram=1280,bell=1",--env CUDA_VISIBLE_DEVICES=0
+ol-bell-nograph,olmoe,1,pf1k,256,"--moe sim-vram=1280,bell=1",--env GGML_CUDA_DISABLE_GRAPHS=1
+glm3-off,glm,2,pfbest1k,1024,,
+glm3-bell,glm,2,pfbest1k,1024,"--moe bell=1",
+mimo-off,mimo,2,pfbest1k,1024,,
+mimo-bell,mimo,2,pfbest1k,1024,"--moe bell=1",
+qni3-dbg,qwen38,1,pf1k,4,"--moe bell=1",--env GGML_SCHED_DEBUG=2
+qni3-bopt,qwen38,1,pfbest1k,1024,"--moe bell=1",--env GGML_CUDA_GRAPH_OPT=1
+ol-s0,olmoe,1,pf1k,256,"--moe bell=1",
+ol-s2,olmoe,1,pf1k,256,"--moe bell=1",--env GGML_CUDA_STREAMS=2 --env GGML_CUDA_STREAMS_CHECK=1
+qni3-s2,qwen38,2,pfbest1k,1024,"--moe bell=1",--env GGML_CUDA_STREAMS=2
+qni3-s2d,qwen38,2,pfbest1k,1024,,--env GGML_CUDA_STREAMS=2
+qni4-s2,qn_iq4xs,2,pfbest1k,1024,"--moe bell=1",--env GGML_CUDA_STREAMS=2
+qni3-bs,qwen38,2,pfbest1k,1024,"--moe bell=1 -bs",
+qni3-s2bs,qwen38,2,pfbest1k,1024,"--moe bell=1 -bs",--env GGML_CUDA_STREAMS=2
+qni3-sdbg,qwen38,1,pf1k,8,"--moe bell=1",--env GGML_CUDA_STREAMS=2 --env GGML_CUDA_STREAMS_DEBUG=1
+qni3-sw4,qwen38,1,pfbest1k,1024,"--moe bell=1",--env GGML_CUDA_STREAMS=2 --env GGML_CUDA_STREAMS_SWITCH_US=4
+qni3-sw10,qwen38,1,pfbest1k,1024,"--moe bell=1",--env GGML_CUDA_STREAMS=2 --env GGML_CUDA_STREAMS_SWITCH_US=10
+qni3-sw30,qwen38,1,pfbest1k,1024,"--moe bell=1",--env GGML_CUDA_STREAMS=2 --env GGML_CUDA_STREAMS_SWITCH_US=30
+qni3-c0,qwen38,2,pfbest1k,1024,"--moe bell=1 -bs",--env GGML_CUDA_STREAMS=2 --env GGML_CUDA_GRAPH_CHUNK_SIZE=0
+qni4-s2bs,qn_iq4xs,2,pfbest1k,1024,"--moe bell=1 -bs",--env GGML_CUDA_STREAMS=2
+qni4-c0,qn_iq4xs,2,pfbest1k,1024,"--moe bell=1 -bs",--env GGML_CUDA_STREAMS=2 --env GGML_CUDA_GRAPH_CHUNK_SIZE=0

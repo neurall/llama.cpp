@@ -8,6 +8,7 @@
 
 extern "C" void ggml_cpu_set_gpu_shape(int on);   // quants.c
 extern "C" int  ggml_cpu_gpu_shape(void);         // quants.c
+extern "C" void ggml_cpu_set_vec_dot(enum ggml_type type, ggml_vec_dot_t f);   // ggml-cpu.c: a type's dot product from outside the library
 
 #include <cctype>
 #include <string>
@@ -669,6 +670,9 @@ static void * ggml_backend_cpu_get_proc_address(ggml_backend_reg_t reg, const ch
     if (strcmp(name, "ggml_backend_cpu_set_expert_ptr_hook") == 0) {
         return (void *) ggml_backend_cpu_set_expert_ptr_hook;
     }
+    if (strcmp(name, "ggml_backend_cpu_get_type_traits") == 0) {   // fork: the bell's expert pool (src/llama-bellpool-fork.h) dots and quantizes with these
+        return (void *) ggml_get_type_traits_cpu;
+    }
     if (strcmp(name, "ggml_backend_set_n_threads") == 0) {
         ggml_backend_set_n_threads_t fct = ggml_backend_cpu_set_n_threads;
         return (void *)fct;
@@ -697,6 +701,9 @@ static void * ggml_backend_cpu_get_proc_address(ggml_backend_reg_t reg, const ch
     }
     if (strcmp(name, "ggml_backend_cpu_get_gpu_shape") == 0) {
         return (void *)ggml_cpu_gpu_shape;       // its current state (GGML_CPU_GPU_SHAPE at start, then the setter)
+    }
+    if (strcmp(name, "ggml_backend_cpu_set_vec_dot") == 0) {
+        return (void *)ggml_cpu_set_vec_dot;
     }
 
     // threadpool - TODO:  move to ggml-base

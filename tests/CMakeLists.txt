@@ -190,15 +190,20 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-rampool-fork.cpp)   # the RAM pool's resize between requests (ggml/src/ggml-rampool-fork.cpp), no GPU
     llama_build_and_test(test-moetopic-fork.cpp)
     llama_build_and_test(test-pass-fork.cpp)
+    llama_build_and_test(test-read-fork.cpp)   # the read wrapper's several drives (--multissd): holders, issue order as a schedule, no I/O
     llama_build_and_test(test-gpu-fork.cpp LINK llama)
     llama_build_and_test(test-split-fork.cpp)
     llama_build_and_test(test-rls-fork.cpp)   # the planner's estimator (src/llama-rls-fork.h)
     llama_build_and_test(test-planner-replay-fork.cpp)   # the planner's replay gate (built-in GLM 12k medians; fork/planner_events.py for the logs)
     llama_build_and_test(test-estimate-fork.cpp)         # the planner's strategy estimators, each alone (src/llama-estimate-fork.h)
+    llama_build_and_test(test-cpuplan-fork.cpp)          # the CPU plan of a decode layer's host steps: no thread team when nothing is computed (ggml-cpu.c)
+    llama_build_and_test(test-bell-fork.cpp)             # the decode bell: card and host meet once per MoE layer without a driver call (ggml/src/ggml-bell-fork.h), no GPU
+    llama_build_and_test(test-bell-ops-fork.cpp)         # the bell's two ops on the CPU backend and every GPU found (ggml_moe_bell, ggml_moe_rows)
     llama_build_and_test(test-queue-order-fork.cpp)      # uploads keep stream order with kernels and copies, every GPU (Vulkan transfer queue forced)
     llama_build_and_test(test-sched-mixed-fork.cpp)      # a graph split between GPUs of two backends (CUDA + Vulkan): cross-card copies, no copy events
     llama_build_and_test(test-bw-probe-fork.cpp LINK llama)   # the bandwidth probes (PCIe upload, VRAM, RAM read) against the machine's maximum on the same path
     llama_build_and_test(test-graphcheck-fork.cpp)       # graph tensors that live too long: unread at the end (ggml-alloc.c), probe far above the first reserve
+    llama_build_and_test(test-galloc-spread-fork.cpp)   # frees held back in graphs a backend runs on several streams (ggml-alloc.c)
     llama_build_and_test(test-lockrank-fork.cpp)         # the planner mutexes in rising rank: a relock aborts, a falling order fails the row (src/llama-lockrank-fork.h)
     llama_build_and_test(test-fetchlist-fork.cpp)        # the predictor's ordered fetch list (src/llama-moe-fetchlist-fork.h)
     llama_build_and_test(test-moestate-route-fork.cpp)    # the state file split: heat keys in a shared file, the rest per hardware (src/llama-moestate-route-fork.h)

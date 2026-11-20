@@ -1,0 +1,224 @@
+run 30645 | upload_wait_tuned_first_vk | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 52.12 t/s | prompt 1346.6 t/s | 4096 tokens | args: -np 1 -lm pin | power 200+200 W | 2026-11-18 04:42:08
+
+<think>
+We need answer user's request. Need return complete fixed version of source file: every line, first to last, with every bug fixed and each change marked by comment. They provided two files concatenated? They say // file: common/json-schema-to-grammar.cpp then code, then // file: common/arg.cpp then code. Need return complete fixed version of following source file: every line of it... likely need output entire provided content with fixes. Need identify bugs. This is huge. Need be careful. Need likely from llama.cpp? Need fix bugs in these files. Need mark each change by comment. Need not summarize. Need output code only? Probably yes. Need include all lines unchanged except fixes with comments. Need ensure complete. Need think through bugs.
+
+We need produce fixed version of both files? User says source file singular but includes two file markers. Maybe they expect entire snippet fixed. Need return complete fixed version of following source file: every line of it. Could be two files in one prompt. Need output both with file comments. Need fix bugs.
+
+Need inspect code for bugs. It's likely from llama.cpp common/json-schema-to-grammar.cpp and common/arg.cpp. Need find introduced bugs. We need fix every bug. Could be many subtle. Need compare to known upstream? Let's recall.
+
+First file json-schema-to-grammar.cpp. Need identify bugs.
+
+Let's parse.
+
+Includes: common/json-schema-to-grammar.h, common.h, trie.h, unicode.h. OK.
+
+build_repetition:
+```
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+Potential bug: if max_items == 0 and min_items >0? invalid. If min_items=0 max_items=0 returns empty. OK. If min_items=1 max_items=1 with separator? result = item + build_repetition(...,0,0) => item + ""? Actually build_repetition with max=0 returns "", so result item. OK. If min_items=0 max_items=1 with separator returns item? But should item? For zero or one with separator no separator. OK. If min_items=0 max_items=2 separator: result item + build_repetition(sep item,0,1) => item + (sep item)? => item (sep item)? OK. If min_items=2 max_items=2: item + build_repetition(sep item,1,1) => item + sep item? build_repetition max=1 min=1 no separator? min=1 max=1 not special? separator empty, has_max true, returns item{1,1}? Wait build_repetition called with separator empty because default. For min=1 max=1 returns item_rule + "{1,1}"? Let's see: if min_items==0&&max==1 false; separator empty; min==1&&!has_max false; min==0&&!has_max false; return item + "{1,1}". So result item + " " + "(sep item){1,1}". That's OK but not optimal. But if max_items=1 and min_items=1 with separator, should item. It returns item + " " + build_repetition(...,0,0) = item + " "? Wait min_items==0? no. result = item_rule + " " + build_repetition(..., min_items-1=0, max_items-1=0). build_repetition max=0 returns "". So result = item_rule + " " (trailing space). Then min_items !=0, returns trailing space. That may be bug? In grammar trailing space maybe harmless? But could produce invalid? In GBNF, trailing space before space? It is inside string? Actually rule content: "\"[\" space " + build_repetition(...) + " space \"]\"". If build_repetition returns "item " then rule has double spaces? Probably OK. But upstream maybe handles max_items==1? Let's check upstream build_repetition:
+```
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (min_items == 1 && !has_max) {
+        return item_rule + "+";
+    }
+
+    if (min_items == 0 && !has_max) {
+        return item_rule + "*";
+    }
+
+    if (separator_rule.empty()) {
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+Maybe max_items==0? Upstream? If max_items == 0 return ""? Could be. But if min_items=0 max_items=0, should empty? For array maxItems 0 grammar should match empty array? In caller: build_repetition(item_rule, arr.min_items, max_items, ",\" space") inside brackets. If max_items=0, build_repetition returns "", rule: "[\" space  space \"]" maybe OK. But if min_items>0 max_items=0 invalid.
+
+Potential bug: if max_items == 0 but min_items == 0 and separator non-empty, returns empty. OK.
+
+But if min_items=1 max_items=1 with separator, upstream? It would not hit min0max1, has_max true, separator nonempty, result item + " " + build_repetition(...,0,0) => trailing. Upstream maybe had if (max_items == 0) return ""; if (min_items == 0 && max_items == 1) return item_rule + "?"; if (min_items == 1 && max_items == 1) return item_rule;? Need check. Could be bug introduced? Let's search memory: llama.cpp json-schema-to-grammar.cpp build_repetition:
+```
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+This matches given. So maybe not bug.
+
+build_min_max_int: Need inspect. This is complex. Potential bugs in uniform_range. Need compare upstream. Let's recall upstream build_min_max_int from llama.cpp. It has functions digit_range, more_digits, uniform_range. Need find bugs.
+
+Given:
+```
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+...
+    std::function<void(const std::string_view &, const std::string_view &)> uniform_range =
+        [&](const std::string_view & from, const std::string_view & to) {
+            size_t i = 0;
+            while (i < from.length() && i < to.length() && from[i] == to[i]) {
+                i++;
+            }
+            if (i > 0) {
+                out << "\"" << from.substr(0, i) << "\"";
+            }
+            if (i < from.length() && i < to.length()) {
+                if (i > 0) {
+                    out << " ";
+                }
+                auto sub_len = from.length() - i - 1;
+                if (sub_len > 0) {
+                    auto from_sub = from.substr(i + 1);
+                    auto to_sub = to.substr(i + 1);
+                    auto sub_zeros = string_repeat("0", sub_len);
+                    auto sub_nines = string_repeat("9", sub_len);
+
+                    auto to_reached = false;
+                    out << "(";
+                    if (from_sub == sub_zeros) {
+                        digit_range(from[i], to[i] - 1);
+                        out << " ";
+                        more_digits(sub_len, sub_len);
+                    } else {
+                        out << "[" << from[i] << "] ";
+                        out << "(";
+                        uniform_range(from_sub, sub_nines);
+                        out << ")";
+                        if (from[i] < to[i] - 1) {
+                            out << " | ";
+                            if (to_sub == sub_nines) {
+                                digit_range(from[i] + 1, to[i]);
+                                to_reached = true;
+                            } else {
+                                digit_range(from[i] + 1, to[i] - 1);
+                            }
+                            out << " ";
+                            more_digits(sub_len, sub_len);
+                        }
+                    }
+                    if (!to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, to_sub);
+                    }
+                    out << ")";
+                } else {
+                    out << "[" << from[i] << "-" << to[i] << "]";
+                }
+            }
+        };
+```
+Need check if correct. Potential bug: if from[i] == to[i]? But while stops at first diff, so from[i] != to[i]. If from length != to length? uniform_range called with same length? In min/max loop: uniform_range(min_s, string_repeat("9", digits)); min_s length digits? Initially min_s length min_digits, digits from min_digits to max_digits-1. If min_s length may be less than digits? Example min_value=100, min_digits=3, max_digits=4. digits=3 uniform_range("100","999") same length. Then min_s="1"+"000" length4. Next digits=4? loop digits<max_digits (3<4 only once). OK. If min_value=99 min_digits=2 max_digits=4: digits=2 uniform_range("99","99")? from==to, while i goes to length 2, i=2, no if i<length. Outputs "99". Then min_s="1"+"99"? Wait code: uniform_range(min_s, string_repeat("9", digits)); min_s = "1" + string_repeat("0", digits); For digits=2, min_s becomes "100" length3. Next digits=3 uniform_range("100","999") OK. Good.
+
+But uniform_range with from_sub == sub_zeros: digit_range(from[i], to[i] - 1). If from[i] == to[i]? no. If from[i] > to[i]? no because from<to? Should be. If from[i] == to[i]-? OK. If from[i] == to[i]? no. If from[i] == to[i]-? If from[i] == to[i]? no. If from[i] == to[i]-? digit_range valid. If from[i] == to[i]? no. If from[i] == to[i]-? OK. If from[i] == to[i]-? If from[i] == to[i]-? OK.
+
+Potential bug: if from_sub == sub_zeros and from[i] == to[i]? no. If from[i] == to[i]-? If from[i] == to[i]-? digit_range(from[i], to[i]-1) could be from[i] > to[i]-1 if from[i]==to[i]? no. If from[i] == to[i]-? OK. If from[i] == to[i]-? If from[i] == to[i]-? OK.
+
+Potential bug: if from_sub != sub_zeros and from[i] < to[i] - 1. If from[i]+1 > to[i]-1? condition ensures at least one. If to_sub == sub_nines, digit_range(from[i]+1, to[i]) and to_reached true. But then after if !to_reached skip. But if to_sub == sub_nines, we output digit_range(from[i]+1,to[i]) more_digits(sub_len,sub_len). This covers middle and top with all nines? Wait top branch with to[i] and uniform_range(sub_zeros,to_sub) would be to[i] + all nines, which is included in digit_range(from[i]+1,to[i]) more_digits(sub_len,sub_len) because more_digits exact length any digits, includes all nines. So to_reached true skip. OK.
+
+If to_sub != sub_nines, digit_range(from[i]+1,to[i]-1) more_digits exact, then !to_reached output to[i] uniform_range(sub_zeros,to_sub). OK.
+
+Potential bug: if from_sub == sub_zeros, to_reached false, then output middle? It outputs digit_range(from[i], to[i]-1) more_digits exact. Then !to_reached outputs to[i] uniform_range(sub_zeros,to_sub). OK. If to_sub == sub_nines, top branch outputs to[i] uniform_range(sub_zeros, sub_nines) which is to[i] followed by any digits exact. But middle digit_range(from[i], to[i]-1) more_digits exact doesn't include to[i]. OK. Could have optimized but OK.
+
+Potential bug: if from_sub == sub_zeros and from[i] == to[i]? no. If from[i] == to[i]-? OK.
+
+Potential bug: if from_sub != sub_zeros and from[i] == to[i]-1, no middle. Then !to_reached output top. OK.
+
+Potential bug: if from_sub != sub_zeros and to_sub == sub_nines and from[i] < to[i]-1, to_reached true. But what about top value to[i] followed by to_sub (all nines) included in digit_range(from[i]+1,to[i]) more_digits exact. Yes.
+
+Potential bug: if from_sub != sub_zeros and from[i] < to[i]-1 and to_sub == sub_nines, output digit_range(from[i]+1,to[i]) more_digits exact. This includes from[i]+1..to[i] any digits. But lower branch [from[i]] (from_sub..999) covers from[i] with suffix >= from_sub. Good.
+
+Potential bug: if from_sub != sub_zeros and from[i] == to[i]-1 and to_sub == sub_nines? condition false, to_reached false, output top digit_range(to[i],to[i]) uniform_range(sub_zeros,sub_nines). OK.
+
+Potential bug: if from_sub != sub_zeros and from[i] < to[i]-1 and to_sub == sub_nines, no top separate. OK.
+
+Potential bug: if from_sub == sub_zeros and to_sub == sub_nines, output digit_range(from[i],to[i]-1) more_digits exact | to[i] uniform_range(sub_zeros,sub_nines). OK.
+
+Potential bug: if from_sub == sub_zeros and from[i] == to[i]-? If from[i] == to[i]-? digit_range(from[i], to[i]-1) valid. If from[i] == to[i]? no.
+
+Potential bug: if from_sub == sub_zeros and from[i] == to[i]-? If from[i] == to[i]-? OK.
+
+Potential bug: if from_sub == sub_zeros and from[i] == to[i]-? If from[i] == to[i]-? OK.
+
+Potential bug: if from_sub == sub_zeros and from[i] == to[i]-? OK.
+
+Potential bug: if from_sub == sub_zeros and from[i] == to[i]-? Enough.
+
+Potential bug: if from_sub == sub_zeros and from[i] == to[i]-? Stop.
+
+Need compare to upstream. I recall upstream uniform_range has:
+```
+if (from_sub == sub_zeros) {
+    digit_range(from[i], to[i] - 1);
+    out << " ";
+    more_digits(sub_len, sub_len);
+} else {
+    out << "[" << from[i] << "] ";
+    out << "(";
+    uniform_range(from_sub, sub_nines);
+    out << ")";
+    if (from[i] < to[i] - 1) {
+        out << " | ";
+        if (to_sub == sub_nines) {
+            digit_range(from[i] +

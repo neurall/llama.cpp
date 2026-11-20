@@ -605,6 +605,8 @@ extern "C" {
         GGML_OP_DSV4_HC_PRE,
         GGML_OP_DSV4_HC_POST,
         GGML_OP_TOP_K_MASK,
+        GGML_OP_MOE_BELL,   // fork: the decode bell (ggml/src/ggml-bell-fork.h)
+        GGML_OP_MOE_ROWS,
 
         GGML_OP_UNARY,
 
@@ -2809,6 +2811,28 @@ extern "C" {
             struct ggml_tensor  * score,
             struct ggml_tensor  * blocks,
             struct ggml_tensor  * extra);
+
+    // fork: the decode bell (ggml/src/ggml-bell-fork.h, fork/docs/decode-doorbell-plan-2026-11-18.md): a MoE cache layer of a decode token meets the host
+    // through a block of memory both reach by pointer, without leaving the card's graph.
+    // ids:   [n_used, 1] I32, the router's picks      table: I32, n_expert entries: an expert's block on this card, < 0 when it has none
+    // x:     [n_embd, 1, 1] F32, the layer input      bell:  the layer's struct ggml_bell
+    // res:   [n_used, 1] I32, the block of each pick (-1: none). The picks and their blocks are written into the bell, x too when a pick has no block
+    GGML_API struct ggml_tensor * ggml_moe_bell(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * ids,
+            struct ggml_tensor  * table,
+            struct ggml_tensor  * x,
+            void                * bell);
+
+    // down:  [n_embd, n_used, 1] F32, the card's expert rows    ids, slots: as given to and returned by ggml_moe_bell
+    // res:   down, in place: the rows of the picks without a block come from the bell, once the host has written them. Every pick on the card: nothing is
+    //        read and nobody is waited for
+    GGML_API struct ggml_tensor * ggml_moe_rows(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * down,
+            struct ggml_tensor  * ids,
+            struct ggml_tensor  * slots,
+            void                * bell);
 
     // custom operators
 

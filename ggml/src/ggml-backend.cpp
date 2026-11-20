@@ -13,6 +13,8 @@
 #include "ggml-alloc.h"
 #include "ggml-rampool-fork.h"
 #include "ggml-sched-fork.h"
+#include "ggml-sched-reset-fork.h"
+#include "ggml-bell-fork.h"
 #include "ggml-impl.h"
 
 #include <assert.h>
@@ -23,6 +25,7 @@
 #include <string.h>
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <map>
 #include <mutex>
 #include <unordered_map>
@@ -639,6 +642,37 @@ void ggml_backend_tensor_get_2d_async(ggml_backend_t backend, const struct ggml_
     backend->iface.get_tensor_2d_async(backend, tensor, data, offset, size, n_copies, stride_tensor, stride_data);
 }
 
+// fork: between _begin and _end the calling thread's ggml_backend_tensor_set calls of up to 64 KiB into device buffers are gathered and sent as one batch
+// (ggml_backend_tensor_set_n: one wait a buffer type, not one a tensor). A decode graph sets about 20 inputs, each a blocking transfer on CUDA: 116 us a
+// token on Qwen3.8 while the card waits for the graph (2026-11-19, LLAMA_STEP_TIME). The bytes are copied at the call: callers pass temporaries.
+struct ggml_set_batch_fork {
+    bool on = false;
+    int  depth = 0;   // a batch opened inside a batch joins it: the outer end sends everything
+    std::vector<struct ggml_tensor *> tensors;
+    std::vector<size_t> offsets, sizes, data_offsets;
+    std::vector<uint8_t> bytes;
+};
+static thread_local ggml_set_batch_fork g_set_batch_fork;
+extern "C" {
+    GGML_API void ggml_backend_tensor_set_batch_begin_fork(void);
+    GGML_API void ggml_backend_tensor_set_batch_end_fork(void);
+}
+void ggml_backend_tensor_set_batch_begin_fork(void) {
+    ggml_set_batch_fork & b = g_set_batch_fork;
+    if (b.depth++ > 0) { return; }
+    b.on = true;
+    b.tensors.clear(); b.offsets.clear(); b.sizes.clear(); b.data_offsets.clear(); b.bytes.clear();
+}
+void ggml_backend_tensor_set_batch_end_fork(void) {
+    ggml_set_batch_fork & b = g_set_batch_fork;
+    if (b.depth <= 0 || --b.depth > 0) { return; }
+    b.on = false;
+    if (!b.tensors.empty()) {
+        ggml_backend_tensor_set_n(b.tensors.data(), b.bytes.data(), b.offsets.data(), b.sizes.data(), b.data_offsets.data(), b.tensors.size());
+        b.tensors.clear();
+    }
+}
+
 void ggml_backend_tensor_set(struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     GGML_ASSERT(tensor);
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
@@ -650,6 +684,14 @@ void ggml_backend_tensor_set(struct ggml_tensor * tensor, const void * data, siz
 
     GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
     GGML_ASSERT(offset + size <= ggml_nbytes(tensor) && "tensor write out of bounds");
+    {   // fork: see ggml_backend_tensor_set_batch_begin_fork
+        ggml_set_batch_fork & b = g_set_batch_fork;
+        if (b.on && size <= ((size_t) 64 << 10) && buf->iface.set_tensor_n != NULL && !ggml_backend_buffer_is_host(buf)) {
+            b.tensors.push_back(tensor); b.offsets.push_back(offset); b.sizes.push_back(size); b.data_offsets.push_back(b.bytes.size());
+            b.bytes.insert(b.bytes.end(), (const uint8_t *) data, (const uint8_t *) data + size);
+            return;
+        }
+    }
     ggml_backend_fork_pool_access(tensor, (const char *) tensor->data + offset, size, "tensor_set");
 
     buf->iface.set_tensor(buf, tensor, data, offset, size);
@@ -1380,6 +1422,67 @@ int ggml_backend_sched_card_stats(struct ggml_sched_card_stat * out, int cap, lo
 void ggml_backend_set_split_callback(ggml_backend_split_cb_t cb, void * user_data) {
     g_split_cb = cb;
     g_split_ud = user_data;
+}
+
+// fork: the decode bell. The bells of a split are served on this thread, which gets the split before its graph is launched; the launching thread waits for it
+// behind the launch. Not by the launching thread behind the launch: a kernel that waits for the host holds its stream, a CUDA stream queues 1022 calls behind a
+// running kernel and the next call blocks until that kernel ends (fork/bench/launchblock.cu). A graph's first call is launched kernel by kernel (its CUDA graph
+// is captured from the second call on): Qwen3.8 UD-IQ4_XS, about 1500 kernels a card, stood in cuLaunchKernel behind the first rows kernel with a missing
+// pick, whose rows were to come once that launch had returned (2026-11-18; OLMoE's 500 kernels a card fitted the queue, so its rows never showed it).
+// The thread sleeps between splits: it is woken before the launch, and the first bell rings only after the launch and the layer's attention.
+static ggml_backend_split_bell_cb_t g_split_bell_cb = NULL;
+static void *                       g_split_bell_ud = NULL;
+
+struct ggml_sched_bell_thread {
+    std::thread             thread;
+    std::mutex              mu;
+    std::condition_variable cv;
+    uint32_t                posted = 0;        // splits handed over (under mu)
+    std::atomic<uint32_t>   done{0};           // splits served
+    bool                    quit   = false;
+    ggml_backend_t          backend = nullptr; // the split handed over last
+    struct ggml_cgraph *    graph   = nullptr;
+
+    void run() {
+        for (uint32_t seen = 0; ; ) {
+            ggml_backend_t b; struct ggml_cgraph * g;
+            {
+                std::unique_lock<std::mutex> lk(mu);
+                cv.wait(lk, [&] { return posted != seen || quit; });
+                if (quit) { return; }
+                b = backend; g = graph;
+            }
+            seen++;
+            g_split_bell_cb(b, g, g_split_bell_ud);
+            done.store(seen);
+        }
+    }
+    void post(ggml_backend_t b, struct ggml_cgraph * g) {
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            backend = b; graph = g; posted++;
+        }
+        cv.notify_one();
+    }
+    void wait() const { while (done.load() != posted) { GGML_BELL_PAUSE(); } }   // only the posting thread calls it: posted is its own
+};
+static ggml_sched_bell_thread * g_bell_thread = nullptr;
+
+static bool ggml_sched_split_has_bell(const struct ggml_cgraph * g) {
+    for (int i = 0; i < g->n_nodes; ++i) { if (g->nodes[i]->op == GGML_OP_MOE_BELL) { return true; } }
+    return false;
+}
+
+void ggml_backend_set_split_bell_callback(ggml_backend_split_bell_cb_t cb, void * user_data) {
+    if (!cb && g_bell_thread) {   // no split is under way here
+        { std::lock_guard<std::mutex> lk(g_bell_thread->mu); g_bell_thread->quit = true; }
+        g_bell_thread->cv.notify_one();
+        g_bell_thread->thread.join();
+        delete g_bell_thread;
+        g_bell_thread = nullptr;
+    }
+    g_split_bell_cb = cb;
+    g_split_bell_ud = user_data;
 }
 
 void ggml_backend_set_moe_fill_callback(ggml_backend_moe_fill_cb_t cb, void * user_data) {
@@ -4928,6 +5031,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             // (Qwen Next's inp_mixed_embd under poison) cannot take the one report, and a pass that a NaN check of every node would take minutes for stays short
             static const char * const nan_only = getenv("GGML_SCHED_NAN_CHECK_ONLY");
             if (split_id == 0 && nan_mode == 2) { nan_graph2++; }
+            // fork: the decode bell: this split's bells are served from here on, on the bell thread (before the launch, see ggml_sched_bell_thread)
+            const bool bells = g_split_bell_cb && ggml_sched_split_has_bell(&split->graph);
+            if (bells) {
+                if (!g_bell_thread) { g_bell_thread = new ggml_sched_bell_thread; g_bell_thread->thread = std::thread([] { g_bell_thread->run(); }); }
+                g_bell_thread->post(split_backend, &split->graph);
+            }
             if (nan_mode == 2 && sched->n_splits >= ggml_sched_nan_min_splits() &&
                     (!nan_only || (split->graph.n_nodes > 0 && strstr(split->graph.nodes[0]->name, nan_only)))) {
                 ggml_sched_trace_install();
@@ -4942,6 +5051,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             } else {
                 NVTX_PUSH("LAUNCH graph_compute_async"); ec = ggml_backend_graph_compute_async(split_backend, &split->graph); NVTX_POP();
             }
+            if (bells) { g_bell_thread->wait(); }   // every bell of the split is served: the next split may use the host again
             if (cs_set >= 0 && cs_idx[split_id] >= 0) {
                 if (ec == GGML_STATUS_SUCCESS) {
                     g_stamp_fn(split_backend, &g_card_buf[cs_set][cs_idx[split_id]].t1);
@@ -5183,6 +5293,10 @@ ggml_backend_sched_t ggml_backend_sched_new(
     sched->hv_tensor_backend_ids = (int *) malloc(sched->hash_set.size * sizeof(sched->hv_tensor_backend_ids[0]));
     sched->hv_tensor_copies      = (ggml_tensor **) malloc(sched->hash_set.size * sched->n_backends * sched->n_copies * sizeof(struct ggml_tensor *));
     sched->hv_tensor_used        = (bool *) malloc(sched->hash_set.size * sizeof(sched->hv_tensor_used[0]));
+    // fork: cleared whole once, here; between graphs only the slots a graph marked (ggml_backend_sched_reset, ggml-sched-reset-fork.h)
+    memset(sched->hv_tensor_backend_ids, -1, sched->hash_set.size * sizeof(sched->hv_tensor_backend_ids[0]));
+    memset(sched->hv_tensor_copies,       0, sched->hash_set.size * sched->n_backends * sched->n_copies * sizeof(struct ggml_tensor *));
+    memset(sched->hv_tensor_used,         0, sched->hash_set.size * sizeof(sched->hv_tensor_used[0]));
 
     // At most one split per node is the proof-safe bound, but it costs ~21 KB per node (30 inputs x 2 tensors per split, plus the id arrays): at the 575k-node graph
     // of a 14336-token micro-batch that is 12 GB, committed at once. Linux overcommits it unseen; Windows refuses ("GGML_ASSERT(ctx->mem_buffer != NULL)" in ggml_init
@@ -5419,10 +5533,9 @@ void ggml_backend_sched_reset(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
     // reset state for the next run
     if (!sched->is_reset) {
-        ggml_hash_set_reset(&sched->hash_set);
-        memset(sched->hv_tensor_backend_ids, -1, sched->hash_set.size * sizeof(sched->hv_tensor_backend_ids[0]));
-        memset(sched->hv_tensor_copies,       0, sched->hash_set.size * sched->n_backends * sched->n_copies * sizeof(struct ggml_tensor *));
-        memset(sched->hv_tensor_used,         0, sched->hash_set.size * sizeof(sched->hv_tensor_used[0]));
+        // fork: only the slots the last graph marked, then the marks (the whole tables were 11 ms of memset before every rebuilt decode graph)
+        ggml_sched_reset_used_fork(sched->hash_set.used, sched->hash_set.size, sched->hv_tensor_backend_ids, (void **) sched->hv_tensor_copies,
+                (size_t) sched->n_backends * sched->n_copies, sched->hv_tensor_used);
         sched->is_reset = true;
     }
     sched->is_alloc = false;

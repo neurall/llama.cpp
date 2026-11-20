@@ -1,0 +1,37 @@
+run 30536 | rel_vk_exit_nodriver | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 12.27 t/s | prompt 280.7 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 200+200 W | 2026-11-18 00:08:35
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends with `static bool spec_types_is_default(const common_params & params)` which is an incomplete function declaration. So I should note that the file appears incomplete.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me look through this carefully.
+
+### `build_repetition` function:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+}
+```
+
+Issues:
+- If `max_items == 0` but `min_items > 0`, this returns "" which is unsatisfiable — the schema is contradictory (min > max). Returning "" silently produces an empty rule that can never match. Actually wait, if max_items == 0 and min_items > 0, the schema is invalid (min > max). Returning "" means the grammar rule is empty — this could produce a rule with empty content which might be invalid GBNF. Actually an empty rule string would produce `name ::= ` which is likely a parse error in the grammar parser. Hmm, but maybe it's handled elsewhere. Worth flagging.
+- Negative `min_items`? If min_items is negative, e.g., -1, then `item_rule + "{" + std::to_string(-1) + ...` would produce `{-1,}` which is invalid. Callers seem to pass `arr.min_items` directly — if the schema has negative min_items, this would break. Actually in `KIND_ARRAY`: `build_repetition(item_rule_name, arr.min_items, max_items, ...)`. If `arr.min_items` is negative... The check `arr.min_items == 0 && arr.max_items < 0` suggests max_items < 0 means unlimited. But min_items negative isn't guarded. Also `min_items == 0 ? 0 : min_items - 1` in the separator path — if min_items is negative, min_items - 1 makes it more negative.
+- Also in the separator branch: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. If max_items == 1 and min_items == 1 with separator: has_max true, so recursion with max_items = 0, min_items = 0 → returns "" → result = item_rule + " " + "" = `item_rule ` with trailing space. Hmm, that produces `item_rule ` followed by nothing — trailing space in grammar. Actually wait: `result = item_rule + " " + build_repetition(...)`. If the inner returns "", result is `item_rule + " "` — trailing space. In GBNF, a trailing space in a rule body... the space is part of the rule text; " " at end of rule. Actually in GBNF, spaces in rule definitions are typically ignored? No — in llama.cpp grammar parser, whitespace between symbols is ignored, but a literal `" "` is a space character. Here the separator is `"\" \" "`? Wait, the separator_rule passed is `"\",\" space"` — a rule reference sequence. The recursion wraps it in parens: `( "\",\" space " + item_rule + ")"`. Hmm wait, `build_repetition("(" + separator_rule + " " + item_rule + ")", ...)` — separator_rule is `"\",\" space"` so the inner item rule is `( "\",\" space " + item_rule + ")"`. Hmm, actually the string is `"(" + "\",\" space" + " " + item_rule + ")"` = `( "\",\" space " + item_rule + ")"`. OK.
+
+But if max_items == 1, min_items == 1: inner build_repetition with min 0, max 0 returns "". So result = `item_rule + " " + ""` = `item_rule ` — trailing space. Then no `?` appended since min_items != 0. So the rule is `item_rule ` with a trailing space character. In GBNF parsing, trailing whitespace... The llama.cpp grammar parser treats whitespace as separators between symbols, so a trailing space is harmless? Actually the parser might complain about empty rule? Let me think: rule body `foo ::= "a

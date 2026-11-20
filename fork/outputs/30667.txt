@@ -1,0 +1,37 @@
+run 30667 | upload_wait_tuned_first_vk | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 15.64 t/s | prompt 267.9 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 200+200 W | 2026-11-18 05:24:56
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params)` with no body. So I should note that the file appears incomplete.
+
+Let me do a thorough code review of both files.
+
+**File 1: json-schema-to-grammar.cpp**
+
+Let me look through this carefully:
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+```
+
+Issues:
+- If `max_items == 0` but `min_items > 0`, this is contradictory (schema requires at least min_items but at most 0). The function returns "" silently, which would produce a grammar that matches nothing... Actually returning "" means the rule content is empty string. Hmm, in GBNF an empty rule might be invalid or match empty. Actually if min_items > 0 and max_items == 0, the schema is unsatisfiable; returning "" silently produces an empty rule which may fail to parse or match empty string incorrectly. Should probably throw an error or at least warn.
+- Negative min_items isn't validated. If min_items < 0, e.g., -1, then `item_rule + "{" + "-1," ...}` would produce invalid grammar `{ -1, }`. Actually with min_items = -1: `item_rule + "{" + std::to_string(-1) + "," + ...` → `{ -1, }` which is invalid GBNF. Where does min_items come from? From `arr.min_items` in schema. If schema has negative min_items... The code checks `arr.max_items < 0 ? max : arr.max_items` but doesn't clamp min_items. So a negative min_items would produce invalid grammar. Worth noting.
+- In the separator branch: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. If max_items == 1 and min_items == 1 with separator: recursion gives build_repetition(sep_item, 0, 0) → returns "" (since max_items == 0). So result = item_rule + " " + "" = item_rule + " " — trailing space! Wait: `auto result = item_rule + " " + build_repetition(...)`. If the inner returns "", result is `item_rule + " "` with a trailing space. Then since min_items != 0, no "?" appended. So the rule would be `item_rule ` with trailing space. Hmm, is that a bug? Let's check: min_items=1, max_items=1, separator non-empty. The correct grammar should be just `item_rule` (one item, no separator). The code produces `item_rule ` (with trailing space). Actually wait, in GBNF, trailing space... the rule content would be `item_rule ` — the space here is part of rule text; GBNF treats whitespace between symbols as insignificant? In GBNF format, whitespace is generally ignored except within literals. Actually in llama.cpp GBNF parsing, whitespace between rule elements is skipped. So `item_rule ` with trailing space is harmless syntactically. But it's sloppy. Let me double check the recursion: build_repetition("(" + sep + " " + item + ")", min_items - 1 = 0, max_items - 1 = 0). Inside: has_max = (0 != INT_MAX) = true. max_items == 0 → return "". So result = item_rule + " " + "" = "item_rule ". Then min_items == 0? No (min_items == 1). So return "item_rule ". So yes trailing space. Minor cosmetic issue; GBNF whitespace is ignored so it's fine functionally but sloppy.
+
+Actually wait, there's a subtle bug: when min_items == 1 and max_items == 1 and separator is non-empty, the correct output is just item_rule. The code outputs item_rule + " " which is fine. OK.
+
+What about min_items > max_items? E.g., min_items = 5, max_items = 3. Then `{5,3}` invalid. Or with separator: build_repetition(item

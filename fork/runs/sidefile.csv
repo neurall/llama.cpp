@@ -1,0 +1,15 @@
+name,model,n,test,tokens,args,extra
+sf-o-base,olmoei,2,pf1k,256,,
+sf-o-copy,olmoei,2,pf1k,256,"--moe tensor-file=/home/o/.claude/jobs/44ecfe4e/tmp/side/olmoei-attn01-copy.gguf",
+sf-o-q8,olmoei,2,pf1k,256,"--moe tensor-file=/home/o/.claude/jobs/44ecfe4e/tmp/side/olmoei-attn01-q8_0.gguf",
+sf-o-q3k,olmoei,2,pf1k,256,"--moe tensor-file=/home/o/.claude/jobs/44ecfe4e/tmp/side/olmoei-attn01-q3_k_m.gguf",
+sf-xo-base,olmoei,2,pf1k,256,"--moe autotune=0,mode=cache,sim-vram=2048",--env CUDA_VISIBLE_DEVICES=1
+sf-xo-copy,olmoei,2,pf1k,256,"--moe autotune=0,mode=cache,sim-vram=2048,tensor-file=/home/o/.claude/jobs/44ecfe4e/tmp/side/olmoei-attn01-copy.gguf",--env CUDA_VISIBLE_DEVICES=1
+sf-k31-base,k31,2,pf1k,256,,
+sf-k31-copy,k31,2,pf1k,256,"--moe tensor-file=/m2/k/side/k31-attn-ssmg-q4k-copy.gguf",
+sf-k31-q3k,k31,2,pf1k,256,"--moe tensor-file=/m2/k/side/k31-attn-ssmg-q3k-rq.gguf",
+sf-k31-13k-base,k31,1,b13k1k-k31,1024,,
+sf-k31-13k-q3k,k31,1,b13k1k-k31,1024,"--moe tensor-file=/m2/k/side/k31-attn-ssmg-q3k-rq.gguf",
+sf-k31-ppl-base,k31,1,pplb,,,--env PERF_PPL_CHUNKS=12
+sf-k31-ppl-copy,k31,1,pplb,,"--moe tensor-file=/m2/k/side/k31-attn-ssmg-q4k-copy.gguf",--env PERF_PPL_CHUNKS=12
+sf-k31-ppl-q3k,k31,1,pplb,,"--moe tensor-file=/m2/k/side/k31-attn-ssmg-q3k-rq.gguf",--env PERF_PPL_CHUNKS=12

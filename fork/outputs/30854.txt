@@ -1,0 +1,49 @@
+run 30854 | pool_copy_own_card_vk | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 17.12 t/s | prompt 396.2 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 280+280 W | 2026-11-18 12:57:09
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+Let me do a thorough code review of both files.
+
+**File 1: json-schema-to-grammar.cpp**
+
+Let me look through this carefully:
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Issues:
+- If `max_items == 0` but `min_items > 0`, this returns "" which would be an invalid grammar (can't satisfy min_items). Actually wait, if max_items == 0 and min_items > 0, the schema is unsatisfiable. Returning "" silently produces a grammar that matches nothing... Actually returning "" as a rule content would be problematic. Hmm, but this might be intentional - an empty rule. Actually in GBNF, an empty rule content might be invalid. Let me think... The function returns "" and the caller does `build_repetition(item_rule_name, arr.min_items, max_items, ...)` and embeds it. If min_items > 0 and max_items == 0, the schema is contradictory; returning "" silently ignores the contradiction. This is a minor issue.
+
+- `max_items - 1` when `has_max` is false: `max_items` is `std::numeric_limits<int>::max()`, so `max_items - 1` is fine (still max-ish). Actually `has_max ? max_items - 1 : max_items` - when has_max is false, it passes max_items unchanged which is INT_MAX, so recursion continues with no max. OK.
+
+- Potential infinite recursion? No, because min_items decreases each time... Actually with separator, `build_repetition(..., min_items == 0 ? 0 : min_items - 1, ...)`. min_items decreases by 1 each recursion until 0, then it stays 0 and terminates because min_items == 0 && max_items == 1 returns item_rule + "?"... wait, with separator, when min_items == 0 and max_items == 1: the check `if (min_items == 0 && max_items == 1) return item_rule + "?";` happens before the separator check. Hmm wait no:
+
+```cpp
+if (max_items == 0) return "";
+if (min_items == 0 && max_items == 1) return item_rule + "?";
+if (separator_rule.empty()) { ... }
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+
+So with separator and min_items=0, max_items=2: result = item + " " + build_repetition(sep-item, 0, 1) = item + " " + (sep-item)?. OK.
+
+With min_items=1, max_items=2: result = item + " " + build_repetition(sep-item, 0, 1) = item + " " + (sep-item)?. Hmm, that's wrong! min_items=1, max_items=2 should be item (sep item)? — which is what it produces: item followed by optional (sep item). That's correct actually.
+
+With min_items=2, max_items=3: result = item + " " + build_repetition(sep-item, 1, 2) = item + " " + sep-item + " " + (sep-item)?. Correct.
+
+With min_items=2, max_items=INT_MAX: result = item + " " + build_repetition(sep-item, 1, INT_MAX) = item + " " + sep-item + " " + build_repetition(sep-item, 0, INT_MAX) = item + " " + sep-item + " " + (sep-item)*. Correct.
+
+OK so build_repetition looks correct. One subtle issue: when `max_items == 0` and `min_items > 0`, returns "" — unsatisfiable schema silently produces empty rule. Also when min_items > max_items generally (e.g., min=5, max=3), `{5,3}` would be emitted which is invalid regex/grammar. E.g., min_items=5, max_items=3, no separator: returns item_rule + "{5,3}" — invalid. Should probably validate or throw. This is a real edge-case bug worth mentioning.
+
+2.

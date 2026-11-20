@@ -918,6 +918,8 @@ void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
     }
 }
 
+bool llama_rs_inplace_fork(const llama_memory_recurrent_context * mctx, const llama_ubatch & ub, uint32_t n_rs_seq);   // fork, below
+
 bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
     const auto * mctx = static_cast<const llama_memory_recurrent_context *>(params.mctx);
 
@@ -931,6 +933,10 @@ bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
 
     res &= head == mctx->get_head();
     res &= rs_z == mctx->get_rs_z();
+
+    if (strcmp(s_copy->name, "rs_s_copy_ip") == 0) {   // fork: built reading the states in place (llama_rs_inplace_fork)
+        res &= llama_rs_inplace_fork(mctx, params.ubatch, params.cparams.n_rs_seq);
+    }
 
     return res;
 }
@@ -1861,12 +1867,21 @@ void llm_graph_result::reset() {
 
 void llm_graph_result::set_inputs(const llama_ubatch * ubatch) {
     static const bool dbg = getenv("LLAMA_SPLIT_CTL_DEBUG") != nullptr;   // fork: which input a big pass's start waits for
+    static const bool st = getenv("LLAMA_STEP_TIME") != nullptr;           // dev: per input type, us a one-token call
+    static std::map<std::string, int64_t> st_us; static int64_t st_n = 0;
     for (auto & input : inputs) {
-        const int64_t t0 = dbg ? ggml_time_us() : 0;
+        const int64_t t0 = (dbg || st) ? ggml_time_us() : 0;
         input->set_input(ubatch);
+        if (st && ubatch->n_tokens == 1) { st_us[typeid(*input).name()] += ggml_time_us() - t0; }
         if (dbg && ubatch->n_tokens >= 1024 && ggml_time_us() - t0 >= 2000) {
             LLAMA_LOG_WARN("prefill split: input %s of %u tokens took %.1f ms\n", typeid(*input).name(), ubatch->n_tokens, (ggml_time_us() - t0) / 1e3);
         }
+    }
+    if (st && ubatch->n_tokens == 1 && ++st_n == 256) {
+        std::string line;
+        for (auto & [k, v] : st_us) { if (v >= 256) { line += " " + k + " " + std::to_string(v / 256) + ","; } }
+        LLAMA_LOG_WARN("set_inputs (us a call):%s\n", line.c_str());
+        st_us.clear(); st_n = 0;
     }
 }
 
@@ -3011,6 +3026,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     ggml_tensor * mc_defer_mask = nullptr;
     ggml_tensor * mc_slot_ids = nullptr;
     ggml_backend_t mc_cpu_backend = nullptr;
+    void *        mc_bell     = nullptr;   // --moe bell=1: this layer's bell (decode)
+    ggml_backend_t mc_bell_b  = nullptr;   // the card that holds the layer's cache: the bell's two ops run there
+    ggml_tensor * mc_bell_ids = nullptr;   // the picks as the bell op read them
     ggml_tensor *  mc_cpu_ids     = nullptr;   // --moe pp-off: the CPU's misses (the device's are -1)
     ggml_tensor *  mc_miss_ids    = nullptr;   // --moe miss-dev: the misses' ids (the rest -1), computed on the device holding up_m
     ggml_tensor *  mc_pred        = nullptr;
@@ -3105,6 +3123,23 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         }
         if (mc_cstream) { cpu_backend = nullptr; }   // the experts are in their blocks before the pass: no CPU split, no host sync per layer
         mc_cpu_backend = mc_mix_b ? nullptr : cpu_backend;   // the mix runs on the GPUs alone
+        // --moe bell=1 (decode): the layer meets the host through its bell, not through two host steps of the scheduler: the card looks its picks up and publishes
+        // them, takes the rows of the picks it does not hold when the host has them, and its layers stay one graph (ggml-bell-fork.h). Not for the layouts with a
+        // host step of their own (deferred experts, the predictor's copy, a pool on another card, the prompt paths).
+        static const int bell_defer = [] { const char * e = moe_opt("defer"); return e ? atoi(e) : 0; }();
+        if (n_tokens == 1 && cpu_backend && !mc_pp && !mc_ppk && !mc_mix_b && !mc_cstream && bell_defer <= 0 && !selected_experts_in &&
+                !(mcache->pred_on && (mcache->pred_all || mcache->pred_w)) && ggml_is_contiguous(mc_inp)) {
+            // only a layer whose router runs on the card that holds its cache: the bell is mapped for that card, and a bell op placed on the other card wrote
+            // out of its range (OLMoE, 2 cards, 2026-11-18: Xid 13 at the one layer whose dense part and cache are on different cards)
+            const ggml_backend_dev_t cache_dev  = mcache->dev_table && mcache->dev_table->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mcache->dev_table->buffer)) : nullptr;
+            const ggml_backend_dev_t router_dev = router_w && router_w->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(router_w->buffer)) : nullptr;
+            if (cache_dev && cache_dev == router_dev) {
+                for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+                    if (ggml_backend_get_device(ggml_backend_sched_get_backend(sched, i)) == cache_dev) { mc_bell_b = ggml_backend_sched_get_backend(sched, i); }
+                }
+                mc_bell = mc_bell_b ? llama_moe_cache_bell_fork(mcache, n_expert_used, n_embd) : nullptr;
+            }
+        }
         ggml_tensor * pw = mcache->pred_all ? mcache->pred_all : mcache->pred_w;
         if (pw && pw->buffer && mcache->pred_on && (!mc_pp || (cpu_backend && llama_moe_cache_pp_pred_want_fork(n_tokens))) && !mc_mix_b) {
             // the next layers' router logits from this layer's input (learned predictors, else the next
@@ -3141,7 +3176,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
         }
         ggml_tensor * sel_dev = selected_experts;
-        if (cpu_backend && !mc_mix_b) {
+        if (cpu_backend && !mc_mix_b && !mc_bell) {
             selected_experts = ggml_cont(ctx0, selected_experts);
             ggml_backend_sched_set_tensor_backend(sched, selected_experts, cpu_backend);
             if (!mc_pp) {   // the prompt chain's CPU split holds the ids alone
@@ -3287,7 +3322,40 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
         // slot ids from the device table, after the CPU split above so they see the JIT's table updates;
         // get_rows batches over ids->ne[1] only when the table has matching ne[2]: flatten
-        {
+        // fork: decode read-ahead (Kimi K3.1, 2026-11-20): the next layer's router on this layer's router input, its top picks published on a bell of their
+        // own ahead of this layer's; the host reads the ones the card has no block for into the RAM pool while this layer is served (llama_moe_cache_bell_pred_fork)
+        if (mc_bell && il + 1 < (int) model.layers.size()) {
+            void * llama_moe_cache_bell_pred_fork(const llama_moe_cache_layer_fork * next, int64_t k);   // llama-moecache-fork.cpp (no header edit)
+            const llama_layer & nl = model.layers[il + 1];
+            ggml_tensor * rin = probs_in && probs_in->op == GGML_OP_MUL_MAT ? probs_in->src[1] : mc_inp;
+            const llama_moe_cache_layer_fork * nc = nl.ffn_up_exps && nl.ffn_gate_inp ? llama_moe_cache_lookup_fork(nl.ffn_up_exps) : nullptr;
+            const auto dev_of = [](const ggml_tensor * t) { return t && t->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer)) : nullptr; };
+            const ggml_backend_dev_t bdev = ggml_backend_get_device(mc_bell_b);
+            // --moe bell-pred-k=N: picks read ahead per layer (0: as many as the router takes; at most 32, the bell's room). K3 2026-11-20 at 16: 85% of the
+            // slices read ahead were asked for, but they covered 36% of the experts still read from the SSD (cold picks rank low in the prediction)
+            static const int pred_k = [] { const char * e = moe_opt("bell-pred-k"); return e ? atoi(e) : 0; }();
+            const int64_t kp = std::min<int64_t>(32, pred_k > 0 ? pred_k : n_expert_used);
+            void * pb = nc && dev_of(nc->dev_table) == bdev && dev_of(nl.ffn_gate_inp) == bdev && nl.ffn_gate_inp->ne[0] == rin->ne[0] && ggml_is_contiguous(rin)
+                      ? llama_moe_cache_bell_pred_fork(nc, kp) : nullptr;
+            if (pb) {
+                ggml_tensor * pl = ggml_mul_mat(ctx0, nl.ffn_gate_inp, ggml_reshape_2d(ctx0, rin, rin->ne[0], 1));   // [n_expert, 1]
+                if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID) { pl = ggml_sigmoid(ctx0, pl); }
+                if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SQRT_SOFTPLUS) { pl = ggml_sqrt(ctx0, ggml_softplus(ctx0, pl)); }
+                if (nl.ffn_exp_probs_b) { pl = ggml_add(ctx0, pl, nl.ffn_exp_probs_b); }   // the bias ranks, as in the real selection
+                ggml_tensor * pid = ggml_cont(ctx0, ggml_argsort_top_k(ctx0, pl, kp));   // [kp, 1]
+                // no input rides along: 4 floats of the router input stand in (the kernel copies x only for a missing pick, the host never reads it)
+                ggml_tensor * pr = ggml_moe_bell(ctx0, pid, nc->dev_table, ggml_view_1d(ctx0, rin, 4, 0), pb);
+                ggml_backend_sched_set_tensor_backend(sched, pr, mc_bell_b);
+                cb(pr, "ffn_moe_bell_pred", il);
+                ggml_build_forward_expand(gf, pr);
+            }
+        }
+        if (mc_bell) {
+            mc_bell_ids = ggml_reshape_2d(ctx0, ggml_cont(ctx0, sel_dev), n_expert_used, 1);
+            mc_slot_ids = ggml_moe_bell(ctx0, mc_bell_ids, mcache->dev_table, mc_inp, mc_bell);   // [n_expert_used, 1]: each pick's block, published to the host
+            ggml_backend_sched_set_tensor_backend(sched, mc_slot_ids, mc_bell_b);
+            cb(mc_slot_ids, "ffn_moe_bell", il);
+        } else {
             ggml_tensor * ids_flat = ggml_reshape_1d(ctx0, ggml_cont(ctx0, sel_dev), n_expert_used*n_tokens);
             mc_slot_ids = ggml_get_rows(ctx0, mcache->dev_table, ids_flat); // [1, n_expert_used*n_tokens]
             // cstream: this read of the table starts the layer's split (cs_split_cb waits there for its uploads). The name is on the get_rows itself: the scheduler's split loop skips views
@@ -3358,6 +3426,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // chain is that add's first source): a layer is then one CPU split and one GPU split instead of two of each. Lost: the CPU chain no longer runs beside the
         // card's chain, a layer with misses holds the card for them. Gained: one launch and one gap with no kernel a layer (nsys, Qwen3.8 IQ3_S decode: about 96
         // gaps of 20-100 us a token, two a layer).
+        if (mc_bell) {
+            down_g = ggml_moe_rows(ctx0, down_g, mc_bell_ids, mc_slot_ids, mc_bell);   // in place on the chain's rows
+            ggml_backend_sched_set_tensor_backend(sched, down_g, mc_bell_b);
+            cb(down_g, "ffn_moe_bell_rows", il);
+        }
         static const bool chain_merge = [] { const char * e = moe_opt("chain-merge"); return e && atoi(e) != 0; }();
         const bool mc_late = chain_merge && n_tokens == 1 && mc_cpu_backend && !mc_pp && !mc_ppk && !mc_ids_all && !mc_miss_ids && !mc_mix_b && !mc_cstream;
         if (!mc_mix_b && !mc_cstream && !mc_late) {   // the mix queues the home card's chain behind the id mask and hidden state the other card reads (rule 2 below)
@@ -4029,11 +4102,36 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     } else if (mc_pp) {
         experts = down_g;   // the prompt chain computed every expert of the pass
         cb(experts, "ffn_moe_cache_merged", il);
+    } else if (mc_bell) {
+        // the host chain of the picks the card does not hold: the same chain, on inputs the bell fills (the layer input, the missing picks), computed when the
+        // layer rings (llama_moe_cache_bell_chain_fork). Its table says no expert is on a card: it computes every pick it is given. The gate op is shown all picks.
+        // The chain is not expanded into this graph: the cache gives it memory of its own (llama_moe_cache_bell_expand_fork).
+        ggml_tensor * x_h   = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, n_embd, 1, 1);
+        ggml_tensor * ids_h = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_expert_used, 1);
+        ggml_tensor * all_h = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_expert_used, 1);
+        ggml_set_input(x_h); ggml_set_input(ids_h); ggml_set_input(all_h);
+        ggml_format_name(x_h, "ffn_moe_bell_x-%d", il); ggml_format_name(ids_h, "ffn_moe_bell_miss-%d", il); ggml_format_name(all_h, "ffn_moe_bell_ids-%d", il);
+        ggml_tensor * chain = expert_chain(x_h, ids_h);
+        std::function<void(ggml_tensor *, int)> each = [&](ggml_tensor * t, int depth) {
+            if (!t || depth > 6) { return; }
+            if (t->op == GGML_OP_MUL_MAT_ID) {
+                t->src[3] = llama_moe_cache_bell_table_fork(mcache);
+                t->op_params[0] = mcache->n_slots;
+                if (strstr(t->src[0]->name, "gate_exps")) { t->src[5] = all_h; }
+            }
+            for (int j = 0; j < 2; ++j) { each(t->src[j], depth + 1); }
+        };
+        each(chain, 0);
+        ggml_set_output(chain);
+        ggml_format_name(chain, "ffn_moe_bell_host-%d", il);
+        llama_moe_cache_bell_chain_fork(mcache, mc_cpu_backend, x_h, ids_h, all_h, chain);
+        experts = down_g;
+        cb(experts, "ffn_moe_cache_merged", il);
     } else {
         experts = expert_chain(cur, mc_cpu_ids ? mc_cpu_ids : selected_experts);
     }
 
-    if (mcache && !mc_pp) {
+    if (mcache && !mc_pp && !mc_bell) {
         experts->src[3] = mcache->host_table;
         experts->op_params[0] = mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots;
         if (mc_cpu_backend) {
@@ -4625,8 +4723,12 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         ggml_flash_attn_ext_add_sinks(cur, sinks);
         GGML_ASSERT(n_kv_max >= 0 && n_kv_max <= INT32_MAX);
         ggml_flash_attn_ext_set_n_kv_max(cur, static_cast<int32_t>(n_kv_max));
-        // fork: from which K/V length the gather runs, as measured at load (llama-dsplit-fork.cpp dsplit_att_bench; 0: the backend's own rule)
-        if (const int32_t smin = llama_dsplit_sparse_min_fork(); smin > 0 && n_kv_max > 0) { ggml_flash_attn_ext_set_sparse_min(cur, smin); }
+        // fork: from which K/V length the gather runs, as measured at load (llama-dsplit-fork.cpp dsplit_sparse_bench; 0: the backend's own rule). The bench times
+        // prompt tiles (512 queries, each its own selection); a one-token pass keeps the backend's rule (twice its selection): its one query gathers just the
+        // selection, the masked pass reads every cell. Qwen3.8 one card, 2026-11-20, gate 19995 cells: decode 80.2 t/s at 4k cells, 75.9 at 14k.
+        // --moe sparse-gate-decode=1: the measured gate for one-token passes too, as before
+        static const bool gate_decode = [] { const char * e = llama_moe_get_opt("sparse-gate-decode"); return e && atoi(e) != 0; }();
+        if (const int32_t smin = llama_dsplit_sparse_min_fork(); smin > 0 && n_kv_max > 0 && (q->ne[1] > 1 || gate_decode)) { ggml_flash_attn_ext_set_sparse_min(cur, smin); }
         ggml_prec_set_acc(cur, GGML_PREC_F32);
 
         if (v_mla) {
@@ -5639,6 +5741,26 @@ llm_graph_input_rs * llm_graph_context::build_rs_inp() const {
     auto inp = build_rs_inp_impl(ctx0, ubatch, mctx_cur);
 
     return (llm_graph_input_rs *) res->add_input(std::move(inp));
+}
+
+// fork: a decode ubatch (one token, one sequence) whose cell already holds its state (the copy is the identity: s_copy(0) == head) reads that state where it
+// is, through a view, instead of a gather of the whole state per layer and token (2 MB in each GDN layer of Qwen3.8, 2026-11-19). Only callers whose
+// consumer reads each state element before it writes it back may ask (qwen4exp's GDN and conv rows). A graph built so names its s_copy "rs_s_copy_ip";
+// llm_graph_input_rs::can_reuse keeps it only while the copy stays the identity. LLAMA_RS_INPLACE=0 turns it off.
+bool llama_rs_inplace_fork(const llama_memory_recurrent_context * mctx, const llama_ubatch & ub, uint32_t n_rs_seq) {
+    static const bool on = !getenv("LLAMA_RS_INPLACE") || atoi(getenv("LLAMA_RS_INPLACE")) != 0;
+    return on && mctx != nullptr && n_rs_seq == 0 && ub.n_seqs == 1 && ub.n_tokens == 1 && mctx->get_n_rs() == 1 && mctx->s_copy(0) == (int32_t) mctx->get_head();
+}
+
+llm_graph_get_rows_fn llama_rs_inplace_getter_fork(llm_graph_input_rs * inp, const llama_ubatch & ub, uint32_t n_rs_seq) {
+    if (!llama_rs_inplace_fork(inp->mctx, ub, n_rs_seq)) {
+        return nullptr;
+    }
+    ggml_set_name(inp->s_copy, "rs_s_copy_ip");
+    const size_t head = inp->mctx->get_head();
+    return [head](ggml_context * ctx, ggml_tensor * states, ggml_tensor * ids) {
+        return ggml_view_2d(ctx, states, states->ne[0], ids->ne[0], states->nb[1], head * states->nb[1]);
+    };
 }
 
 ggml_tensor * llm_graph_context::build_rs(

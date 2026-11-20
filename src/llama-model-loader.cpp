@@ -1,5 +1,7 @@
 #include "../ggml/src/ggml-read-fork.h"
 #include "llama-model-loader.h"
+#include "llama-hcq8-fork.h"
+#include "llama-sidefile-fork.h"
 #include "llama-backend-fork.h"
 #include "llama-moestate-fork.h"
 #include <map>
@@ -714,6 +716,45 @@ llama_model_loader::llama_model_loader(
             }
 
             LLAMA_LOG_INFO("%s: additional %d GGUFs metadata loaded.\n",  __func__, n_split - 1);
+        }
+
+        // fork: --moe tensor-file=PATH[,PATH]: a side GGUF's tensors replace the model's of the same name and shape, its type and bytes are read
+        // (llama-sidefile-fork.h). The side file is one more source file, so every reader that follows a weight's file index (mmap, O_DIRECT, the
+        // expert cache's file offsets, the memory-fit probe) takes the side bytes without knowing about it.
+        if (const char * tf = llama_moe_get_opt("tensor-file")) {
+            std::set<std::string> taken;
+            for (const std::string & path : llama_side_paths_fork(tf)) {
+                struct gguf_init_params side_params = {
+                    /*.no_alloc = */ true,
+                    /*.ctx      = */ &ctx,
+                };
+                gguf_context_ptr ctx_gguf { gguf_init_from_file(path.c_str(), side_params) };
+                if (!ctx_gguf) {
+                    throw std::runtime_error(format("--moe tensor-file: cannot read the GGUF %s", path.c_str()));
+                }
+                files.emplace_back(new llama_file(path.c_str(), "rb", use_direct_io));
+                contexts.emplace_back(ctx);
+                const uint16_t idx = (uint16_t) (files.size() - 1);
+                size_t n = 0, b_model = 0, b_side = 0;
+                for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
+                    const auto it = weights_map.find(cur->name);
+                    const std::string why = llama_side_tensor_refusal_fork(cur->name, cur->ne, it == weights_map.end() ? nullptr : it->second.tensor->ne, taken.count(cur->name) > 0);
+                    if (!why.empty()) {
+                        throw std::runtime_error(format("--moe tensor-file %s: %s", path.c_str(), why.c_str()));
+                    }
+                    taken.insert(cur->name);
+                    b_model += ggml_nbytes(it->second.tensor);
+                    b_side  += ggml_nbytes(cur);
+                    n_bytes  = n_bytes - ggml_nbytes(it->second.tensor) + ggml_nbytes(cur);
+                    it->second = llama_tensor_weight(files.back().get(), idx, ctx_gguf.get(), cur);
+                    n++;
+                }
+                if (n == 0) {
+                    throw std::runtime_error(format("--moe tensor-file %s: the file holds no tensors", path.c_str()));
+                }
+                LLAMA_LOG_INFO("%s: side file %s: %zu tensors replace the model's, %.2f GiB in the model -> %.2f GiB from the side file\n", __func__,
+                        path.c_str(), n, b_model / 1073741824.0, b_side / 1073741824.0);
+            }
         }
     } else if (file != nullptr) {
         struct ggml_context * ctx = NULL;
@@ -1448,6 +1489,17 @@ struct ggml_tensor * llama_model_loader::create_tensor(
     if (buft == nullptr) {
         return nullptr;
     }
+    {   // fork: --moe hc-q8=1 (llama-hcq8-fork.h): this BF16 matrix becomes Q8_0 in its device buffer; load_all_data converts the file's bytes
+        static const bool hc_on = [] { const char * e = llama_moe_get_opt("hc-q8"); return !e || atoi(e) != 0; }();   // on unless --moe hc-q8=0 (2026-11-19)
+        if (llama_hcq8_wanted_fork(hc_on, tn.str().c_str(), t_meta.type == GGML_TYPE_BF16, t_meta.ne[0], ggml_backend_buft_is_host(buft))) {
+            t_meta.type  = GGML_TYPE_Q8_0;
+            t_meta.nb[0] = ggml_type_size(GGML_TYPE_Q8_0);
+            t_meta.nb[1] = ggml_row_size(GGML_TYPE_Q8_0, t_meta.ne[0]);
+            for (int d = 2; d < GGML_MAX_DIMS; ++d) { t_meta.nb[d] = t_meta.nb[d-1]*t_meta.ne[d-1]; }
+            buft = buft_for_tensor(&t_meta);
+            if (buft == nullptr) { return nullptr; }
+        }
+    }
 
     ggml_context * ctx = ctx_for_buft(buft);
 
@@ -1984,6 +2036,22 @@ bool llama_model_loader::load_all_data(
         }
 
         size_t n_size = ggml_nbytes(cur);
+
+        // fork: --moe hc-q8: a matrix the file holds as BF16 and the model as Q8_0 (create_tensor): read, converted, set; none of the paths below
+        if (cur->type == GGML_TYPE_Q8_0 && weight->tensor->type == GGML_TYPE_BF16 && cur->data) {
+            const int64_t n_el = ggml_nelements(cur);
+            std::vector<ggml_bf16_t> b((size_t) n_el);
+            std::vector<float>       f((size_t) n_el);
+            const auto & file = files.at(weight->idx);
+            file->seek(weight->offs, SEEK_SET);
+            file->read_raw(b.data(), b.size()*sizeof(ggml_bf16_t));
+            ggml_bf16_to_fp32_row(b.data(), f.data(), n_el);
+            std::vector<uint8_t> q(n_size);
+            ggml_quantize_chunk(GGML_TYPE_Q8_0, f.data(), q.data(), 0, n_el / cur->ne[0], cur->ne[0], nullptr);
+            ggml_backend_tensor_set(cur, q.data(), 0, n_size);
+            size_done += ggml_nbytes(weight->tensor);
+            continue;
+        }
 
         // fork: with a pin budget, tensors that already own pinned host memory are read by the pread pool, not copied from the mapping (the copy grew the page cache first and doubled the footprint)
         const bool pinned_read = use_mmap && !lazy.has(cur) && cur->data && cur->buffer && ggml_backend_buffer_is_host(cur->buffer) && !mappings.empty() && !(

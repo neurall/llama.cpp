@@ -3221,7 +3221,12 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
         std::lock_guard<llama_checked_mutex> pk(g_plan_mu);
         if (!g_bench_logged && !g_bench_log.empty()) { g_bench_logged = true; LLAMA_LOG_WARN("%s", g_bench_log.c_str()); }
     }
-    dsplit_hw_check(model);
+    {   // the look at the cards (sysfs reads, a device query) is 67 to 80 us: a decode token takes it at most once a second, a prompt pass always
+        // (LLAMA_STEP_TIME "split decide", Qwen3.8, 2026-11-19). A link that retrains during an answer is seen within that second.
+        static int64_t t_hw = 0;
+        const int64_t t_now = ggml_time_us();
+        if (n_tokens > 1 || t_hw == 0 || t_now - t_hw > 1000000) { t_hw = t_now; dsplit_hw_check(model); }
+    }
     auto it = g_sets.find(&model);
     {
         static bool verified = false;

@@ -1,0 +1,42 @@
+run 30554 | link_probe_async_vk | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 12.03 t/s | prompt 265.4 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 200+200 W | 2026-11-18 00:48:48
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears truncated at the end)
+
+Let me do a thorough code review of both files.
+
+**File 1: json-schema-to-grammar.cpp**
+
+Let me look through this carefully:
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+```
+
+Potential issues:
+- If `max_items == 0` but `min_items > 0`, this is contradictory (schema says min 3, max 0). The function returns "" silently, which would produce an invalid grammar (the repetition can't match min_items). Actually returning "" means the rule matches empty string, which violates min_items. This is a schema validation issue but the code silently accepts it. Hmm, actually in JSON Schema, minItems > maxItems is invalid schema, so maybe it's fine to not handle. But silently returning "" could hide errors.
+- Negative min_items? If min_items < 0, `item_rule + "{" + std::to_string(min_items) + ...` would produce `{ -1, ...}` which is invalid grammar. Callers seem to pass arr.min_items directly. If schema has negative minItems... probably validated elsewhere.
+
+2. `build_min_max_int`:
+- Uses `std::function` with recursive lambda - fine but has overhead.
+- `decimals_left = 16` default. Recursion decrements.
+- Potential infinite recursion? Let's see: `uniform_range` recursion - it recurses on `uniform_range(from_sub, sub_nines)` and `uniform_range(sub_zeros, to_sub)`. The strings shrink each time? `from_sub = from.substr(i + 1)` - yes, shorter. So terminates.
+- In `has_min && has_max` branch with `min_value < 0 && max_value < 0`: calls `build_min_max_int(-max_value, -min_value, ...)`. Note the swap: -max_value < -min_value when max < min < 0... wait if min_value < max_value < 0, then -max_value < -min_value. So passing (-max_value, -min_value) keeps min < max. Good.
+- `min_value < 0` (and max >= 0): emits `"-" (...) | ` then sets min_value = 0 and continues. OK.
+- What about `min_value == std::numeric_limits<int64_t>::min()`? has_min false. Then `has_max` branch handles. If max_value >= 0: emits negative part then `build_min_max_int(0, max_value, ...)`. OK.
+- Edge: `min_value = INT64_MIN` and `max_value = INT64_MAX` -> both unset -> throws. Callers check for that case before calling (KIND_INTEGER checks both at extremes). But `build_min_max_int` is also called recursively with e.g. `std::numeric_limits<int64_t>::min()` as min in the `has_min` branch: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. Here has_min is false, has_max true (assuming -min_value != INT64_MAX). OK.
+- In the `min_value <= 9` branch: `char c = '0' + min_value;` - fine for 0..9.
+- `std::stoll(min_s.substr(1))` - min_s is decimal digits, fine.
+- Potential issue: `more_digits(0, decimals_left - 1)` when decimals_left could be... decimals_left starts at 16, decrements via `less_decimals = std::max(decimals_left - 1, 1)`. So decimals_left never goes below 1... wait, `less_decimals = max(decimals_left - 1, 1)`, so if decimals_left = 1, less_decimals = 1. Then recursion with decimals_left = 1 would again produce less_decimals = 1 -> infinite recursion? Let's check: in `has_min` branch, `min_value == 0` and `!top_level`: `more_digits(1, decimals_left)` - no recursion. `min_value <= 9`: `more_digits(1, less_decimals)` and `more_digits(0, less_decimals)` - no recursion, just emits `{

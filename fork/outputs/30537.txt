@@ -1,0 +1,38 @@
+run 30537 | rel_vk_exit_nodriver | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 13.6 t/s | prompt 263.8 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 200+200 W | 2026-11-18 00:12:08
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params)` which suggests the file was cut off. I should note this in my review.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully:
+
+### `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+}
+```
+
+Issues:
+- If `max_items == 0` but `min_items > 0`, this returns "" which is unsatisfiable — the schema is contradictory (min > max). It silently returns empty string. This might be intentional (matching nothing), but it's worth noting. Actually wait, if min_items > 0 and max_items == 0, the schema is invalid/unsatisfiable. Returning "" means the grammar rule is empty, which could produce an invalid grammar. Hmm, actually in GBNF an empty rule might be problematic. Worth flagging.
+- Negative `min_items` isn't validated. If `min_items` is negative, `item_rule + "{" + std::to_string(min_items) + ...` would produce `{ -1, ...}` which is invalid grammar. Callers might pass negative values (e.g., `arr.min_items` could be negative?). Let me check: in KIND_ARRAY, `arr.min_items` is passed directly. If min_items is negative... The check `arr.min_items == 0 && arr.max_items < 0` handles the default case. But if min_items is negative (like -1 as "unset"), then build_repetition would produce `{ -1, }` which is invalid. Hmm, but maybe the schema parsing guarantees min_items >= 0. Worth flagging as a robustness concern.
+
+### `build_min_max_int`:
+This is complex recursive logic. Let me look for issues:
+
+- `decimals_left = 16` default. The recursion decrements via `less_decimals = std::max(decimals_left - 1, 1)`. Note `std::max(decimals_left - 1, 1)` — if decimals_left is 1, less_decimals = 1, so recursion could be infinite? Let's check: when `min_value <= 9` branch: `more_digits(0, less_decimals)` — no recursion. When `min_value > 9`: recursion via `build_min_max_int(std::stoll(min_s.substr(1)), ..., out, less_decimals, false)`. The recursion reduces the number of digits in min_value each time (since min_s.substr(1) has one fewer digit). So it terminates based on digits, not decimals_left. But wait — `less_decimals` is passed as decimals_left to the recursive call. If decimals_left stays at 1 forever (because of the max with 1), and min_value keeps having digits... min_s.substr(1) eventually becomes empty string? `std::stoll("")` would throw. Let's trace: min_value = 123456789012345678 (18 digits, but int64 max is 9223372036854775807, 19 digits). Actually min_value can be up to int64 max = 9223372036854775807 which is 19 digits. The recursion: first call with min_value = 9223372036854775807, min_s = "9223372036854775807", len = 19, c = '9'. Since c == '9', no `c < '9'` branch. Recursion with std::stoll("223372036854775807") = 223372036854775807, len = 18, c = '2'. c > '1', so digit_range('1', '1')... wait top_level=false now, so digit_range('0', '1')... hmm wait `digit_range(top_level ? '1' : '0', c - 1)` with top_level=false gives digit_range('0', '1'). Then more_digits(len=18

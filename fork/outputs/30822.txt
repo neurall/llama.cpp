@@ -1,0 +1,87 @@
+run 30822 | pool_copy_own_card_vk | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 38.97 t/s | prompt 1478.2 t/s | 1024 tokens | args: -np 1 --moe swap-lead=-2,wait-swaps=0,upload-wait=0,idle-up=0 -lm pin | power 280+280 W | 2026-11-18 12:12:38
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, performance concerns, and potential improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check for edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - For separator case: when `min_items == 0`, it wraps the result in `(...)?` - correct
+  - The recursive call for separator case: `min_items == 0 ? 0 : min_items - 1` and `has_max ? max_items - 1 : max_items` - this seems correct for building `item (sep item)*` patterns
+
+### build_min_max_int function
+- Complex function for building integer range rules
+- The `uniform_range` lambda handles digit-by-digit range matching
+- Potential issue: `from[i] - 1` when `from[i]` is '0' would give '/' which is not a digit - but this is guarded by the `from_sub == sub_zeros` check
+- The `to_reached` variable is used to track if the upper bound is already covered
+- The function handles negative numbers by negating and recursing
+- `decimals_left` parameter limits recursion depth - good
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- Static initialization of unordered_maps - these are file-scope statics
+- The `is_reserved_name` function uses a static local set initialized from these maps - good pattern
+
+### Regex patterns
+- `INVALID_RULE_CHARS_RE` - replaces invalid characters with '-'
+- `GRAMMAR_LITERAL_ESCAPE_RE` - matches characters needing escaping in literals
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - defined but never used! This is dead code.
+
+### gbnf_escape_length
+- Handles escape sequences in patterns
+- Comment says "keep in sync with parse_char() in src/llama-grammar.cpp" - good practice
+
+### common_chat_schema_converter class
+
+#### _add_rule
+- Handles name collisions by appending numbers
+- The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds a slot where either the name doesn't exist or the rule matches. Seems correct.
+
+#### _generate_union_rule
+- Creates union rules from alternative schemas
+
+#### _visit_pattern
+- Takes a snapshot of rules before attempting pattern conversion
+- On failure, reverts rules and either warns or errors
+- The snapshot approach is correct for rollback
+
+#### _pattern_to_rule
+- Complex regex-to-grammar conversion
+- Handles various regex constructs: `.`, `()`, `[]`, `|`, `*`, `+`, `?`, `{}`, escapes
+- `MAX_PATTERN_DEPTH` limits nesting depth - good
+- The `join_seq` function merges consecutive literals
+- Potential issue: the literal merging logic in `join_seq` - it checks if the next character is a non-literal or if it's the last character. This seems to handle cases where a literal is followed by a special character.
+
+#### _not_strings
+- Builds a trie-based rule to match strings that are NOT in a given set
+- The `rejects` string accumulates characters for the negated character class
+- Potential issue: if `rejects` contains characters that need escaping in a character class (like `]`, `-`, `\`), they're not escaped. This could be a bug.
+
+#### _resolve_ref
+- Handles `$ref` resolution with cycle detection via `_refs_being_resolved`
+- Uses a static regex for sanitizing ref names
+
+#### _build_object_rule
+- Builds object rules with required and optional properties
+- The `get_recursive_refs` function builds nested optional property rules
+- The `additional_properties` handling adds a wildcard key rule
+
+#### _add_primitive
+- Recursively adds primitive rules and their dependencies
+
+#### visit method
+- Main dispatch method for different schema kinds
+- Handles all schema types: ref, any_of, all_of, const, enum, object, tuple, array, string, integer, number, boolean, null, any
+
+#### check_errors
+- Throws on errors, prints warnings to stderr
+
+#### format_grammar
+- Outputs all rules in GBNF format
+
+### Issues I've found:
+
+1. **Dead code**: `GRAMMAR_LITERAL_ESCAPE_RE` is defined but never used (only `GRAMMAR_LITERAL_ESCAPE_RE` is used in `format_literal`). Wait, let me re-check... Actually `GRAMMAR_LITERAL_ESCAPE_RE` IS

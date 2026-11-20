@@ -1,0 +1,121 @@
+name,model,n,test,tokens,args,extra
+q1-off,qwen38,2,pf12k1k,512,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bell,qwen38,2,pf12k1k,512,"--moe bell=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-best,qwen38,2,pf12k1k,512,"--moe bell=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-strata,qwen38,2,pf12k1k,512,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+p1-bestk,qwen38,1,pf12k1k,512,"--moe bell=1 -bs","--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none --delay=27 --duration=5 --kill=none -o /p/bw/data/nsys/q1bk-%p --force-overwrite=true'"
+p1-stratak,qwen38,1,pf12k1k,512,,"--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --env STRATA_NSYS_DELAY=40 --env STRATA_NSYS_S=4"
+q1-routed,qwen38,2,pf12k1k,512,"--moe bell=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_STREAMS_ROUTED=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+p1-bestc,qwen38,1,pf12k1k,512,"--moe bell=1 -bs","--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'nsys profile --trace=cuda,osrt --sample=process-tree --backtrace=fp --cpuctxsw=process-tree --delay=27 --duration=4 --kill=none -o /p/bw/data/nsys/q1bc-%p --force-overwrite=true'"
+q1-steptime,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-fusedump,qwen38,1,pf12k1k,32,"--moe bell=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_FUSE_DUMP=40 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-q8r,qwen38,2,pf12k1k,512,"--moe bell=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_Q8_REUSE=1 --env GGML_CUDA_Q8_REUSE_LOG=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+p1-q8rk,qwen38,1,pf12k1k,512,"--moe bell=1 -bs","--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_Q8_REUSE=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none --delay=27 --duration=5 --kill=none -o /p/bw/data/nsys/q8rk-%p --force-overwrite=true'"
+q1-q8log,qwen38,1,pf12k1k,32,"--moe bell=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_Q8_REUSE=1 --env GGML_CUDA_Q8_REUSE_LOG=1 --env GGML_CUDA_FUSE_DUMP=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-nosync,qwen38,2,pf12k1k,512,"--moe bell=1,sync=0 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-poll,qwen38,2,pf12k1k,512,"--moe bell=1 -bs --poll 100",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_STEP_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bpool16,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=16 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bpool32,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bpin32,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,bell-pin=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+p1-bpoolk,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32 -bs","--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none --delay=27 --duration=5 --kill=none -o /p/bw/data/nsys/bpk-%p --force-overwrite=true'"
+q1-nosynct,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-ovl,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+v1-ovlvf,qwen38,1,pf12k1k,128,"--moe bell=1,bell-pool=32,sync=0,verify=2 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-hcq8,qwen38hc,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+pp-bf16,qwen38,1,pplb,,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PPL_CHUNKS=12
+pp-hcq8,qwen38hc,1,pplb,,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PPL_CHUNKS=12
+q1-hcload,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+pp-hcload,qwen38,1,pplb,,"--moe hc-q8=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PPL_CHUNKS=12
+p1-allk,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs","--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none --delay=27 --duration=5 --kill=none -o /p/bw/data/nsys/allk-%p --force-overwrite=true'"
+t1-all,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-q8all,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_Q8_REUSE=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-tune,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1,mmvq-tune=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-hcfuse,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --env GGML_CUDA_HC_FUSE=1
+p1-hcfk,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs","--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --env GGML_CUDA_HC_FUSE=1 --wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none --delay=27 --duration=5 --kill=none -o /p/bw/data/nsys/hcfk-%p --force-overwrite=true'"
+q1-belltime,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --env LLAMA_BELL_TIME=1
+q1-strata-exact,qwen38,2,pf12k1k,512,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --env STRATA_ROUTE_TAIL_SKIP=0
+p1-stratak-exact,qwen38,1,pf12k1k,512,,"--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --env STRATA_NSYS_DELAY=40 --env STRATA_NSYS_S=4 --env STRATA_ROUTE_TAIL_SKIP=0"
+q1-stack,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_Q8_REUSE=1 --env GGML_CUDA_HC_FUSE=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-skip7,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_Q8_REUSE=1 --env GGML_CUDA_HC_FUSE=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+pd-hcload,qwen38,1,ppl,,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PPL_CHUNKS=12
+pd-off,qwen38,1,ppl,,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_Q8_REUSE=0 --env GGML_CUDA_HC_FUSE=0 --env PERF_PPL_CHUNKS=12
+pd-skip7,qwen38,1,ppl,,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PPL_CHUNKS=12
+q1-rsgather,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_RS_INPLACE=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+pd-q8only,qwen38,1,ppl,,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_Q8_REUSE=1 --env GGML_CUDA_HC_FUSE=0 --env PERF_PPL_CHUNKS=12
+pd-hcfonly,qwen38,1,ppl,,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_Q8_REUSE=0 --env GGML_CUDA_HC_FUSE=1 --env PERF_PPL_CHUNKS=12
+p1-perf,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs","--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'perf record -F 1999 -o /p/bw/data/perf/q1.data'"
+q1-steptime,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env LLAMA_STEP_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bp16,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=16,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bp24,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=24,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bp31,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=31,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bus0,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_STREAMS_BUS=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-noprio,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_STREAMS_PRIO=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+p1-plan,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_STREAMS_DEBUG=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+p1-plan4,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=4 --env GGML_CUDA_STREAMS_DEBUG=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+p1-allk4,qwen38,1,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs","--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=4 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none --delay=27 --duration=5 --kill=none -o /p/bw/data/nsys/allk-%p --force-overwrite=true'"
+q1-s4,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=4 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-s3,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=3 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+pd-s4,qwen38,1,ppl,,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=4 --env PERF_PPL_CHUNKS=12
+pd-bf16,qwen38,1,ppl,,"--moe bell=1,bell-pool=32,sync=0",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PPL_CHUNKS=12
+pd-fuse,qwen38,1,ppl,,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_HC_FUSE=1 --env PERF_PPL_CHUNKS=12
+pd-default,qwen38,1,ppl,,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PPL_CHUNKS=12
+pd-alloff,qwen38,1,ppl,,"--moe bell=0,bell-pool=0,sync=1,hc-q8=0",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=0 --env PERF_PPL_CHUNKS=12
+pd-nohcq8,qwen38,1,ppl,,"--moe hc-q8=0",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PPL_CHUNKS=12
+pd-fuse1,qwen38,1,ppl,,,--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_HC_FUSE=1 --env PERF_PPL_CHUNKS=12
+q1-def,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-alloff,qwen38,2,pf12k1k,512,"--moe bell=0,bell-pool=0,sync=1,hc-q8=0 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+p1-plandef,qwen38,1,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS_DEBUG=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+p1-allkdef,qwen38,1,pf12k1k,512,"-bs","--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none --delay=27 --duration=5 --kill=none -o /p/bw/data/nsys/allk-%p --force-overwrite=true'"
+q1-stepdef,qwen38,1,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+p1-perfdef,qwen38,1,pf12k1k,512,"-bs","--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'perf record -F 1999 --switch-output=10s -o /p/bw/data/perf/q1.data'"
+q1-s8,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=8 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+p1-plan8,qwen38,1,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=8 --env GGML_CUDA_STREAMS_DEBUG=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bp48,qwen38,2,pf12k1k,512,"--moe bell-pool=48 -bs",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-bp64,qwen38,2,pf12k1k,512,"--moe bell-pool=64 -bs",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-stepiq0,qwen38,1,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_BELL_IQ2S=0 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-pick0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_PICK_ORDER=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-fuse0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_HC_FUSE=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-spread0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_GALLOC_SPREAD=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-s2def,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-s0def,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-nopriodef,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS_PRIO=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-iq0def,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_BELL_IQ2S=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-dots0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_BELL_DOTS=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-pad0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_KV_DECODE_PAD=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-cand0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_ROWREAD_CAND=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-nobs,qwen38,2,pf12k1k,512,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-tailref,qwen38,2,pf12k1k,512,"-bs --moe tail-refill=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-at0,qwen38,2,pf12k1k,512,"-bs --moe autotune=0",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-at0-uw0,qwen38,2,pf12k1k,512,"-bs --moe autotune=0",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_MOE_CACHE_UPLOAD_WAIT=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-uw0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_MOE_CACHE_UPLOAD_WAIT=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-ut2,qwen38,2,pf12k1k,512,"-bs --moe upload-threads=2",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-stg1,qwen38,2,pf12k1k,512,"-bs --moe staging=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-g2k,qwen38,2,pf12k1k,2048,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-ut2-g2k,qwen38,2,pf12k1k,2048,"-bs --moe upload-threads=2",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-p14k,qwen38,2,pf14k1k,1024,"-bs",--env CUDA_VISIBLE_DEVICES=0
+q1-ut2-p14k,qwen38,2,pf14k1k,1024,"-bs --moe upload-threads=2",--env CUDA_VISIBLE_DEVICES=0
+q1-stg1-g2k,qwen38,2,pf12k1k,2048,"-bs --moe staging=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-stg1-p14k,qwen38,2,pf14k1k,1024,"-bs --moe staging=1",--env CUDA_VISIBLE_DEVICES=0
+q1-rkh,qwen38,2,pf12k1k,512,"-bs --moe ring-keep-hot=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-rkh-g2k,qwen38,2,pf12k1k,2048,"-bs --moe ring-keep-hot=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-rkh-p14k,qwen38,2,pf14k1k,1024,"-bs --moe ring-keep-hot=1",--env CUDA_VISIBLE_DEVICES=0
+q1-rc-g2k,qwen38,2,pf12k1k,2048,"-bs --moe ring-cold=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-rc-p14k,qwen38,2,pf14k1k,1024,"-bs --moe ring-cold=1",--env CUDA_VISIBLE_DEVICES=0
+q1-rc2-g2k,qwen38,2,pf12k1k,2048,"-bs --moe ring-cold=2",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-rc2-p14k,qwen38,2,pf14k1k,1024,"-bs --moe ring-cold=2",--env CUDA_VISIBLE_DEVICES=0
+q1-strata-g2k,qwen38,2,pf12k1k,2048,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --env STRATA_ROUTE_TAIL_SKIP=0
+q1-strata-p14k,qwen38,2,pf14k1k,1024,,--env CUDA_VISIBLE_DEVICES=0 --env STRATA_ROUTE_TAIL_SKIP=0
+q1-tail-g2k,qwen38,2,pf12k1k,2048,"-bs --moe ring-cold=2,cs-tail=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-tail-p14k,qwen38,2,pf14k1k,1024,"-bs --moe ring-cold=2,cs-tail=1",--env CUDA_VISIBLE_DEVICES=0
+q1-rc0-g2k,qwen38,2,pf12k1k,2048,"-bs --moe ring-cold=0",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-rc0-p14k,qwen38,2,pf14k1k,1024,"-bs --moe ring-cold=0",--env CUDA_VISIBLE_DEVICES=0
+q1-tm,qwen38,1,pf12k1k,2048,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1
+q1-g2k-of,qwen38,2,pf12k1k,2048,"--moe bell-obs-first=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-p14k-of,qwen38,2,pf14k1k,1024,"--moe bell-obs-first=1 -bs",--env CUDA_VISIBLE_DEVICES=0
+q1-tm-of,qwen38,1,pf12k1k,2048,"--moe bell-obs-first=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1
+q1-p14k-sg,qwen38,2,pf14k1k,1024,"--moe sparse-gate-decode=1 -bs",--env CUDA_VISIBLE_DEVICES=0
+q1-g2k-sg,qwen38,2,pf12k1k,2048,"--moe sparse-gate-decode=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-tr4k,qwen38,1,pf12k1k,2048,"-bs","--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none --delay=30 --duration=4 --kill=none -o /p/bw/data/nsys/q1tr4k-%p --force-overwrite=true'"
+q1-tr14k,qwen38,1,pf14k1k,1024,"-bs","--env CUDA_VISIBLE_DEVICES=0 --wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none --delay=36 --duration=4 --kill=none -o /p/bw/data/nsys/q1tr14k-%p --force-overwrite=true'"
+q1-q8log2,qwen38,1,pf1k,256,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_Q8_REUSE_LOG=1
+q1-opprof,qwen38,1,pf1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_OP_PROFILE=128

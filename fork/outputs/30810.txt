@@ -1,0 +1,52 @@
+run 30810 | pool_copy_own_card_vk | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 28.36 t/s | prompt 989.6 t/s | 1024 tokens | args: -np 1 --moe swap-lead=0,wait-swaps=0,upload-wait=0,idle-up=0 | power 280+280 W | 2026-11-18 11:54:53
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params) {` with no body. So I should note that the file appears incomplete/truncated.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Issues:
+- If `min_items > 0` and `max_items == 0`, returns "" — but that's contradictory (min > max). Actually if max_items == 0 and min_items > 0, that's an invalid schema (min > max). The function returns "" which would silently produce an empty rule. Hmm, but wait — if max_items == 0, then min_items should be 0 too for a valid schema. If min_items > 0 and max_items == 0, the schema is invalid; returning "" silently accepts. Actually wait, let me check: `if (max_items == 0) return "";` — this happens before checking min_items. If min_items == 1 and max_items == 0, we'd return "" which means the grammar would accept nothing... Actually returning "" as the repetition means the array would be `"[" space  space "]"` — hmm, actually in the array case: `"[" space " + build_repetition(...) + " space "]"` — with empty repetition, it becomes `"[" space  space "]"` which matches only empty array. But min_items=1 says at least 1 item required. So this silently produces a grammar that can't satisfy the schema. Edge case, probably worth noting.
+
+- Negative min_items: if min_items is negative (e.g., -1), `item_rule + "{" + std::to_string(-1) + ...}` would produce `{-1,...}` which is invalid GBNF. The caller for arrays: `arr.min_items` — is it validated? In KIND_ARRAY: `build_repetition(item_rule_name, arr.min_items, max_items, ...)`. If min_items is negative... The schema parsing might guarantee non-negative. Not sure. Worth noting as potential issue.
+
+- Recursion with separator: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items - 1, max_items - 1)` — for large max_items this could produce deeply nested rules? Actually no — with separator, the recursion is on the repetition of "(sep item)" groups. For max_items large (e.g., INT_MAX), has_max is false, so recursion passes max_items = INT_MAX again... wait: `has_max ? max_items - 1 : max_items` — if has_max is false, passes INT_MAX, so recursion continues with has_max false. min_items decreases each time. So recursion depth = min_items. For min_items = 1000, recursion depth 1000 — each level builds a string. That's fine-ish but could be deep. Actually wait, when min_items reaches 0, then `min_items == 0 ? 0 : min_items - 1` → 0, and then the recursion... hmm, let's trace: build_repetition(item, 5, INT_MAX, sep) → result = item + " " + build_repetition("(sep item)", 4, INT_MAX) → ... → build_repetition("(sep item)",

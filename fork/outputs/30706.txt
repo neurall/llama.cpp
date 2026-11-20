@@ -1,0 +1,306 @@
+run 30706 | tuners_take_turns_vk | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 34.29 t/s | prompt 710.7 t/s | 4096 tokens | args: -np 1 -lm pin | power 200+200 W | 2026-11-18 06:48:13
+
+<think>Let me analyze this source file carefully for bugs. The file contains two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`.
+
+Let me go through each file systematically.
+
+## common/json-schema-to-grammar.cpp
+
+1. **`build_repetition` function**: Looks correct.
+
+2. **`build_min_max_int` function**: Let me check carefully...
+   - The `uniform_range` lambda looks correct.
+   - The `has_min && has_max` case looks correct.
+   - The `has_min` case: when `min_value < 0`, it calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. Wait, that should be `build_min_max_int(0, -min_value, ...)` because we want the positive part. Actually, looking at it more carefully: when `min_value < 0` and we only have `has_min`, we want to match negative numbers from `min_value` to -1, and non-negative numbers from 0 to infinity. The negative part: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` - this would match numbers from INT64_MIN to -min_value (which is positive). That doesn't seem right. We want to match negative numbers from min_value to -1. So it should be `build_min_max_int(min_value, -1, ...)` or equivalently `build_min_max_int(min_value, std::numeric_limits<int64_t>::min() ... wait no.
+
+   Actually, let me re-read. When `min_value < 0` and only `has_min`:
+   - We want numbers >= min_value
+   - Negative numbers: from min_value to -1
+   - Non-negative numbers: from 0 to infinity
+   
+   The code does:
+   ```
+   out << "\"-\" (";
+   build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+   out << ") | [0] | [1-9] ";
+   more_digits(0, decimals_left - 1);
+   ```
+   
+   `build_min_max_int(INT64_MIN, -min_value, ...)` would match numbers from INT64_MIN to -min_value. But -min_value is positive (since min_value is negative). So this would match negative numbers from INT64_MIN to -1 (since -min_value is positive, and we're looking at the absolute value... wait no, this is confusing.
+
+   Actually, `build_min_max_int` works with signed integers. When both min and max are negative, it does `out << "\"-\" ("; build_min_max_int(-max_value, -min_value, ...)` - so it converts to positive values and prefixes with "-".
+
+   So `build_min_max_int(INT64_MIN, -min_value, ...)` where -min_value is positive... that would go to the `has_min && has_max` case where min_value < 0 and max_value >= 0. Then it would do:
+   ```
+   out << "\"-\" (";
+   build_min_max_int(0, -min_value, out, ...);
+   out << ") | ";
+   min_value = 0;
+   ```
+   Then continue with positive numbers from 0 to -min_value.
+   
+   Hmm, this is getting complex. Let me think about what the intent is.
+
+   When `min_value < 0` and only `has_min`:
+   - We want all numbers >= min_value
+   - This includes negative numbers from min_value to -1, and non-negative numbers from 0 to infinity
+   
+   The code writes:
+   ```
+   out << "\"-\" (";
+   build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+   out << ") | [0] | [1-9] ";
+   more_digits(0, decimals_left - 1);
+   ```
+   
+   Wait, `build_min_max_int(INT64_MIN, -min_value, ...)` - since -min_value is positive, this would match numbers from INT64_MIN to -min_value. But we want to match numbers from min_value to -1 (as negative numbers). 
+   
+   Actually, I think the intent is: `build_min_max_int(min_value, -1, ...)` would match negative numbers from min_value to -1. But the code passes `INT64_MIN` as min and `-min_value` as max. Since -min_value is positive, this would match numbers from INT64_MIN to -min_value, which includes both negative and positive numbers. That seems wrong.
+
+   Hmm, wait. Let me re-read the code more carefully:
+
+   ```cpp
+   if (has_min) {
+       if (min_value < 0) {
+           out << "\"-\" (";
+           build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+           out << ") | [0] | [1-9] ";
+           more_digits(0, decimals_left - 1);
+       }
+   ```
+
+   Actually, I think the intent is to match negative numbers where the absolute value is between 0 and -min_value (i.e., numbers from min_value to 0). But `build_min_max_int(INT64_MIN, -min_value, ...)` would match numbers from INT64_MIN to -min_value. Since -min_value is positive, this includes all negative numbers and some positive numbers.
+
+   Wait, I think I'm overcomplicating this. Let me think about what `build_min_max_int` does when called with `min_value = INT64_MIN` and `max_value = -min_value` (which is positive):
+   
+   - `has_min = true` (INT64_MIN is the sentinel for "no min")
+   - `has_max = true` (-min_value is not INT64_MAX)
+   
+   Wait, `has_min = min_value != std::numeric_limits<int64_t>::min()` - so `has_min = false` when min_value is INT64_MIN!
+   
+   So `build_min_max_int(INT64_MIN, -min_value, ...)` would have `has_min = false` and `has_max = true`. It would go to the `has_max` branch:
+   
+   ```cpp
+   if (has_max) {
+       if (max_value >= 0) {
+           if (top_level) {
+               out << "\"-\" [1-9] ";
+               more_digits(0, less_decimals);
+               out << " | ";
+           }
+           build_min_max_int(0, max_value, out, decimals_left, /* top_level= */ true);
+       }
+   ```
+   
+   Since `top_level = false`, it would just call `build_min_max_int(0, -min_value, out, decimals_left, true)`. This would match numbers from 0 to -min_value.
+   
+   So the overall output would be:
+   ```
+   "-" (0 to -min_value) | [0] | [1-9] [0-9]{0,decimals_left-1}
+   ```
+   
+   This matches:
+   - Negative numbers from min_value to 0 (since "-" prefix with 0 to -min_value gives -0 to -(-min_value) = min_value to 0)
+   - Non-negative numbers from 0 to infinity
+   
+   Wait, but -0 is just 0, and we also have `[0]` separately. So there's a redundancy but not a bug per se.
+
+   Actually, I think the intent is correct: match numbers >= min_value. The negative part matches numbers from min_value to 0, and the non-negative part matches 0 to infinity. The redundancy of 0 appearing twice is not ideal but not a bug.
+
+   Hmm, but actually there's a subtle issue: `build_min_max_int(INT64_MIN, -min_value, ...)` with `top_level=false` would go to `has_max` branch with `max_value >= 0` and `top_level=false`, so it just calls `build_min_max_int(0, -min_value, out, decimals_left, true)`. This matches 0 to -min_value. With the "-" prefix, this matches -0 to -(-min_value) = 0 to min_value... wait no.
+
+   `"-"` followed by a number from 0 to -min_value gives: -0, -1, -2, ..., -(-min_value) = min_value. So it matches 0, -1, -2, ..., min_value. But we want min_value, min_value+1, ..., -1, 0. So the range is correct (just in reverse order, but since it's a grammar, order doesn't matter for matching).
+
+   Actually wait, `build_min_max_int(0, -min_value, ...)` matches numbers from 0 to -min_value. With "-" prefix: -0, -1, ..., -(-min_value) = min_value. So it matches {0, -1, -2, ..., min_value}. But we want {min_value, min_value+1, ..., -1, 0}. These are the same set! So it's correct.
+
+   OK so I think the `has_min` with `min_value < 0` case is correct.
+
+   Let me continue checking other parts...
+
+   Actually, let me look at the `has_max` case more carefully:
+
+   ```cpp
+   if (has_max) {
+       if (max_value >= 0) {
+           if (top_level) {
+               out << "\"-\" [1-9] ";
+               more_digits(0, less_decimals);
+               out << " | ";
+           }
+           build_min_max_int(0, max_value, out, decimals_left, /* top_level= */ true);
+       } else {
+           out << "\"-\" (";
+           build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, /* top_level= */ false);
+           out << ")";
+       }
+       return;
+   }
+   ```
+
+   When `max_value >= 0` and `top_level`:
+   - Matches negative numbers (all of them, since no min constraint) and non-negative numbers from 0 to max_value.
+   - This is correct for "all numbers <= max_value".
+
+   When `max_value < 0`:
+   - Matches "-" followed by numbers from -max_value to INT64_MAX.
+   - Since -max_value is positive, this matches negative numbers from max_value to -1 (and -0 = 0, but that's fine).
+   - Wait, `build_min_max_int(-max_value, INT64_MAX, ...)` with `has_min = true` (since -max_value != INT64_MIN) and `has_max = false` (since INT64_MAX is the sentinel). So it goes to `has_min` branch with `min_value = -max_value > 0`. This matches numbers from -max_value to infinity. With "-" prefix: matches -(-max_value) = max_value to -infinity... wait, that's wrong.
+
+   Hmm, `build_min_max_int(-max_value, INT64_MAX, ...)` matches numbers >= -max_value. With "-" prefix: matches -(numbers >= -max_value) = numbers <= max_value. But we want numbers <= max_value where max_value < 0. So this matches all negative numbers from max_value to -infinity... but we only want up to max_value.
+
+   Wait, I think I'm confusing myself. Let me be more careful.
+
+   `build_min_max_int(-max_value, INT64_MAX, ...)` where -max_value > 0:
+   - `has_min = true` (since -max_value > 0 != INT64_MIN)
+   - `has_max = false` (since INT64_MAX is the sentinel)
+   - Goes to `has_min` branch with `min_value = -max_value > 0`
+   - Matches numbers >= -max_value (i.e., -max_value, -max_value+1, ..., INT64_MAX)
+   
+   With "-" prefix: matches -(-max_value), -(-max_value-1), ..., -INT64_MAX = max_value, max_value-1, ..., -INT64_MAX
+   
+   But we want numbers <= max_value where max_value < 0. So we want max_value, max_value-1, ..., INT64_MIN. The code matches max_value, max_value-1, ..., -INT64_MAX. Since -INT64_MAX = INT64_MIN + 1, we're missing INT64_MIN. But that's a very edge case and probably not a bug in practice.
+
+   Actually wait, the code matches `max_value, max_value-1, ..., -INT64_MAX`. But we want `max_value, max_value-1, ..., INT64_MIN`. Since INT64_MIN = -INT64_MAX - 1, we're off by one. But this is an extreme edge case.
+
+   Hmm, actually I think the intent is correct: match all numbers <= max_value. The code matches negative numbers from max_value down to -INT64_MAX (which is essentially INT64_MIN + 1). The missing INT64_MIN is negligible.
+
+   Let me move on to other potential bugs.
+
+3. **`_pattern_to_rule` function**: Let me check the character class handling:
+   ```cpp
+   } else if (c == '[') {
+       std::string square_brackets = std::string(1, c);
+       i++;
+       while (i < length && sub_pattern[i] != ']') {
+           if (sub_pattern[i] == '\\') {
+               auto escape_length = gbnf_escape_length(sub_pattern, i);
+               if (escape_length == 0) {
+                   throw unsupported_pattern("unsupported escape in character class: " + sub_pattern.substr(i, 2));
+               }
+               square_brackets += sub_pattern.substr(i, escape_length);
+               i += escape_length;
+           } else {
+               square_brackets += sub_pattern[i];
+               i++;
+           }
+       }
+       if (i >= length) {
+           throw invalid_pattern("unterminated character class");
+       }
+       square_brackets += ']';
+       i++;
+       seq.emplace_back(square_brackets, false);
+   }
+   ```
+   
+   This looks correct. It handles escapes in character classes and properly terminates.
+
+4. **`_not_strings` function**: Let me check:
+   ```cpp
+   std::string _not_strings(const std::vector<std::string> & strings) {
+       common_trie trie(strings);
+       std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
+       std::ostringstream out;
+       out << "[\"] ( ";
+       std::function<void(size_t)> visit = [&](size_t idx) {
+           const auto & node = trie.nodes[idx];
+           std::string rejects;
+           auto first = true;
+           for (const auto & [cpt, child] : node.children) {
+               std::string c = common_unicode_cpt_to_utf8(cpt);
+               rejects += c;
+               if (first) {
+                   first = false;
+               } else {
+                   out << " | ";
+               }
+               out << "[" << c << "]";
+               if (!trie.nodes[child].children.empty()) {
+                   out << " (";
+                   visit(child);
+                   out << ")";
+               } else {
+                   out << " " << char_rule << "+";
+               }
+           }
+           if (!node.children.empty()) {
+               out << " | [^\"" << rejects << "] " << char_rule << "*";
+           }
+       };
+       visit(0);
+       out << " )";
+       if (trie.nodes[0].pattern < 0) {
+           out << "?";
+       }
+       out << " [\"]";
+       return out.str();
+   }
+   ```
+   
+   This looks correct.
+
+5. **`_build_object_rule` function**: Let me check the `get_recursive_refs` lambda:
+   ```cpp
+   std::function<std::string(const std::vector<std::string> &, bool)> get_recursive_refs = [&](const std::vector<std::string> & ks, bool first_is_optional) {
+       std::string res;
+       if (ks.empty()) {
+           return res;
+       }
+       const std::string& k = ks[0];
+       std::string kv_rule_name = prop_kv_rule_names[k];
+       std::string comma_ref = "( \",\" space " + kv_rule_name + " )";
+       if (first_is_optional) {
+           res = comma_ref + (k == "*" ? "*" : "?");
+       } else {
+           res = kv_rule_name + (k == "*" ? " " + comma_ref + "*" : "");
+       }
+       if (ks.size() > 1) {
+           res += " " + _add_rule(
+               name + (name.empty() ? "" : "-") + k + "-rest",
+               get_recursive_refs(std::vector<std::string>(ks.begin() + 1, ks.end()), true)
+           );
+       }
+       return res;
+   };
+   ```
+   
+   This looks correct.
+
+6. **`visit` function**: Let me check the `KIND_STRING` case:
+   ```cpp
+   case common_chat_schema::KIND_STRING: {
+       const auto & str = as<common_chat_schema_string>(schema);
+       if (!str.pattern.empty()) {
+           return _visit_pattern(str.pattern, rule_name);
+       }
+       if (str.format == common_chat_schema::FORMAT_UUID) {
+           return _visit_primitive(rule_name, "uuid");
+       }
+       if (str.format != common_chat_schema::FORMAT_NONE) {
+           std::string prim_name = std::string(str.format == common_chat_schema::FORMAT_DATE ? "date" : str.format == common_chat_schema::FORMAT_TIME ? "time" : "date-time") + "-string";
+           return _add_rule(rule_name, _add_primitive(prim_name, STRING_FORMAT_RULES.at(prim_name)));
+       }
+       if (str.min_length > 0 || str.max_length >= 0) {
+           std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
+           int max_len = str.max_length < 0 ? std::numeric_limits<int>::max() : str.max_length;
+           return _add_rule(rule_name, "\"\\\"\" " + build_repetition(char_rule, str.min_length, max_len) + " \"\\\"\"");
+       }
+       return _visit_primitive(rule_name, "string");
+   }
+   ```
+   
+   This looks correct.
+
+7. **`json_schema_to_grammar` functions**: 
+   ```cpp
+   std::string json_schema_to_grammar(const common_json & schema, bool force_gbnf) {
+   #ifdef LLAMA_USE_LLGUIDANCE
+       if (!force_gbnf) {
+           return "%llguidance {}\nstart: %json " + schema.dump();
+       }
+   #else
+       (void)force_gbnf;
+   #endif // LLAMA_USE_LLGUIDANCE
+       try {
+           return json_schema_to_grammar(common_chat_schema_from_json(schema));
+       } catch (const std::runtime_error & e

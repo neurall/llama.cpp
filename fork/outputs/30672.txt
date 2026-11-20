@@ -1,0 +1,43 @@
+run 30672 | upload_wait_tuned_first_vk | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 32.14 t/s | prompt 636.0 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 -lm pin | power 200+200 W | 2026-11-18 05:36:19
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through both files systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through:
+  - `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 0, max_items - 1)` 
+  - For `min_items=0, max_items=5`: `item_rule + " " + build_repetition("(sep item)", 0, 4)` → `item_rule + " " + "(sep item){0,4}"` → then wrapped: `(item_rule + " " + "(sep item){0,4}")?`
+  - This seems correct for 0-5 items with separator.
+
+- When `max_items == 0`, returns empty string. But what if `min_items > 0` and `max_items == 0`? That's an invalid constraint (min > max), but it silently returns empty. Could be a bug or intentional.
+
+### build_min_max_int function
+- The `uniform_range` lambda captures `out` by reference, which is fine since it's used within the function scope.
+- The `digit_range` lambda has a potential issue: if `from > to`, it would produce an invalid range like `[9-1]`. This could happen with negative numbers or edge cases.
+- The `more_digits` lambda: when `min_digits == 0`, it outputs `[0-9]{0,N}` which is fine.
+- The `uniform_range` function: when `from[i] > to[i]`, the logic could produce incorrect ranges. For example, if `from = "10"` and `to = "09"`, this shouldn't happen for valid inputs but could if inputs are malformed.
+- The `to_reached` variable is declared inside the `if (sub_len > 0)` block but used across branches - this is fine since it's initialized to `false`.
+- The `decimals_left` parameter is decremented by 1 each recursive call (`less_decimals = std::max(decimals_left - 1, 1)`), but it's never checked against 0. The default is 16, so after 15 recursive calls it would be 1. This limits recursion depth but could still be deep.
+
+- In the `has_min && has_max` case with `min_value < 0 && max_value < 0`: it calls `build_min_max_int(-max_value, -min_value, ...)`. If `max_value` is `INT64_MIN`, then `-max_value` would overflow. But `max_value < 0` and `has_max` means `max_value != INT64_MAX`, so `max_value` could be `INT64_MIN`. `-INT64_MIN` overflows in signed arithmetic. This is a potential bug.
+
+- Similarly, when `min_value < 0` (but `max_value >= 0`): `build_min_max_int(0, -min_value, ...)`. If `min_value == INT64_MIN`, `-min_value` overflows.
+
+- In the `has_min` case with `min_value < 0`: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. Again, if `min_value == INT64_MIN`, `-min_value` overflows.
+
+- In the `has_max` case with `max_value < 0`: `build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), ...)`. If `max_value == INT64_MIN`, `-max_value` overflows.
+
+These are real potential bugs with `INT64_MIN`.
+
+### _add_rule function
+- The deduplication logic: if a rule with the same name exists but different content, it appends a number. The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds the first index where either the name doesn't exist or the content matches. This seems correct.
+
+### _visit_pattern function
+- Takes a snapshot of `_rules` before attempting pattern conversion, and restores on failure. This is a good pattern for rollback.
+- However, `_rules` is a `std::map`, so copying it on every pattern visit could be expensive for large schemas.
+
+### _pattern_to_rule function
+- The

@@ -4,6 +4,9 @@
 #include "llama-memory-recurrent.h"
 #include "../llama-dsplit-fork.h"
 
+// fork (llama-graph.cpp): a decode state read in place when its cell already holds it; nullptr = the gather as before
+llm_graph_get_rows_fn llama_rs_inplace_getter_fork(llm_graph_input_rs * inp, const llama_ubatch & ub, uint32_t n_rs_seq);
+
 #include <algorithm>
 #include <cinttypes>
 
@@ -594,7 +597,7 @@ llama_model_qwen4exp::graph::graph(const llm_graph_params & params) :
                 auto it = rs_rows.find(states_all);
                 if (it == rs_rows.end()) {
                     ds_skip();
-                    it = rs_rows.emplace(states_all, build_rs(inp_rs, states_all, states_all->ne[0], 1)).first;
+                    it = rs_rows.emplace(states_all, build_rs(inp_rs, states_all, states_all->ne[0], 1, llama_rs_inplace_getter_fork(inp_rs, ubatch, cparams.n_rs_seq))).first;
                     ds_skip();   // the memory reads run where the memory is
                 }
                 return it->second;
@@ -716,6 +719,15 @@ llama_model_qwen4exp::graph::graph(const llm_graph_params & params) :
                         beta[r] = ggml_sigmoid(ctx0, ggml_reshape_4d(ctx0, build_lora_mm(L[r].ssm_beta, cr[r], L[r].ssm_beta_s), 1, num_v_heads, nr, 1));
                         ggml_tensor * alpha = ggml_reshape_3d(ctx0, build_lora_mm(L[r].ssm_alpha, cr[r], L[r].ssm_alpha_s), num_v_heads, nr, 1);
                         gate[r] = ggml_reshape_4d(ctx0, ggml_mul(ctx0, ggml_softplus(ctx0, ggml_add(ctx0, alpha, L[r].ssm_dt)), L[r].ssm_a), 1, num_v_heads, nr, 1);
+                        if (ggml_nbytes(z[r]) <= ((size_t) 4 << 20)) {
+                            // a decode-sized graph (the CUDA two-stream planner takes graphs whose nodes are all within 4 MiB): the projections enter the graph
+                            // here, ahead of the conv chain, so z's matmul (20 us on Qwen3.8 IQ3_S) runs beside the chain's small kernels. In the order the
+                            // output pulls them in it came after the delta net, and the gated norm waited for it (2026-11-19 trace)
+                            ggml_build_forward_expand(gf, qkv[r]);
+                            ggml_build_forward_expand(gf, z[r]);
+                            ggml_build_forward_expand(gf, beta[r]);
+                            ggml_build_forward_expand(gf, gate[r]);
+                        }
                         ds_pin(ds_r[r].b);
                     }
                     // the conv window chain (ds_conv_chain), with the last range's write to the memory issued at the end of the layer: issued here it pulls
@@ -740,7 +752,7 @@ llama_model_qwen4exp::graph::graph(const llm_graph_params & params) :
                         }
                     }
                     ds_skip();
-                    ggml_tensor * state = ggml_reshape_4d(ctx0, build_rs(inp_rs, ssm_all, hparams.n_embd_s(), 1), head_v_dim, head_v_dim, num_v_heads, 1);
+                    ggml_tensor * state = ggml_reshape_4d(ctx0, build_rs(inp_rs, ssm_all, hparams.n_embd_s(), 1, llama_rs_inplace_getter_fork(inp_rs, ubatch, cparams.n_rs_seq)), head_v_dim, head_v_dim, num_v_heads, 1);
                     ds_skip();   // the memory read runs where the memory is
                     for (size_t r = 0; r < NR; ++r) {
                         const int64_t nr = n_of(r);
@@ -1553,6 +1565,13 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
     auto qkvz = build_qkvz(cur, il);
     ggml_tensor * qkv_mixed = qkvz.first;
     ggml_tensor * z         = qkvz.second;
+    if (ggml_nbytes(z) <= ((size_t) 4 << 20)) {
+        // a decode-sized graph (the CUDA two-stream planner takes graphs whose nodes are all within 4 MiB): z enters the graph right behind qkv, so
+        // the plan puts it on the side stream while qkv holds the main one, and it runs beside the conv and delta-net kernels. In the order the
+        // output pulls it in it came after the delta net and the gated norm waited for it (18 us a GDN layer, Qwen3.8 IQ3_S, 2026-11-19 trace)
+        ggml_build_forward_expand(gf, qkv_mixed);
+        ggml_build_forward_expand(gf, z);
+    }
 
     ggml_tensor * beta  = nullptr;
     ggml_tensor * alpha = nullptr;
@@ -1599,7 +1618,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
     ggml_tensor * conv_input = build_conv_state_at(inp, conv_states_all, qkv_mixed,
             conv_kernel_size - 1, conv_channels, il);
 
-    ggml_tensor * state = build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
+    ggml_tensor * state = build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs, llama_rs_inplace_getter_fork(inp, ubatch, cparams.n_rs_seq));
     state = ggml_reshape_4d(ctx0, state, head_v_dim, head_v_dim, num_v_heads, n_seqs);
     cb(state, "state_predelta", il);
 
@@ -1608,6 +1627,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
 
     ggml_tensor * conv_output_silu = ggml_silu(ctx0, conv_output_proper);
     cb(conv_output_silu, "conv_output_silu", il);
+
 
     ggml_tensor * conv_qkv_mix = conv_output_silu;
 
@@ -1754,7 +1774,8 @@ public:
 };
 
 // the PLE rows of a ubatch (ple_n_heads per token, token by token): what set_input gathers and what the read-ahead reads beside the graph build
-static void qwen4exp_ple_ids(const llama_model & model, const llama_kv_cache_context * mctx, const llama_ubatch * ubatch, std::vector<llama_token> & prev, std::vector<int32_t> & idx) {
+// M: whatever names a ubatch's predecessors from the cells (the pass's memory context, or the cache itself for tokens not decoded yet)
+template <class M> static void qwen4exp_ple_ids(const llama_model & model, const M * mctx, const llama_ubatch * ubatch, std::vector<llama_token> & prev, std::vector<int32_t> & idx) {
     const auto & hparams = model.hparams;
 
     // an image arrives as an embd batch, so ubatch->token is null, but every position still needs a row for ggml_get_rows
@@ -1835,6 +1856,22 @@ static void qwen4exp_ple_ahead(const llama_model & model, llama_memory_context_i
 }
 static const bool g_qwen4exp_ple_ahead = llama_rowread_ahead_register_fork((int) LLM_ARCH_QWEN4EXP, &qwen4exp_ple_ahead);
 
+// fork: the PLE rows of tokens that may come next (llama_context::synchronize: the backend sampler's pick or its likeliest candidates, one position past the
+// token just decoded), read while the caller samples: the next pass's fill finds them in the job instead of reading them with the card idle
+bool llama_rowread_next_register_fork(int arch, void (*fn)(const llama_model &, llama_memory_i *, const llama_ubatch &));
+static void qwen4exp_ple_next(const llama_model & model, llama_memory_i * mem, const llama_ubatch & nxt) {
+    const auto * hyb = dynamic_cast<const llama_memory_hybrid *>(mem);
+    const llama_kv_cache * kv = hyb ? hyb->get_mem_attn() : nullptr;
+    if (!kv || model.hparams.ple_n_heads <= 0 || !llama_rowread_has_fork(model.per_layer_tok_embd)) {
+        return;
+    }
+    std::vector<llama_token> prev;
+    std::vector<int32_t> idx;
+    qwen4exp_ple_ids(model, kv, &nxt, prev, idx);
+    llama_rowread_ahead_fork(model.per_layer_tok_embd, 0, idx.data(), idx.size());
+}
+static const bool g_qwen4exp_ple_next = llama_rowread_next_register_fork((int) LLM_ARCH_QWEN4EXP, &qwen4exp_ple_next);
+
 void llm_graph_input_qwen4exp_ple::set_input(const llama_ubatch * ubatch) {
     std::vector<int32_t> idx;
     qwen4exp_ple_ids(model, mctx, ubatch, prev, idx);
@@ -1871,7 +1908,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_conv_state_at(
 
     auto it = rs_rows.find(conv_states_all);
     if (it == rs_rows.end()) {
-        it = rs_rows.emplace(conv_states_all, build_rs(inp, conv_states_all, row_total, n_seqs)).first;
+        it = rs_rows.emplace(conv_states_all, build_rs(inp, conv_states_all, row_total, n_seqs, llama_rs_inplace_getter_fork(inp, ubatch, cparams.n_rs_seq))).first;
     }
     ggml_tensor * rows = it->second;
 

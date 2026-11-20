@@ -321,7 +321,9 @@ struct thread_search {
     int now() const { return st != 1 ? b : !sampling() || warm > 0 ? lead : (k % 2) == 1 ? c : b; }
     bool settled() const { return st == 3; }
     // compare n with its half (nothing above n can run: the pool's size); 1 has no half
-    void start(int n) { b = lead = n; c = n / 2; won = false; k = 0; tt.clear(); tx.clear(); tu.clear(); st = c >= 1 ? 1 : 3; resume(); }
+    void start(int n) { start(n, n / 2); }
+    // compare n with another count (thread_plan picks it: the half, the count between, a count above)
+    void start(int n, int cand) { b = lead = n; c = cand; won = false; k = 0; tt.clear(); tx.clear(); tu.clear(); st = c >= 1 && c != n ? 1 : 3; resume(); }
     void settle(int n) { b = lead = n; won = false; st = 3; }   // a count an earlier server settled on: no comparison
     // an answer's first token: 2 warm-up tokens (the cache refills after the prompt), then at most per_request pairs; a pair the last answer left half done is dropped
     void resume() {
@@ -373,6 +375,41 @@ struct thread_search {
 // make its own baseline. shortcut: a load change between two requests is not seen; upgrade to a best per context band if that matters (tests/test-estimate-fork.cpp).
 // Tokens while the expert cache refills after a prompt (refilling: its background uploads queued or in flight) are no sample and restart the baseline: GLM two-card
 // Vulkan 2026-11-17, every slow run 2 restarted the search from 64 threads during the refill ("64 tokens at 90.58 ms/token against 73.83 settled", 11-14 t/s against 17-18).
+// The walk around the comparisons: which count the count in use is compared with next (thread_search runs one comparison). From the computed start it halves while
+// the half wins (h). When the half loses or stays undecided: the count between, 3/4 (q), where a win ends the walk; then 3/2 of the count (u) when that lies under
+// the count the walk came down from (never tested: 24 between a 16 that won and the 32 it beat) or, the walk never having gone down, under all the threads the pool
+// holds; from there a win tries all of them (a). The old search, from all threads down, settled 32 on three servers, 40 on one and 48 on two (2026-11-18 logs):
+// halving alone reaches neither 24 nor 48 from 32. Each comparison still costs an answer at most 12 tokens.
+struct thread_plan {
+    int  b = 0, n_max = 0;   // the count in use; all the threads the pool holds
+    int  hi = 0;             // the count above b that lost to a lower one (nothing at or above it is tried); n_max + 1: none did
+    char ph = 'h';           // h halving, q the count between, u above, a all threads, s settled
+    int cand() const {
+        int c = 0;
+        if (ph == 'h')      { c = b / 2; }
+        else if (ph == 'q') { c = (3 * b + 2) / 4; if (c >= b || c <= b / 2) { c = 0; } }
+        else if (ph == 'u') { c = std::min(n_max, (3 * b + 1) / 2); if (c <= b || c >= hi) { c = 0; } }
+        else if (ph == 'a') { c = n_max > b && hi > n_max ? n_max : 0; }
+        return c >= 1 ? c : 0;
+    }
+    bool settled() const { return ph == 's'; }
+    void pass() { ph = ph == 'h' ? 'q' : ph == 'q' ? 'u' : 's'; }   // the phase after one whose candidate did not win
+    void skip() { while (ph != 's' && cand() == 0) { pass(); } }   // phases with nothing to try: 1 thread has no half, 2 no count between, all threads nothing above
+    void start(int n, int all) { b = n; n_max = std::max(n, all); hi = n_max + 1; ph = 'h'; skip(); }
+    // a stored walk: its count, its phase, and the computed start it came from (a count under the start came down from it)
+    void resume(int n, int all, char phase, int from) { b = n; n_max = std::max(n, all); hi = n < from ? from : n_max + 1; ph = phase; skip(); }
+    // the comparison of b with cand() ended; won: the candidate was clearly faster
+    void step(bool won) {
+        const int c = cand();
+        if (!won)           { pass(); }
+        else if (ph == 'h') { hi = b; b = c; }           // its own half next
+        else if (ph == 'q') { hi = b; b = c; ph = 's'; }
+        else if (ph == 'u') { b = c; ph = 'a'; }
+        else                { b = c; ph = 's'; }
+        skip();
+    }
+};
+
 struct drift_watch {
     int n = 64, need = 2; double slow = 1.10, comparable = 0.25;
     int wn = 0, drift = 0; double wsum = 0.0, wwork = 0.0, best = 0.0, best_work = 0.0;

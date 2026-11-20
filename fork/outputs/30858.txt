@@ -1,0 +1,28 @@
+run 30858 | pool_copy_own_card_vk | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 33.09 t/s | prompt 987.6 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 -lm pin | power 280+280 W | 2026-11-18 13:04:41
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, performance concerns, security issues, and general code quality.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through:
+  - `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 0, max_items - 1, "")`
+  - For `min_items=0, max_items=5`: inner is `item_rule + " " + build_repetition("(sep item)", 0, 4, "")` which gives `item_rule + " " + "(sep item){0,4}"` then wraps in `(...)?` → `(item_rule (sep item){0,4})?`
+  - This seems correct for arrays with separator.
+
+- When `max_items == 0`, returns empty string. But what if `min_items > 0` and `max_items == 0`? That's an invalid constraint (min > max), but it silently returns empty. Could be a bug or intentional.
+
+### build_min_max_int function
+- The `uniform_range` lambda captures `out` by reference, which is fine since it's used within the function scope.
+- The `digit_range` lambda has a potential issue: if `from > to`, it would produce an invalid range like `[9-1]`. This could happen with negative numbers or edge cases.
+- The `more_digits` lambda: when `min_digits == 0`, it outputs `[0-9]{0,N}` which is fine.
+- The `uniform_range` function: when `from[i] == to[i]` at position `i`, it skips to the next character. But if `from` and `to` are equal entirely, `i` would equal both lengths, and nothing would be output. This could be a bug if the strings are identical.
+- Actually wait, if `from == to`, then `i` would reach `from.length()` (which equals `to.length()`), and the condition `i < from.length() && i < to.length()` would be false, so nothing is output. But the common prefix would be output via `out << "\"" << from.substr(0, i) << "\""` if `i > 0`. So if `from == to`, it outputs the full string as a literal. That seems correct.
+
+- The `to_reached` variable: it's initialized to `false` but only set to `true` in one branch. If `to_reached` is `true`, the `| digit_range(to[i], to[i])...` branch is skipped. This seems intentional.
+
+- Potential issue: `from[i] - 1` when `from[i]` is `'0'` would give `'/'` which is not a digit. This could happen if `from` starts with `'0'` and `to[i]` is greater. But looking at the logic, `from_sub == sub_zeros` checks if the rest is all zeros, and `from[i]` would be the first non-matching digit. If `from[i]` is `'0'`, then `from_sub == sub_zeros` would be true (since the rest is all zeros), and the code would do `digit_range(from[i], to[i] - 1)` which would be `digit_range('0', to[i]-1)`. If `to[i]` is `'0'`, then `to[i]-1` is `'/'`, which is wrong. But if `to[i]` is `'0'`, then `from[i]` would also be `'0'` (since they match at this position), so we wouldn't be in this branch. Actually, we're in the branch where `from[i] != to[i]`, so `from[i] < to[i]`. If `from[i]` is `'0'` and `to[i]` is `'1'`, then `digit_range('0', '0')` which is fine. If `from[i]` is `'0'` and `to[i]` is `'0'`, they'd match. So this seems OK.
+
+- Wait, actually there's a subtle issue. The `from_sub == sub_zeros` check: if `from[i]` is `'0'` and the rest is all zeros, then `from_sub == sub_zeros` is true. Then `digit_range(from[i], to[i] - 1)` = `digit_range('0',

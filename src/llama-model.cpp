@@ -2481,6 +2481,16 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     const bool async_auto = false;
 #endif
     const bool async_load = (async_env ? atoi(async_env) != 0 : async_auto) && ml_keep && !ml.use_mmap && !use_mlock && !ml.check_tensors && !ml.no_alloc;
+    // fork: --moe mmvq-tune=1: every quantized 2D weight on a CUDA card times its one-token matvec block heights now, before any read and before the
+    // expert pool (ggml-cuda mmvq.cu, ggml_cuda_mmvq_tune_fork); the bytes need not be loaded, the time is the same
+    const auto mmvq_tune = [&]() {
+        static const bool on = [] { const char * e = llama_moe_get_opt("mmvq-tune"); return e && atoi(e) != 0; }();
+        auto fn = on && !ml.no_alloc ? (void (*)(const ggml_tensor *)) llama_fork_proc("ggml_backend_fork_mmvq_tune") : nullptr;
+        if (!fn) { return; }
+        for (const auto & [name, t] : tensors_by_name) {
+            if (t->buffer && !ggml_backend_buffer_is_host(t->buffer) && ggml_n_dims(t) == 2 && ggml_is_quantized(t->type)) { fn(t); }
+        }
+    };
     g_async_load_fork = async_load;
     if (async_load) {
         // the thread owns the loader and the buffer lists; callers that read weight bytes wait (wait_loaded)
@@ -2516,6 +2526,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             }
         }
         if (pd) { pd(2); }   // the weights' buffers are allocated: what is allocated from here on (the context's graph buffers) holds no weights
+        mmvq_tune();
         load_thr = std::thread([this, pd, pend, cb = std::move(ctx_bufs)]() mutable {
             for (auto & [ctx, bufs] : cb) {
                 if (!ml_keep->load_all_data(ctx, bufs, nullptr, params.progress_callback, params.progress_callback_user_data)) { load_ok = false; break; }
@@ -2526,6 +2537,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             for (auto & mapping : ml_keep->mappings) { pimpl->mappings.emplace_back(std::move(mapping)); }
         });
     } else {
+    mmvq_tune();
     for (auto & [ctx, bufs] : ctx_bufs) {
         if (!ml.load_all_data(ctx, bufs, use_mlock ? &pimpl->mlock_mmaps : NULL, params.progress_callback, params.progress_callback_user_data)) {
             return false;

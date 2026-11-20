@@ -5,6 +5,7 @@
 //   - an element a reader holds keeps its chunk until it is dropped.
 // build: cmake --build <dir> --target test-rampool-fork;  run: ctest -R test-rampool-fork
 #include "../ggml/src/ggml-rampool-fork.h"
+#include "../ggml/src/ggml-rampool-tune-fork.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -84,6 +85,24 @@ static size_t rows_call(const void * key, size_t rs, std::vector<int32_t> rows, 
     }
     ggml_rampool_rows_put_fork(key, mr.data(), mr.size(), mb.data());
     return nh;
+}
+
+// the fill's thread count from its windows (rp_tune_step): Kimi K3.1's drive on PC1, 2026-11-20, as a rate by threads that keeps rising past the probe's pick:
+// 4 threads 4.58 GB/s (the dev fill), 16 threads 5.34 (b15843's fill), flat after that
+static double k3_fill_gbs(int n) { return n <= 4 ? 4.58 : n <= 8 ? 5.05 : n <= 16 ? 5.34 : 5.36; }
+static void test_tune() {
+    rp_thread_tune t; t.n = 4;
+    for (int w = 0; w < 10 && !t.settled; ++w) { t = rp_tune_step(t, k3_fill_gbs(t.n), 64); }
+    CHECK(t.settled && t.n == 16);   // 4 -> 8 (+10%) -> 16 (+6%) -> 32 (+0.4%: back to 16, b15843's count)
+    rp_thread_tune f; f.n = 4;   // a drive that is full at 4 threads: one doubling tried, taken back
+    for (int w = 0; w < 10 && !f.settled; ++w) { f = rp_tune_step(f, f.n <= 4 ? 6.27 : 6.30, 64); }
+    CHECK(f.settled && f.n == 4);
+    rp_thread_tune b; b.n = 4;   // more threads read slower (contention): back to the count before the doubling
+    for (int w = 0; w < 10 && !b.settled; ++w) { b = rp_tune_step(b, b.n <= 4 ? 6.0 : 5.0, 64); }
+    CHECK(b.settled && b.n == 4);
+    rp_thread_tune c; c.n = 32;   // the cap stops it
+    for (int w = 0; w < 10 && !c.settled; ++w) { c = rp_tune_step(c, (double) c.n, 64); }
+    CHECK(c.settled && c.n == 64);
 }
 
 static void test_rows() {
@@ -222,6 +241,7 @@ int main() {
     close(fd);
 
     test_rows();
+    test_tune();
     if (g_fail) { fprintf(stderr, "%d checks failed\n", g_fail); return 1; }
     printf("test-rampool-fork: all checks passed\n");
     return 0;

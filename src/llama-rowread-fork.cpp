@@ -225,6 +225,21 @@ void llama_rowread_ahead_ubatch_fork(int arch, const llama_model & model, llama_
     for (const auto & f : ahead_fns()) { if (f.first == arch) { f.second(model, mctx, ubatch); } }
 }
 
+// The same for tokens that are not decoded yet (the candidates of the next token; llama_context::synchronize asks while the caller samples). No pass, so no
+// memory context: the architecture's function names the rows from the memory itself, with the hash its pass uses, and asks for them as gather part 0.
+struct llama_memory_i;
+using llama_rowread_next_fn = void (*)(const llama_model & model, llama_memory_i * mem, const llama_ubatch & nxt);
+static std::vector<std::pair<int, llama_rowread_next_fn>> & next_fns() { static std::vector<std::pair<int, llama_rowread_next_fn>> v; return v; }
+
+bool llama_rowread_next_register_fork(int arch, llama_rowread_next_fn fn) {
+    next_fns().emplace_back(arch, fn);
+    return true;
+}
+
+void llama_rowread_next_fork(int arch, const llama_model & model, llama_memory_i * mem, const llama_ubatch & nxt) {
+    for (const auto & f : next_fns()) { if (f.first == arch) { f.second(model, mem, nxt); } }
+}
+
 // Rows u[0..nu) of t (ascending, distinct) into dst, row k at dst + k*row size: each read from the file (a failed read: from the mapping, logged once). Rows in RAM
 // come from the pool, rows a read-ahead of (t, part) holds from it (its newest job, waited for), the rest are read now. False: a read failed.
 bool llama_rowread_fill_rows_fork(const ggml_tensor * t, int part, const int32_t * u, size_t nu, uint8_t * dst) {
@@ -275,6 +290,16 @@ bool llama_rowread_fill_rows_fork(const ggml_tensor * t, int part, const int32_t
             ggml_rampool_rows_put_fork(t, mr.data(), mr.size(), mb.data());
         }
     }
+    static const bool st = getenv("LLAMA_STEP_TIME") != nullptr;   // dev: small calls (decode) summed, every 256
+    if (st && nu < 512) {
+        static size_t c_n = 0, c_rows = 0, c_ram = 0, c_ahead = 0, c_now = 0; static int64_t c_us = 0;
+        c_n++; c_rows += nu; c_ram += n_ram; c_ahead += mr.size() - n_miss; c_now += n_miss; c_us += ggml_time_us() - t0;
+        if (c_n == 256) {
+            LLAMA_LOG_WARN("%s: %s: 256 small calls, rows %.1f a call: in RAM %.1f, read-ahead %.1f, read now %.1f; %.0f us a call after the RAM lookup\n", __func__,
+                    ggml_get_name(t), c_rows / 256.0, c_ram / 256.0, c_ahead / 256.0, c_now / 256.0, c_us / 256.0);
+            c_n = c_rows = c_ram = c_ahead = c_now = 0; c_us = 0;
+        }
+    }
     static const bool dbg = getenv("LLAMA_SPLIT_CTL_DEBUG") != nullptr;
     if (dbg && nu >= 512) {
         uint64_t v[10];
@@ -304,7 +329,10 @@ std::vector<int32_t> llama_rowread_fill_fork(const ggml_tensor * t, ggml_tensor 
     GGML_ASSERT((int64_t) u.size() <= tab->ne[1]);
     const size_t rs = ggml_row_size(tab->type, tab->ne[0]);
     const bool host = ggml_backend_buffer_is_host(tab->buffer);
-    std::vector<uint8_t> tmp(host ? 0 : u.size()*rs);
+    // kept per thread, never zeroed: a decode token stages 16 rows (0.5 to 0.6 MB on Qwen3.8) and a new vector was that many bytes of fresh, zero-filled pages
+    // on the thread the card waits for; every byte sent below is written by the fill first
+    static thread_local std::vector<uint8_t> tmp;
+    if (!host && tmp.size() < u.size()*rs) { tmp.resize(u.size()*rs); }
     uint8_t * dst = host ? (uint8_t *) tab->data : tmp.data();
     llama_rowread_fill_rows_fork(t, 0, u.data(), u.size(), dst);
     if (!host) { ggml_backend_tensor_set(tab, tmp.data(), 0, u.size()*rs); }

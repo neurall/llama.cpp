@@ -143,6 +143,12 @@ extern "C" {
     typedef void (*ggml_backend_split_cb_t)(ggml_backend_t backend, void * user_data);
     GGML_API void ggml_backend_set_split_callback(ggml_backend_split_cb_t cb, void * user_data);
 
+    // fork: the decode bell (ggml/src/ggml-bell-fork.h). A split whose graph holds a ggml_moe_bell is served by this callback: it waits for each bell of the graph
+    // and writes the rows the card asks for. It runs on a thread of the scheduler's own, from before the split's graph is launched; the scheduler goes on to the
+    // next split when it has returned. It must not call into the split's backend: the launch may be standing behind the kernel that waits for these rows.
+    typedef void (*ggml_backend_split_bell_cb_t)(ggml_backend_t backend, struct ggml_cgraph * graph, void * user_data);
+    GGML_API void ggml_backend_set_split_bell_callback(ggml_backend_split_bell_cb_t cb, void * user_data);
+
     GGML_API ggml_backend_dev_t ggml_backend_get_device(ggml_backend_t backend);
 
     //

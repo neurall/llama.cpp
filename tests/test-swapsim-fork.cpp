@@ -156,6 +156,48 @@ int main() {
             else            { check("best first: the hotter candidate takes it, whichever layer", s.L[0].coming[1] && !s.L[1].coming[1]); }
         }
     }
+    {   // policy 2 = the three last-10 rings (ggml-hist-fork.h; user 2026-11-14 and 2026-11-18: last 10 recalls, the reads served in each of the last 10 stays, last 10
+        // evictions): the score is the reads a stay is expected to serve. The newcomer must expect more than the victim; one never seen expects none.
+        swapsim s = make(1, 5, 0); s.k.jit = 0; s.k.policy = 2; s.k.budget = 8;
+        swapsim_layer & l = s.L[0];
+        hist_admit(l.h[0]); l.in[0] = 1; for (int i = 0; i < 5; ++i) { hist_recall(l.h[0], 1 + i); }                       // in, read 5 times this stay
+        hist_admit(l.h[1]); hist_evict(l.h[1], 3); hist_admit(l.h[1]); hist_evict(l.h[1], 6); hist_admit(l.h[1]); l.in[1] = 1;   // in for the third time, never read while in
+        hist_admit(l.h[2]); for (int i = 0; i < 3; ++i) { hist_recall(l.h[2], 2 + i); } hist_evict(l.h[2], 7);             // out, its one stay served 3 reads
+        s.clock = 10;
+        s.token({ { 3 } });   // never seen before: one recall, no stay
+        check("stay: an expert never seen expects no reads and takes no block", !l.coming[3] && l.in[0] && l.in[1] && s.out.evictions == 0);
+        check("stay: a resident read while in outranks one whose stays served nothing", s.score(l, 0, 1) > s.score(l, 1, 1));
+        s.token({ { 2 } });   // its last stay paid: it takes the block of the resident that never served
+        check("stay: an expert whose stay paid takes the place of the one that never served", l.coming[2] && l.in[0] && !l.in[1] && s.out.evictions == 1);
+        check("stay: the victim's ring keeps the stay that ended", l.h[1].n_evict == 3 && !l.h[1].in);
+    }
+    {   // policy 3: the recall ring's rate up to now. Policy 4: the same, and a newcomer whose stays did not pay needs the shortfall on top
+        for (int policy : { 3, 4 }) {
+            swapsim s = make(1, 4, 0); s.k.jit = 0; s.k.policy = policy; s.k.payback = 4;
+            swapsim_layer & l = s.L[0];
+            hist_admit(l.h[0]); l.in[0] = 1; hist_recall(l.h[0], 1); hist_recall(l.h[0], 9);                       // resident: 2 uses in 8 tokens, the last at 9
+            hist_admit(l.h[1]); hist_recall(l.h[1], 2); hist_evict(l.h[1], 3); hist_recall(l.h[1], 8);             // out: its one stay served 1 read; used again at 8
+            s.clock = 10;
+            s.token({ { 1 } });   // used at 11 too: 2 uses over 9 tokens now, the resident 1 over 10
+            check("rate: one recall is no rate, two recalls far apart a low one", s.score(l, 2, 1) == 0.0 && s.score(l, 1, 1) > s.score(l, 0, 1));
+            if (policy == 3) { check("rate: the expert used more per token takes the block", l.coming[1] && !l.in[0]); }
+            else             { check("rate+stay: its stay served 1 read of the 4 an upload costs: 4 times the victim's rate needed, not reached", !l.coming[1] && l.in[0] && s.out.d_margin == 1); }
+        }
+    }
+    {   // policy 5 lru: the least recently used goes. Policy 6 slru: an expert that was hit once while cached is protected and outlives one used later but only once
+        for (int policy : { 5, 6 }) {
+            swapsim s = make(1, 4, 2); s.k.jit = 0; s.k.admit = 1; s.k.policy = policy;
+            s.token({ { 0 } });   // a hit on expert 0: protected under slru
+            s.token({ { 1 } }); s.token({ { 1 } });   // expert 1 used later (and hit twice: under slru the protected half holds one of two, the older goes back)
+            s.token({ { 2 } });   // a newcomer
+            check("lru and slru: the expert used longest ago leaves", s.L[0].coming[2] && !s.L[0].in[0] && s.L[0].in[1] && s.out.evictions == 1);
+        }
+        swapsim s = make(1, 4, 2); s.k.jit = 0; s.k.admit = 1; s.k.policy = 6;
+        s.token({ { 0 } });       // expert 0 hit while cached: protected; expert 1 never used
+        s.token({ { 2 } });       // the newcomer takes the unprotected expert's block
+        s.token({ { 3 } });       // the next newcomer: expert 2 came in by a miss and is unprotected, though used after expert 0
+        check("slru: a newcomer leaves before a protected expert used earlier", s.L[0].in[0] && !s.L[0].in[2] && s.L[0].coming[3] && s.out.evictions == 2);
+    }
     check("trusted: the replay within a quarter of the engine's counters", swapsim_trusted(100, 110, 50, 45, 1000) && !swapsim_trusted(100, 200, 50, 45, 1000) && !swapsim_trusted(100, 110, 50, 20, 1000));
     check("trusted: next to nothing on both sides agrees", swapsim_trusted(100, 110, 2, 9, 1000));
     printf(g_fail ? "swapsim: %d FAILED\n" : "swapsim: all passed\n", g_fail);

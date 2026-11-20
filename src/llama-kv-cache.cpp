@@ -27,6 +27,14 @@
 
 size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens);   // fork: the KV limit for a prompt ubatch (llama-moecache-fork.cpp; declared here, no header edit)
 
+#include "llama-kvpad-fork.h"
+uint64_t llama_moe_cache_kv_backed_fork(void);   // fork: llama-moecache-fork.cpp: the cells every growing KV record backs with finite rows now (declared here, no header edit)
+// fork: the pad of a one-token pass (llama-kvpad-fork.h): 1024 until the context measured what a rebuild of its decode graph costs against a token
+// (llama_kv_decode_pad_next_fork); LLAMA_KV_DECODE_PAD=0: 256 like every other pass
+static std::atomic<uint32_t> g_kv_decode_pad_fork { [] { const char * e = getenv("LLAMA_KV_DECODE_PAD"); return e && atoi(e) == 0 ? 256u : 1024u; }() };
+void     llama_kv_decode_pad_set_fork(uint32_t pad) { g_kv_decode_pad_fork.store(pad); }
+uint32_t llama_kv_decode_pad_get_fork(void) { return g_kv_decode_pad_fork.load(std::memory_order_relaxed); }
+
 // fork: the token-major record's row (kv-token-major, fork/docs/kv-grow.md): K and V of each layer of the record, in layer order, each at a multiple of the
 // unit of its type. A float row starts on 256 bytes (the attention kernels load rows with wide vector reads). A quantized row starts on a multiple of 16
 // bytes and of its block bytes (q8_0: 272, q4_0: 144), and the record's row is a whole number of those units: the attention converts quantized K/V to f16
@@ -2008,10 +2016,11 @@ void llama_kv_cache::set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ub
     if (kv_tail_on) {   // the end pointer of this write must lie inside the blocks the pool claimed for it (never over experts it did not free)
         size_t mx = 0;
         for (uint32_t s = 0; s < sinfo.n_stream(); ++s) { for (uint32_t i = 0; i < sinfo.size(); ++i) { mx = std::max<size_t>(mx, sinfo.idxs[s][i]); } }
-        if (!llama_moe_cache_kv_tail_covers_fork((void *) this, mx)) {
+        const bool covered = llama_moe_cache_kv_tail_covers_fork((void *) this, mx);
+        if (!covered) {
             LLAMA_LOG_ERROR("%s: kv-tail: the cache writes a cell the pool has not claimed: %s (ubatch of %u tokens)\n", __func__, llama_moe_cache_kv_tail_why_fork((void *) this, mx).c_str(), n_tokens);
         }
-        GGML_ASSERT(llama_moe_cache_kv_tail_covers_fork((void *) this, mx) && "kv-tail: the cache writes a cell the pool has not claimed");
+        GGML_ASSERT(covered && "kv-tail: the cache writes a cell the pool has not claimed");
     }
 
     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
@@ -2426,7 +2435,8 @@ uint32_t llama_kv_cache::kq_mask_k0(const slot_info & sinfo, uint32_t n_kv) cons
     for (const auto idx : sinfo.idxs[0]) { first = std::min(first, (uint32_t) idx); p_min = std::min(p_min, cells.pos_get(idx)); }
     // with several positions per token (M-RoPE) the tokens of one image share a position, and the mask of a tie depends on the token: the mask starts before them
     while (first > 0 && cells.pos_get(first - 1) >= p_min) { --first; }
-    const uint32_t k0 = first / 256 * 256;
+    uint32_t k0 = first / 256 * 256;
+    if (sinfo.idxs[0].size() == 1) { k0 = llama_kv_decode_k0_fork(k0, n_kv, llama_kv_decode_pad_get_fork()); }   // one start for as long as the decode graph keeps its cells
     if (k0 == 0 || k0 >= n_kv) {
         return 0;
     }
@@ -3616,7 +3626,10 @@ const llama_ubatch & llama_kv_cache_context::get_ubatch() const {
 }
 
 uint32_t llama_kv_cache_context::get_n_kv() const {
-    return n_kv;
+    // fork: a one-token pass reads further cells while the cache backs them, so its graph lasts for more tokens (llama-kvpad-fork.h). Worked out at every
+    // use, not kept from apply(): the pass's lend may move the zone before its graph is built, and the graph must read what the zone backs then.
+    if (i_cur >= ubatches.size() || ubatches[i_cur].n_tokens != 1) { return n_kv; }
+    return llama_kv_n_kv_decode_fork(n_kv, kv->get_size(), llama_kv_decode_pad_get_fork(), llama_moe_cache_kv_backed_fork());
 }
 
 uint32_t llama_kv_cache_context::get_n_kv_rows() const {
@@ -3640,7 +3653,7 @@ ggml_backend_dev_t llama_kv_cache_context::get_part_dev(int32_t il, uint32_t par
 }
 
 ggml_tensor * llama_kv_cache_context::get_k(ggml_context * ctx, int32_t il, uint32_t part) const {
-    return kv->get_k(ctx, il, n_kv, sinfos[i_cur], part);
+    return kv->get_k(ctx, il, get_n_kv(), sinfos[i_cur], part);
 }
 
 ggml_tensor * llama_kv_cache_context::get_k_storage(int32_t il) const {
@@ -3648,7 +3661,7 @@ ggml_tensor * llama_kv_cache_context::get_k_storage(int32_t il) const {
 }
 
 ggml_tensor * llama_kv_cache_context::get_v(ggml_context * ctx, int32_t il, uint32_t part) const {
-    return kv->get_v(ctx, il, n_kv, sinfos[i_cur], part);
+    return kv->get_v(ctx, il, get_n_kv(), sinfos[i_cur], part);
 }
 
 ggml_tensor * llama_kv_cache_context::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, uint32_t part) const {
@@ -3690,12 +3703,13 @@ void llama_kv_cache_context::set_input_v_idxs(ggml_tensor * dst, const llama_uba
 void llama_kv_cache_context::set_input_attn_mask(const llm_attn_mask & attn_mask, const llama_ubatch * ubatch, bool causal_attn) const {
     // fork: a dense mask with fewer columns than K's cells starts at cell k0 = the difference (kq_mask_k0), a reused graph's mask too; never with kv_rows
     const ggml_tensor * dst = attn_mask.raw;
+    const uint32_t n_kv = get_n_kv();   // the cells the graph reads (a one-token pass: past the stored count)
     const uint32_t k0 = !attn_mask.rows && dst && dst->ne[0] < (int64_t) n_kv ? (uint32_t) (n_kv - dst->ne[0]) : 0;
     kv->set_input_attn_mask(attn_mask, ubatch, causal_attn, k0);
 }
 
 uint32_t llama_kv_cache_context::get_kq_mask_k0() const {
-    return sinfos.empty() ? 0 : kv->kq_mask_k0(sinfos[i_cur], n_kv);
+    return sinfos.empty() ? 0 : kv->kq_mask_k0(sinfos[i_cur], get_n_kv());
 }
 
 void llama_kv_cache_context::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {

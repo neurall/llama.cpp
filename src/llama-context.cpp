@@ -11,6 +11,7 @@ void llama_moe_set_opt(const char * key, const char * value);
 #include "llama-moecache-fork.h"
 #include "llama-dsplit-fork.h"
 #include "llama-estimate-fork.h"   // thread_search: the decode thread search's rule
+#include "llama-kvpad-fork.h"      // the pad of a decode pass from what a rebuild costs
 #include "llama-kv-cache.h"
 #include "llama-moestate-fork.h"
 
@@ -57,6 +58,11 @@ extern "C" {
 // check that each folded weight in the graph gets its Hadamard transform, and each latent lookup gets the inverse
 // without this check, an arch that skips the transform helpers loads and computes wrong results
 static uint32_t g_decode_n_tokens = 0;   // tokens of the decode call in progress, for the stats of llama_process
+// fork: where the decode token of the pass that just ran sits (the main context's one-token passes): the token after it gets its lazy-table rows read
+// ahead when its candidates arrive (llama_context::synchronize)
+static bool         g_row_cand_ok  = false;
+static llama_pos    g_row_cand_pos = 0;
+static llama_seq_id g_row_cand_seq = 0;
 void llama_moe_token_time_fork(double ms);   // src/llama-moestate-fork.cpp
 void llama_moe_prompt_done_fork(uint32_t n_tokens, double ms);
 void llama_moe_prompt_begin_fork(uint32_t n_tokens, uint32_t ubatch);
@@ -69,6 +75,7 @@ void     llama_moe_cache_alias_refused_fork(uint32_t n_tokens);                 
 bool     llama_moe_cache_pp_short_fork();
 void     llama_moe_cache_pp_freeze_fork();
 void     llama_rowread_ahead_ubatch_fork(int arch, const llama_model & model, llama_memory_context_i * mctx, const llama_ubatch & ubatch);   // llama-rowread-fork.cpp
+void     llama_rowread_next_fork(int arch, const llama_model & model, llama_memory_i * mem, const llama_ubatch & nxt);   // llama-rowread-fork.cpp: rows of tokens not decoded yet
 void     llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens);
 void     llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max);
 void     llama_moe_cache_pp_repass_fork(uint32_t n_tokens, uint32_t ub);   // the pass size decided after the path: the path's features follow it
@@ -1629,12 +1636,46 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
     return tier | 256;
 }
 
+// fork: what the scheduler was last reserved with, per context: the kinds of its backend samplers (each adds its own nodes to the graph)
+struct sampler_reserve_fork {
+    bool        dirty = false;   // a sampler was attached or dropped since
+    std::string reserved;        // sampler_sig_fork at the last reserve
+};
+static std::map<const llama_context *, sampler_reserve_fork> g_sampler_reserve_fork;
+static std::string sampler_sig_fork(const std::map<llama_seq_id, llama_sampler *> & samplers) {
+    std::string sig;
+    for (const auto & [seq_id, smpl] : samplers) {
+        sig += std::to_string(seq_id) + ":";
+        const int32_t n = llama_sampler_chain_n(smpl);
+        for (int32_t i = 0; i < n; ++i) { sig += llama_sampler_name(llama_sampler_chain_get(smpl, i)); sig += ","; }
+        sig += ";";
+    }
+    return sig;
+}
+
 void llama_context::sched_reserve() {
+    sampler_reserve_fork & sr = g_sampler_reserve_fork[this];
+    if (!sched_need_reserve && sr.dirty) {
+        // fork: only the backend samplers changed. The server attaches a new chain at every request and drops it at the end, and each change asked for a
+        // whole reserve: the worst-case graphs again (754k nodes on Qwen3.8 at a 16384-token micro-batch), a new scheduler, the graph buffers zero-filled:
+        // 0.7 s before every request's first pass (one RTX 3090, 2026-11-19), the decode graph built and captured again. A set of the same kinds builds the
+        // graph the scheduler was reserved with; a graph that needs more (a larger top-k) is placed as any graph is.
+        sr.dirty = false;
+        // with the expert cache no kind of sampler needs one either: each graph gets its compute memory when it runs (the pool's lend; a separate
+        // buffer grows once in the allocator). The startup reserve has no samplers, so every first -bs request still paid a whole one: two cards,
+        // 4k prompt, 1303 t/s against 1830 without -bs (2026-11-20)
+        if (cparams.moe_cache || sampler_sig_fork(sampling.samplers) == sr.reserved) {
+            return;
+        }
+        sched_need_reserve = true;
+    }
     if (!sched_need_reserve) {
         return;
     }
 
     sched_need_reserve = false;
+    sr.dirty    = false;
+    sr.reserved = sampler_sig_fork(sampling.samplers);
 
     LLAMA_LOG_INFO("%s: reserving ...\n", __func__);
 
@@ -2186,6 +2227,46 @@ void llama_context::synchronize() {
         }
         thread_tune_feed(ggml_time_us() - t_compute_start_us);
         n_eval++;
+        // fork: the rows the NEXT token gathers from lazy row tables (Qwen3.8's PLE n-grams: 16 rows of a 27 GB table, read by O_DIRECT on this thread in
+        // set_inputs with the card idle, 80 to 610 us a token in a clean-state cell) are read on the row reader from here, while the caller samples and the
+        // next call sets up: for the token the backend sampler picked, else for the 4 candidates with the highest logits. The next pass's fill takes what the
+        // job holds and reads the rest as before; rows of candidates that were not picked are dropped with the job. LLAMA_ROWREAD_CAND=0: off (A/B).
+        // shortcut: only with backend sampling (-bs: the candidates are on the host); from host logits when a helper thread finds the top ones
+        static const bool cand_on = !getenv("LLAMA_ROWREAD_CAND") || atoi(getenv("LLAMA_ROWREAD_CAND")) != 0;
+        if (cand_on && g_row_cand_ok && !cparams.ctx_other && memory && n_outputs == 1 && !sampling.samplers.empty()) {
+            g_row_cand_ok = false;
+            llama_token cand[4];
+            uint32_t    n_cand = 0;
+            if (sampling.sampled.has_data() && sampling.sampled.size >= 1 && sampling.sampled.data[0] >= 0) {
+                cand[n_cand++] = sampling.sampled.data[0];
+            } else if (sampling.candidates.has_data() && !sampling.candidates_count.empty() && sampling.candidates_count[0] > 0) {
+                const uint32_t nc = sampling.candidates_count[0];
+                const llama_token * ids = sampling.candidates.data;
+                const float * lg = sampling.logits.has_data() && !sampling.logits_count.empty() && sampling.logits_count[0] == nc ? sampling.logits.data : nullptr;
+                float best[4];
+                for (uint32_t k = 0; k < nc; ++k) {
+                    if (ids[k] < 0) { continue; }
+                    const float v = lg ? lg[k] : -(float) k;   // no logits beside them: the order they came in
+                    uint32_t at = n_cand;
+                    while (at > 0 && best[at - 1] < v) { --at; }
+                    if (at >= 4) { continue; }
+                    for (uint32_t m = std::min<uint32_t>(n_cand, 3); m > at; --m) { best[m] = best[m - 1]; cand[m] = cand[m - 1]; }
+                    best[at] = v; cand[at] = ids[k];
+                    n_cand = std::min<uint32_t>(n_cand + 1, 4);
+                }
+            }
+            if (n_cand > 0) {
+                llama_pos      pos[4];
+                int32_t        nsi[4];
+                llama_seq_id   sid[4];
+                llama_seq_id * sidp[4];
+                for (uint32_t k = 0; k < n_cand; ++k) { pos[k] = g_row_cand_pos + 1; nsi[k] = 1; sid[k] = g_row_cand_seq; sidp[k] = &sid[k]; }
+                llama_ubatch nxt = {};
+                nxt.b_equal_seqs = 1; nxt.n_tokens = n_cand; nxt.n_seq_tokens = n_cand; nxt.n_seqs = 1; nxt.n_seqs_unq = 1; nxt.n_pos = 1;
+                nxt.token = cand; nxt.pos = pos; nxt.n_seq_id = nsi; nxt.seq_id = sidp;
+                llama_rowread_next_fork((int) model.arch, model, memory.get(), nxt);
+            }
+        }
     } else if (n_queued_tokens > 1) {
         g_thr_cpu_bytes = -1;   // a prompt call's bytes are no decode token's work: the next token starts the thread search's byte counts afresh
         if (!cparams.no_perf) {
@@ -2720,7 +2801,8 @@ static void threads_save(const llama_model & model, const char * key, int dflt, 
 }
 
 // The decode thread search's walk, stored per model under the card set's place key (threads_key: the cards and their backend), so the next server starts where this
-// one got to (user 2026-11-18): "<computed start> <count> <w|s> <server starts> <comparisons>". w: the next answer compares the count with its half, s: settled. Read only
+// one got to (user 2026-11-18): "<computed start> <count> <phase> <server starts> <comparisons>". Phase (thread_plan): w the next answer compares the count with its
+// half, q with the count between, u with 3/2 of it, a with all the threads, s settled. Read only
 // for the same computed start (a CPU mask or no GPUs change it); every 8th start walks again from the computed start, so a stored count is checked, not kept forever.
 // Comparisons, the last 8, newest last: "<count>/<half><+ the half won, - it lost, = undecided>".
 struct thread_walk { int start = 0, n = 0, starts = 0; char st = 'w'; std::string hist; };
@@ -2735,7 +2817,7 @@ static bool thread_walk_load(const llama_model & model, thread_walk & w) {
     std::string v;
     if (!moe_state_get(moe_state_section(model), threads_key(model, thread_walk_key()), v)) { return false; }
     char st = 0; int used = 0;
-    if (sscanf(v.c_str(), "%d %d %c %d %n", &w.start, &w.n, &st, &w.starts, &used) < 4 || (st != 'w' && st != 's') || w.n < 1) { return false; }
+    if (sscanf(v.c_str(), "%d %d %c %d %n", &w.start, &w.n, &st, &w.starts, &used) < 4 || !strchr("wquas", st) || w.n < 1) { return false; }
     w.st = st; w.hist = used > 0 && (size_t) used < v.size() ? v.substr((size_t) used) : std::string();
     return true;
 }
@@ -2779,7 +2861,7 @@ void llama_context::set_thread_autotune(bool on) {
             if (w.starts % 8 == 0) { w.n = thr.base0; w.st = 'w'; from = "every 8th start: a fresh walk from the computed start"; }
             else { from = w.st == 's' ? "stored, settled" : "stored, walking on"; }
             g_thr_walk = w;
-            thr.base = std::min(w.n, thr.base0);
+            thr.base = std::min(w.n, llama_cpu_allowed_count_fork());   // the walk may have gone above the computed start (thread_plan: u, a)
             cparams.n_threads = (uint32_t) thr.base;
             thread_walk_store(model, g_thr_walk);
         }
@@ -2932,6 +3014,7 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     // from the expert cache's byte counters (llama_moe_cache_counters_fork), since those bytes, not the thread count, make most of a token's scatter. Then the +-2 tuner
     // below stays off (settled, with the drift watch). File-local state: one decoding context per process.
     static thread_search ts;
+    static thread_plan tp;   // which count the next comparison tries: the half, the count between, a count above (src/llama-estimate-fork.h, same tests)
     static drift_watch dw;   // the settled count stays until the box changes (src/llama-estimate-fork.h, tested in tests/test-estimate-fork.cpp)
     llama_moe_cache_threads_searching_fork(ts.sampling());   // the self-tuner's slices wait while the search samples (tune_slice_counts)
     const bool fresh = g_thr_cpu_bytes < 0;   // the first token, or the first after a prompt call: its bytes are unknown, not a sample
@@ -2947,29 +3030,32 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     }
     auto testing = [&]() {
         char v[48]; snprintf(v, sizeof v, "%d vs %d (testing)", ts.b, ts.c);
-        llama_moe_decision_fork("threads_decode", v, "searching: alternating the count in use with its half, token by token");
+        llama_moe_decision_fork("threads_decode", v, "searching: alternating the count in use with another, token by token");
     };
     if (ts.st == 0) {   // the first decode token of the process, or after a drift restart: a settled stored count needs no comparison
-        if (g_thr_walk.st == 's' && g_thr_walk.n == thr.base) { ts.settle(thr.base); } else { ts.start(thr.base); if (!ts.settled()) { testing(); } }
+        tp.resume(thr.base, llama_cpu_allowed_count_fork(), g_thr_walk.st == 's' && g_thr_walk.n != thr.base ? 'h' : g_thr_walk.st == 'w' ? 'h' : g_thr_walk.st, g_thr_walk.start);
+        if (tp.settled()) { ts.settle(tp.b); } else { ts.start(tp.b, tp.cand()); if (!ts.settled()) { testing(); } }
     }
-    if (fresh) {   // an answer's first token: an open comparison samples again (at most 12 tokens an answer), a clear win walks on to the next half
-        if (ts.st == 1) { ts.resume(); } else if (ts.won) { ts.start(ts.b); if (!ts.settled()) { testing(); } }
+    if (fresh) {   // an answer's first token: an open comparison samples again (at most 12 tokens an answer); a finished one is followed by the walk's next
+        if (ts.st == 1) { ts.resume(); } else if (!tp.settled()) { ts.start(tp.b, tp.cand()); if (!ts.settled()) { testing(); } }
     }
     if (!ts.settled()) {
         if (!fresh && !refilling && ts.feed((double) dt_us, x_mib, u_mib)) {
             const bool decided = std::fabs(ts.last_d) > ts.z * ts.last_se;
-            LLAMA_LOG_WARN("%s: thread search: %d threads %.2f ms/token vs %d threads %.2f ms/token; at the same CPU and upload work the half %+.2f +- %.2f ms/token over %d pairs -> %s\n",
+            LLAMA_LOG_WARN("%s: thread search: %d threads %.2f ms/token vs %d threads %.2f ms/token; at the same CPU and upload work the latter %+.2f +- %.2f ms/token over %d pairs -> %s\n",
                     __func__, ts.last_nb, ts.last_b/1000.0, ts.last_nc, ts.last_c/1000.0, ts.last_d/1000.0, ts.last_se/1000.0, ts.last_pairs,
-                    ts.won ? "take the half" : decided ? "keep (the half is slower)" : "keep (undecided)");
+                    ts.won ? "take it" : decided ? "keep (it is slower)" : "keep (undecided)");
             thread_walk_note(g_thr_walk, ts.last_nb, ts.last_nc, ts.won ? '+' : decided ? '-' : '=');
+            tp.step(ts.won);
         }
         if (ts.settled()) {
-            llama_moe_decision_fork("threads_decode", std::to_string(ts.b).c_str(), ts.won ? "the half won: the next answer compares it with its own half" :
-                    "the half did not win: settled (from the computed start or the stored count, halving, at most 12 tokens an answer, decided at the same CPU and upload work)");
-            thr.base = ts.b;
-            g_thr_walk.n = ts.b; g_thr_walk.st = ts.won ? 'w' : 's';
+            const std::string why = tp.settled() ? "settled (from the computed start or the stored count: the half, the count between, then above; at most 12 tokens an answer, decided at the same CPU and upload work)"
+                                                 : "the next answer compares it with " + std::to_string(tp.cand());
+            llama_moe_decision_fork("threads_decode", std::to_string(tp.b).c_str(), why.c_str());
+            thr.base = tp.b;
+            g_thr_walk.n = tp.b; g_thr_walk.st = tp.settled() ? 's' : tp.ph == 'h' ? 'w' : tp.ph;
             thread_walk_store(model, g_thr_walk);
-            dw.reset();   // settled: the count stays until the box changes (below)
+            dw.reset();   // the count stays until the next comparison, or, settled, until the box changes (below)
         }
         cparams.n_threads = (uint32_t) ts.now();
         return;
@@ -3299,7 +3385,7 @@ bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
             warned = true;
         }
         if (sampling.samplers.count(seq_id) > 0) {
-            sched_need_reserve = true;
+            g_sampler_reserve_fork[this].dirty = true;   // fork: reserved only if the kinds of samplers change (sched_reserve)
         }
         sampling.samplers.erase(seq_id);
         return false;
@@ -3318,7 +3404,7 @@ bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
 
         sampling.samplers[seq_id] = sampler;
 
-        sched_need_reserve = true;
+        g_sampler_reserve_fork[this].dirty = true;   // fork: reserved only if the kinds of samplers change (sched_reserve)
 
         return true;
     }
@@ -3327,7 +3413,7 @@ bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
         LLAMA_LOG_WARN("%s: sampler '%s' for seq_id = %d, cannot be offloaded to the backend\n", __func__, llama_sampler_name(sampler), seq_id);
 
         if (sampling.samplers.count(seq_id) > 0) {
-            sched_need_reserve = true;
+            g_sampler_reserve_fork[this].dirty = true;   // fork: reserved only if the kinds of samplers change (sched_reserve)
         }
 
         sampling.samplers.erase(seq_id);
@@ -3337,7 +3423,7 @@ bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
 
     sampling.samplers.erase(seq_id);
 
-    sched_need_reserve = true;
+    g_sampler_reserve_fork[this].dirty = true;   // fork: reserved only if the kinds of samplers change (sched_reserve)
 
     return true;
 }
@@ -3684,9 +3770,25 @@ void tokheat_dump() {
 // the server calls it when a request ends (llama_moe_request_end_fork)
 void llama_tokheat_dump_fork(void) { tokheat_dump(); }
 
+extern "C" { void ggml_backend_tensor_set_batch_begin_fork(void); void ggml_backend_tensor_set_batch_end_fork(void); }   // ggml-backend.cpp (fork, declared here: no header edit)
+// dev: LLAMA_STEP_TIME=1 also names pieces inside those sections (us a call, same line every 256 calls)
+static const char * const g_st_pn[8] = { "memory apply", "kv tail", "graph params", "split decide", "reuse check", "pool lend", "", "" };
+static int64_t g_st_pu[8] = {0};
+struct st_piece {
+    int k; int64_t t0;
+    explicit st_piece(int k) : k(k), t0(on() ? ggml_time_us() : 0) {}
+    static bool on() { static const bool v = getenv("LLAMA_STEP_TIME") != nullptr; return v; }
+    ~st_piece() { if (t0) { g_st_pu[k] += ggml_time_us() - t0; } }
+};
+void     llama_kv_decode_pad_set_fork(uint32_t pad);   // llama-kv-cache.cpp (declared here, no header edit)
+uint32_t llama_kv_decode_pad_get_fork(void);
+static int64_t g_st_m[8] = {0}, g_st_ms[8] = {0};   // dev: marks inside process_ubatch (entry, after apply+tail, graph decided, reuse/build done, inputs set, freeze/verify done)
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads
-    if (mctx && !mctx->apply()) {
+    g_st_m[0] = ggml_time_us();
+    bool applied = true;
+    if (mctx) { st_piece sp(0); applied = mctx->apply(); }
+    if (!applied) {
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
         ret = GGML_STATUS_FAILED;
         return nullptr;
@@ -3694,10 +3796,15 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // fork: the rows this pass gathers from lazy row tables (PLE, Engram) are read on the row reader from here, beside the graph build, the KV moves and the copy
     // fill (llama-rowread-fork.cpp); the cells hold this ubatch now, so the hashes see its tokens' predecessors
     if (mctx && ubatch.token && ubatch.n_tokens > 1) { llama_rowread_ahead_ubatch_fork((int) model.arch, model, mctx, ubatch); }
+    if (!cparams.ctx_other) {
+        g_row_cand_ok = mctx && ubatch.token && !ubatch.is_mixed() && ubatch.n_tokens == 1 && ubatch.n_seq_id[0] == 1;
+        if (g_row_cand_ok) { g_row_cand_pos = ubatch.pos[0]; g_row_cand_seq = ubatch.seq_id[0][0]; }
+    }
 
     // fork: --moe kv-tail: the KV zone of each card grows (cells past half of it) and makes room for the lend a graph of this size needed before, BEFORE the graph
     // is built: a graph never points at rows that move (a move changes the reuse epoch below)
     if (cparams.moe_cache) {
+        st_piece sp(1);
         llama_moe_cache_kv_tail_prepare_fork(sched.get(), (int32_t) ubatch.n_tokens);
         // a card whose pool cannot hold the KV zone at all (no gap between the zero blocks takes the fixed part and a cell): the graph would point at records that were never
         // attached (the allocator then aborted: 'cache_kv_record already has a buffer', OLMoE with 0.47 GiB VRAM left). The request fails with the reason instead.
@@ -3709,12 +3816,12 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         }
     }
 
-    auto * res = get_gf_res_prev();
+g_st_m[1] = ggml_time_us();     auto * res = get_gf_res_prev();
     auto * gf  = res->get_gf();
 
     // the new graph parameters
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
-    const auto gparams = graph_params(res, ubatch, mctx, gtype);
+    const auto gparams = [&] { st_piece sp(2); return graph_params(res, ubatch, mctx, gtype); }();
 
     // fork: the pass before this one was a split pass: its card times are complete now (waited for), one balance step for it (llama-dsplit-fork.cpp)
     if (!fork_resident && ubatch.n_tokens > 1 && llama_dsplit_prev_split_fork()) {
@@ -3728,13 +3835,13 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
     if (!fork_resident) { llama_dsplit_note_pass_fork(ubatch.n_tokens > 1 && ubatch.pos ? (int64_t) ubatch.pos[0] : -1); }
     // fork: --moe dense-split: the configuration of this pass (one card or split over the cards), chosen before the graph is built; a changed choice rebuilds
-    const bool ds_changed = !fork_resident && llama_dsplit_decide_fork(model, ubatch.n_tokens);   // the per-pass split decision (and its log line) is part of what the exit skips
+    const bool ds_changed = [&] { st_piece sp(3); return !fork_resident && llama_dsplit_decide_fork(model, ubatch.n_tokens); }();   // the per-pass split decision (and its log line) is part of what the exit skips
     // fork: the share controller of the expert split (llama-graph.cpp) moves the cards' expert counts from the measurement of an earlier pass; a changed count
     // needs a new graph
     const bool ctl_changed = ubatch.n_tokens >= 32 && llama_split_ctl_poll_fork((int64_t) model.hparams.n_expert, (int64_t) model.hparams.n_embd);
-    const int64_t t_graph0 = ggml_time_us();
+    const int64_t t_graph0 = ggml_time_us(); g_st_m[2] = ggml_time_us();
     bool graph_rebuilt = false;
-    bool reuse = !graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork() && !ds_changed && !ctl_changed;
+    bool reuse = [&] { st_piece sp(4); return !graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork() && !ds_changed && !ctl_changed; }();
     // fork (--moe dynhot): the pass that ends a prompt (its last token has the output) copies the key rows out; a reused graph without the copies is built again
     const bool want_key = cparams.moe_cache_started && !cparams.ctx_other && ubatch.output != nullptr && ubatch.output[ubatch.n_tokens - 1] &&
                           llama_moe_topic_key_wanted_fork();
@@ -3757,7 +3864,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         // target's graph went back to the free list, the after-prompt refill uploaded experts into them, and the draft's scratch writes (its own streams) raced
         // the target's verify step: illegal memory access at depth 2 and 3 (DeepSeek 4.1 + Lucebox draft, tetris prompt, reasoning off, 2026-10-27)
         // the pool's own context calls it with the lend dropped too (moe_alias_bufs cleared): the KV pad rows in the pool are zeroed there (poison NaN otherwise, 2026-11-11)
-        if (cparams.moe_cache_started && !cparams.ctx_other && llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens)) { reuse = false; }   // the KV zone moved behind this graph: build it again
+        { st_piece sp(5); if (cparams.moe_cache_started && !cparams.ctx_other && llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens)) { reuse = false; } }   // the KV zone moved behind this graph: build it again
         if (!moe_alias_bufs.empty() && llama_moe_cache_pp_short_fork()) { reuse = false; }   // the lend left a layer of the prompt chain too few blocks
         if (const char * why = moe_alias_bufs.empty() ? nullptr : llama_moe_cache_alias_err_fork()) {   // fork: the graph and the KV do not fit the pool: this pass is refused (the request fails, the server lives)
             if (!fork_resident && llama_dsplit_cur_fork() == 1) {   // a split pass: one card instead, as below
@@ -3785,7 +3892,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
             //const auto t_start_us = ggml_time_us();
 
+            llama_moe_cache_bell_begin_fork();
             gf = model.build_graph(gparams);
+            llama_moe_cache_bell_expand_fork(gf);   // --moe bell=1: the bells' host chains go behind everything else
             llama_moe_cache_graph_built_fork();
 
             //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
@@ -3872,16 +3981,20 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                     ctl_changed ? " (the expert counts changed)" : ds_changed ? " (one card / split choice changed)" : "");
         }
     }
-    const int64_t t_fill0 = ggml_time_us();   // fork: LLAMA_SPLIT_CTL_DEBUG=1 prints the steps between the built graph and its start
+g_st_m[3] = ggml_time_us();     const int64_t t_fill0 = ggml_time_us();   // fork: LLAMA_SPLIT_CTL_DEBUG=1 prints the steps between the built graph and its start
     moe_mirror_fill();   // fork: --moe mirror-pool: the dense split's copies, when the region lost them since they were last filled
-    const int64_t t_in0 = ggml_time_us();
+    const int64_t t_in0 = ggml_time_us(); g_st_m[4] = ggml_time_us();
 
     // set the input data for the input tensors
     {
         //const auto t_start_us = ggml_time_us();
 
         // FIXME this call causes a crash if any model inputs were not used in the graph and were therefore not allocated
-        res->set_inputs(&ubatch);
+        {   // fork: the inputs go to their card as one batch (ggml-backend.cpp, ggml_backend_tensor_set_batch_begin_fork)
+            struct set_batch { set_batch() { ggml_backend_tensor_set_batch_begin_fork(); } ~set_batch() { ggml_backend_tensor_set_batch_end_fork(); } } batch;
+            res->set_inputs(&ubatch);
+        }
+        g_st_m[5] = ggml_time_us();
 
         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
     }
@@ -3893,7 +4006,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         fork_idx_check(sched.get(), res->get_gf(), cparams.ctx_other ? "draft" : "target", n_graphs[this]++);
     }
 
-    const int64_t t_fz0 = ggml_time_us();
+    const int64_t t_fz0 = ggml_time_us(); g_st_m[6] = ggml_time_us();
     llama_moe_cache_pp_freeze_fork();   // a graph of the prompt mix: both cards' view of the home card's experts is fixed for the pass
     {
         static const bool dbg = getenv("LLAMA_SPLIT_CTL_DEBUG") != nullptr;
@@ -3904,11 +4017,38 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         }
     }
     if (cparams.moe_cache) { llama_moe_cache_verify_fork(sched.get(), (int32_t) ubatch.n_tokens); }   // --moe verify: the cached experts against the host's copy
-    const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
+g_st_m[7] = ggml_time_us();     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
         ret = status;
         return nullptr;
+    }
+    // fork: what building a decode graph again costs against a token (llama-kvpad-fork.h: how far ahead the decode graphs read). A rebuilt graph costs its
+    // own pass and the next ones (the CUDA backend runs it node by node once and captures it on the pass after), so the first 4 passes from a rebuild are
+    // weighed against 4 steady ones (passes at least 8 behind any rebuild, running mean) once 32 passes followed it. Decided once per process: the first
+    // passes of a request are slow anyway (the cache refills, the thread search alternates), a later sample would only move the pad and build again.
+    static const bool decode_pad_on = !getenv("LLAMA_KV_DECODE_PAD") || atoi(getenv("LLAMA_KV_DECODE_PAD")) != 0;   // =0: every pass rounds up to 256 (the A/B switch)
+    if (decode_pad_on && ubatch.n_tokens == 1 && !cparams.ctx_other) {
+        static double tok_us = 0.0, win_us = 0.0;
+        static int    n_since = 1 << 30;   // passes since the last rebuild
+        static bool   win_open = false, decided = false;
+        const double t_call = (double) (ggml_time_us() - g_st_m[0]);
+        if (graph_rebuilt) { n_since = 0; win_us = 0.0; win_open = !decided; }
+        if (n_since < 4) {
+            win_us += t_call;
+        } else if (n_since >= 8) {
+            tok_us = tok_us > 0.0 ? 0.9 * tok_us + 0.1 * t_call : t_call;
+        }
+        if (win_open && n_since == 32) {
+            win_open = false;
+            decided  = true;
+            const double   reb_us = std::max(0.0, win_us - 4.0 * tok_us);
+            const uint32_t was = llama_kv_decode_pad_get_fork(), pad = llama_kv_decode_pad_next_fork(was, reb_us, tok_us);
+            LLAMA_LOG_WARN("%s: building a decode graph again costs %.1f ms against %.2f ms a token: decode passes read the cells in use rounded up to %u%s\n",
+                    __func__, reb_us / 1e3, tok_us / 1e3, pad, pad == was ? "" : " (1024 until now: rebuilds are cheap here)");
+            if (pad != was) { llama_kv_decode_pad_set_fork(pad); }
+        }
+        if (n_since < (1 << 30)) { n_since++; }
     }
     if (want_key) {
         dynkey_fetch(sched.get(), res->get_gf());
@@ -4213,7 +4353,12 @@ static int fork_cuda_last_oom(int * device, size_t * bytes, double * fit) {   //
     return fn ? fn(device, bytes, fit) : 0;
 }
 
+// dev, LLAMA_STEP_TIME: host timestamps of a decode call (entry, the graph handed to the scheduler, back from it)
+static int64_t g_st_entry = 0, g_st_submit = 0, g_st_back = 0, g_st_ret = 0;
+static int64_t g_st_s_gap = 0, g_st_s_prep = 0, g_st_s_sub = 0, g_st_n = 0;
 int llama_context::decode(const llama_batch_ext & batch_inp) {
+    static const bool st_on_d = getenv("LLAMA_STEP_TIME") != nullptr;
+    if (st_on_d) { g_st_entry = ggml_time_us(); g_st_submit = 0; }
     moe_decoded = true;
     // fork (--moe split-pass, default 1; 2 = equal passes, 0 = the old pass, A/B; dense split forced; user 2026-10-24): a prompt pass of the dense split was cut by the ONE-card limit, so
     // with two cards each computed about half of what its buffers hold, for every upload of the experts. Here a call is run pass by pass, each pass sized
@@ -4554,6 +4699,10 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     }
     embd_seq.clear();
 
+    // fork: before this call's tokens are counted (as encode does): the reserve synchronizes, and a synchronize after the count reported this call as a
+    // prompt call done in ~12 us (the pass planner and the dense split learned 341 million tokens a second) and the real call afterwards not at all
+    sched_reserve();
+
     if (t_compute_start_us == 0) {
         t_compute_start_us = ggml_time_us();
     }
@@ -4570,8 +4719,6 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     mtp_dsa_sel_seq.clear();
     mtp_dsa_sel.clear();
     mtp_dsa_sel_width = 0;
-
-    sched_reserve();
 
     bool did_optimize = false;
     bool did_retier   = false;
@@ -4604,7 +4751,13 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         }
     }
     double   mask_budget_mib = 0.0;
-    if (cparams.moe_cache && memory) {
+    // only for a call with a pass to size: a decode token opened and parsed /proc/meminfo and two hugepage files here, 35 to 40 us of every token with the
+    // card idle (perf of the decode thread, Qwen3.8, 2026-11-19), for a limit that one token never reaches
+    if (cparams.moe_cache && memory && n_tokens_all == 1) {   // what the block below keeps current for the RAM checks, without its file reads
+        g_host_held = backend_cpu ? (uint64_t) ggml_backend_sched_get_buffer_size(sched.get(), backend_cpu) : 0;
+        g_host_ub   = cparams.n_ubatch;
+    }
+    if (cparams.moe_cache && memory && n_tokens_all > 1) {
         const char * mm = llama_moe_get_opt("mask-mb");
         // Calculated, not guessed: the mask is pinned host memory. A pin served by free 1 GiB pool pages is immediate and certain (a 5.0 GiB mask took 0.3 s from 5 free pages),
         // every page beyond that depends on the kernel finding pinnable memory (the 6.5 GiB request stalled for 180 s). So the budget is the free pool pages right now (at least 1 GiB),
@@ -5258,13 +5411,44 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
 
     // apply throttled MoE expert-cache updates between graph executions; wait for
     // the GPU first so no queued read of a slot races the worker refilling it
-    static const bool mc_sync = !moe_opt("sync") || atoi(moe_opt("sync")) != 0;
+    static const bool mc_sync = moe_opt("sync") && atoi(moe_opt("sync")) != 0;   // the step beside the graph's tail unless --moe sync=1 (2026-11-19)
     // only the context that owns the cache steps it (not e.g. an MTP draft context)
     if (cparams.moe_cache) {
+        static const bool step_time = getenv("LLAMA_STEP_TIME") != nullptr;   // dev only: where the host time between decode tokens goes
+        const int64_t t_a = step_time ? ggml_time_us() : 0;
         if (mc_sync && llama_moe_cache_active_fork()) {
             ggml_backend_sched_synchronize(sched.get());
         }
-        llama_moe_cache_step_fork();
+        const int64_t t_b = step_time ? ggml_time_us() : 0;
+        if (mc_sync || !llama_moe_cache_active_fork()) { llama_moe_cache_step_fork(); }
+        else { extern void llama_moe_cache_step_overlap_fork(); llama_moe_cache_step_overlap_fork(); }   // --moe sync=0: the step beside the graph's tail, its writes wait for it
+        if (step_time) {
+            static int64_t s_sync = 0, s_step = 0, s_out = 0, n = 0, t_last = 0;
+            const int64_t t_c = ggml_time_us();
+            s_sync += t_b - t_a; s_step += t_c - t_b; s_out += t_last > 0 ? t_a - t_last : 0; t_last = t_c;
+            if (g_st_ret > 0 && g_st_submit > 0) {
+                g_st_s_gap += g_st_entry - g_st_ret; g_st_s_prep += g_st_submit - g_st_entry; g_st_s_sub += g_st_back - g_st_submit; g_st_n++;
+                int64_t prev = g_st_entry;
+                for (int k = 0; k < 8; ++k) { if (g_st_m[k] >= prev) { g_st_ms[k] += g_st_m[k] - prev; prev = g_st_m[k]; } }
+            }
+            g_st_ret = t_c;
+            if (g_st_n == 256) {
+                LLAMA_LOG_WARN("decode host: between calls %.0f us, entry to graph handed over %.0f us, scheduler launch call %.0f us (a call)\n",
+                               g_st_s_gap / 256.0, g_st_s_prep / 256.0, g_st_s_sub / 256.0);
+                LLAMA_LOG_WARN("decode host sections (us a call): to process_ubatch %.0f, apply+kv tail %.0f, graph params+split %.0f, reuse/build %.0f, mirror fill %.0f, set_inputs %.0f, idx check %.0f, freeze+verify %.0f\n",
+                               g_st_ms[0] / 256.0, g_st_ms[1] / 256.0, g_st_ms[2] / 256.0, g_st_ms[3] / 256.0, g_st_ms[4] / 256.0, g_st_ms[5] / 256.0, g_st_ms[6] / 256.0, g_st_ms[7] / 256.0);
+                LLAMA_LOG_WARN("decode host pieces (us a call): %s %.0f, %s %.0f, %s %.0f, %s %.0f, %s %.0f, %s %.0f\n", g_st_pn[0], g_st_pu[0] / 256.0, g_st_pn[1], g_st_pu[1] / 256.0,
+                               g_st_pn[2], g_st_pu[2] / 256.0, g_st_pn[3], g_st_pu[3] / 256.0, g_st_pn[4], g_st_pu[4] / 256.0, g_st_pn[5], g_st_pu[5] / 256.0);
+                for (auto & v : g_st_pu) { v = 0; }
+                for (auto & v : g_st_ms) { v = 0; }
+                g_st_s_gap = g_st_s_prep = g_st_s_sub = g_st_n = 0;
+            }
+            if (++n % 256 == 0) {
+                LLAMA_LOG_WARN("step time: %lld calls, sync wait %.0f us, cache step %.0f us, decode() up to the wait %.0f us a call\n", (long long) n,
+                               (double) s_sync / 256, (double) s_step / 256, (double) s_out / 256);
+                s_sync = s_step = s_out = 0;
+            }
+        }
     }
 
     return 0;
@@ -5830,7 +6014,10 @@ ggml_status llama_context::graph_compute(
 
     copy_experts.reset();
 
+    static const bool st_on_g = getenv("LLAMA_STEP_TIME") != nullptr;
+    if (st_on_g && g_st_submit == 0) { g_st_submit = ggml_time_us(); }
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
+    if (st_on_g) { g_st_back = ggml_time_us(); }
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
     }

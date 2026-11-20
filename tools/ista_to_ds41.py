@@ -8,7 +8,7 @@ dead space of shard 1) change; every change is logged and can be undone:
   ista_to_ds41.py revert DIR   # restores every byte range and file name from the undo records
   ista_to_ds41.py dry    DIR   # prints the plan and the log, writes nothing
 
-What changes (ref: PR #30817 key/tensor names, Strata tools/dsv41/pack_gguf.py for the ISTA side):
+What changes (ref: PR #30817 key/tensor names):
  - shard 1: kv_source_layer_ids, index_source_layer_ids, attention.candidate_* -> attention.kv_source_layers,
    attention.indexer.source_layers, attention.indexer.candidate_*; the integer tensors engram_token_map/primes/offsets/
    multipliers become metadata ple.* / engram.token_map; engram gate (q*k, F32) written into the freed tensor bytes.

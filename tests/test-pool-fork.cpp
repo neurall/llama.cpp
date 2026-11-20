@@ -1149,13 +1149,13 @@ static void test_regress_room_graph_warmup() {
             if (use > room && oom_at < 0) { oom_at = (int64_t) i; }
             bool give;
             if (pol == 0) { for (auto & p : pend) { seen.push_back(p.cls); } pend.clear(); give = true; }
-            else          { give = poolx_room_after_call(pend, seen); }
+            else          { (void) poolx_room_after_call(pend, seen, { s.cls }); give = true; }   // a class not seen yet gets the whole area again at its next lend
             if (give) { room = (int64_t) poolx_room_give_back((size_t) room, (size_t) std::max<int64_t>(0, room - use), 0, (size_t) step); }
         }
         if (pol == 0) { report("old rule: the second decode token runs out (the regression)", oom_at == 3, fmt("first out-of-memory at call %lld", (long long) oom_at)); }
         else {
             report("new rule: no call runs out", oom_at < 0, fmt("first out-of-memory at call %lld", (long long) oom_at));
-            report("new rule: the room ends at CUDA's use in whole blocks, nothing kept beyond", room >= use && room - use < step && pend.empty(),
+            report("new rule: the room ends at CUDA's use in whole blocks, nothing kept beyond", room >= use && room - use < step,
                    fmt("room %lld MiB for a use of %lld", (long long) room, (long long) use));
         }
     }
@@ -1179,6 +1179,98 @@ static void test_regress_pool_buffer_limits() {
     report("CUDA (no limit): one buffer, ring on", !cu.split && cu.ring_ok, "");
 }
 
+static void test_regress_room_own_calls() {
+    printf("Testing [bug: Qwen3.8 on two cards, verify list 2026-11-19: every second request failed] a pending shape counts its own calls only:\n");
+    // The same CUDA use model as test_regress_room_graph_warmup (kernels at a shape's first call, its CUDA graphs at its second). Two requests: a 142-token
+    // prompt (class 256), its last 4 tokens (class 4), 7 decode tokens. The prompt shapes' second calls come with the next request. When every call counted for
+    // every pending class, both prompt shapes were seen after the first two decode tokens, the room went back to CUDA's use during the decode, and the
+    // next request's prompt captures found no room: in the engine the kernel-load guard tripped mid-prompt (15 MiB free) and the recurrent model's call failed.
+    const int64_t step = 8, room_max = 176, tables = 4;
+    struct shape { int64_t cls, kern, graphs; };
+    std::vector<shape> calls;
+    for (int r = 0; r < 2; ++r) {
+        calls.push_back({ 256, 8, 16 });
+        calls.push_back({ 4, 4, 16 });
+        for (int t = 0; t < 7; ++t) { calls.push_back({ 1, 2, 40 }); }
+    }
+    for (int pol = 0; pol < 2; ++pol) {   // 0: every call counts for every pending class (the bug), 1: poolx_room_after_call with the classes the call ran
+        std::vector<int64_t> seen; std::vector<poolx_room_lent> pend; std::map<int64_t, int> ran;
+        int64_t room = 8, oom_at = -1, use = tables;
+        for (size_t i = 0; i < calls.size(); ++i) {
+            const shape & s = calls[i];
+            if (std::find(seen.begin(), seen.end(), s.cls) == seen.end()) {
+                room = room_max;
+                bool in = false; for (auto & p : pend) { in = in || p.cls == s.cls; }
+                if (!in) { pend.push_back({ s.cls, 0 }); }
+            }
+            const int n = ++ran[s.cls];
+            use += (n == 1 ? s.kern : 0) + (n == 2 ? s.graphs : 0);
+            if (use > room && oom_at < 0) { oom_at = (int64_t) i; }
+            std::vector<int64_t> this_call = { s.cls };
+            if (pol == 0) { this_call.clear(); for (auto & p : pend) { this_call.push_back(p.cls); } }
+            const bool settled = poolx_room_after_call(pend, seen, this_call);
+            const bool give = pol == 0 ? settled : true;   // the old engine gave back only with nothing pending; now a class not seen yet gets the whole area at its lend
+            if (give) { room = (int64_t) poolx_room_give_back((size_t) room, (size_t) std::max<int64_t>(0, room - use), 0, (size_t) step); }
+        }
+        if (pol == 0) { report("every call counted for every pending class: the next request's prompt runs out (the regression)", oom_at == 9, fmt("first out-of-memory at call %lld", (long long) oom_at)); }
+        else {
+            report("a class counts its own calls: no call runs out", oom_at < 0, fmt("first out-of-memory at call %lld", (long long) oom_at));
+            report("a class counts its own calls: the room ends at CUDA's use once every shape has its CUDA graphs", room >= use && room - use < step && pend.empty(),
+                   fmt("room %lld MiB for a use of %lld", (long long) room, (long long) use));
+        }
+    }
+}
+static void test_regress_ring_cold_order() {
+    printf("Testing [Qwen3.8 IQ3_S one card 4k, 2026-11-20: the stream took 248 of the layers' top-10 decode experts] the cold order takes the coldest displaced expert first:\n");
+    // candidates as cs_plan builds them: tier 3 = a cached expert of a computed layer (rank: its decode score with --moe ring-cold, else next use), tier 5 = a claim
+    // over another class's bytes (rank: the hottest expert under them with ring-cold, else 1, so the cursor's order decides); 0 free, 2 the stream's own, 8 the layer computing
+    struct cand { int tier; double rk; const char * what; };
+    const std::vector<cand> c = { { 5, 900.0, "claim over a hot expert" }, { 3, 10.0, "cold cached expert" }, { 8, 0.0, "the layer still computing" },
+                                  { 5, 5.0, "claim over a cold expert" }, { 3, 800.0, "hot cached expert" }, { 2, 0.0, "own computed write" }, { 0, 0.0, "free" } };
+    auto order = [&](bool cold) {
+        std::vector<cand> v = c;
+        std::stable_sort(v.begin(), v.end(), [cold](const cand & x, const cand & y) { return poolx_ring_before(x.tier, x.rk, y.tier, y.rk, cold); });
+        std::string o;
+        for (const auto & x : v) { o += std::string(x.what) + "; "; }
+        return v;
+    };
+    const auto old_o = order(false), new_o = order(true);
+    // the old order: every claim before every cached expert, so the claim over the hot expert goes before the cold cached one (the regression)
+    size_t i_hot_claim = 0, i_cold_cached = 0;
+    for (size_t i = 0; i < old_o.size(); ++i) { if (old_o[i].tier == 5 && old_o[i].rk == 900.0) { i_hot_claim = i; } if (old_o[i].tier == 3 && old_o[i].rk == 10.0) { i_cold_cached = i; } }
+    report("old order: a claim over a hot expert goes before a cold cached expert (the regression)", i_hot_claim < i_cold_cached, "");
+    report("cold order: free, the stream's own write, then by decode score: cold claim, cold cached, hot cached, hot claim, then the layer computing",
+           new_o[0].tier == 0 && new_o[1].tier == 2 && new_o[2].rk == 5.0 && new_o[3].rk == 10.0 && new_o[4].rk == 800.0 && new_o[5].rk == 900.0 && new_o[6].tier == 8, "");
+    // a run (one copy per tensor) over blocks of rank 0-2 only in the cold order: a run over cached experts would take them by position again
+    const std::vector<int8_t> rk = { 4, 4, 4, 4, 3, 3, 3, 3, 0, 2, -1, 1, 2, 2 };
+    report("old run: four claims over other classes' experts in a row from the cursor (rank 3, whatever their heat)", poolx_ring_window(rk, 0, 4, false) == 4, "");
+    report("cold run: no run over cached experts, one over free, empty and own blocks", poolx_ring_window(rk, 0, 4, true) == -1 && poolx_ring_window(rk, 0, 3, true) == 11, "");
+    // what a block loses: only an expert the cache held before the pass; free, empty and the stream's own writes (tier 2, tier 8 streamed this pass) nothing
+    report("lost value: free, empty, own computed write, own write of the layer computing: 0; cached before the pass: its score",
+           poolx_ring_lost(0, false, 7.0) == 0.0 && poolx_ring_lost(1, false, 7.0) == 0.0 && poolx_ring_lost(2, true, 7.0) == 0.0 && poolx_ring_lost(8, true, 7.0) == 0.0 &&
+           poolx_ring_lost(8, false, 7.0) == 7.0 && poolx_ring_lost(3, false, 7.0) == 7.0 && poolx_ring_lost(4, false, 7.0) == 7.0, "");
+    // the look-ahead: an entry beyond the one needed now and the card's next (cheap) took computed layers' cached experts; level 2 leaves them to the two
+    report("levels 0 and 1: an entry planned ahead takes a cached expert with decode value (the regression)", poolx_ring_cold_ok(0, true, 800.0) && poolx_ring_cold_ok(1, true, 800.0), "");
+    report("level 2: an entry planned ahead takes only blocks that lose nothing; the entries needed now and next take the coldest",
+           !poolx_ring_cold_ok(2, true, 800.0) && !poolx_ring_cold_ok(2, true, 1e-9) && poolx_ring_cold_ok(2, true, 0.0) && poolx_ring_cold_ok(2, false, 800.0), "");
+    // --moe cs-tail: the upload area's blocks first, never the last queued entry's (its compute may still read them) nor a layer's to come
+    report("tail first: free, empty, own computed, cached computed, a claim; not the layer computing, a layer to come, a claim over one",
+           poolx_tail_first(0) && poolx_tail_first(1) && poolx_tail_first(2) && poolx_tail_first(3) && poolx_tail_first(5) &&
+           !poolx_tail_first(8) && !poolx_tail_first(4) && !poolx_tail_first(6) && !poolx_tail_first(7), "");
+    report("tail order: a tail block before a free block elsewhere, the rest as before",
+           poolx_ring_before_tail(true, 3, 800.0, false, 0, 0.0, true) && !poolx_ring_before_tail(false, 0, 0.0, true, 3, 800.0, true) &&
+           poolx_ring_before_tail(false, 0, 0.0, false, 3, 5.0, true) == poolx_ring_before(0, 0.0, 3, 5.0, true), "");
+    // the moves: hottest into coldest while hotter; free/empty (-1) take anything ("don't drop anything" while there are gaps)
+    {
+        const std::vector<double> mv = { 5.0, 900.0, 0.0, 40.0 }, ds = { 30.0, -1.0, 2000.0, 1.0 };
+        const auto pr = poolx_tail_moves(mv, ds);
+        report("moves: 900 into the free block, 40 into the 1.0, 5 into the 30.0 refused (colder), 0 stays", pr.size() == 2 &&
+               pr[0].first == 1 && pr[0].second == 1 && pr[1].first == 3 && pr[1].second == 3, "");
+        const auto pf = poolx_tail_moves(std::vector<double>{ 0.0, 0.0, 3.0 }, std::vector<double>{ -1.0, -1.0, -1.0, -1.0 });
+        report("moves: with gaps every mover goes, even a never-used one", pf.size() == 3, "");
+        report("moves: no destination, nothing moves", poolx_tail_moves(mv, std::vector<double>{}).empty(), "");
+    }
+}
 static void test_regress_room_give_back_chunks() {
     printf("Testing [bug: a block given back with a chunk the driver could not back, Qwen3.8 IQ4_XS room_graphs_clear 2026-11-16] the room's give-back in whole chunks:\n");
     // blocks of 2.24 MiB, chunks of 2 MiB; the room's first unmapped byte 1000 bytes above its first block: giving that block back needs two chunks. The log:
@@ -1242,6 +1334,8 @@ int main(int argc, char ** argv) {
     test_regress_pool_start_pins();
     test_regress_room_shadow_tags();
     test_regress_room_graph_warmup();
+    test_regress_room_own_calls();
+    test_regress_ring_cold_order();
     test_regress_room_give_back_chunks();
     test_regress_pool_buffer_limits();
     if (n_failed > 0) {

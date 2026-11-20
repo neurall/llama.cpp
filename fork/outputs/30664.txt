@@ -1,0 +1,30 @@
+run 30664 | rel_vk_exit_nodriver | pf14k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 27.64 t/s | prompt 1122.0 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 -lm pin | power 200+200 W | 2026-11-18 05:20:45
+
+<think>
+We need answer user's request: "Do a code review of the following source file." They pasted two files? Actually starts // file: common/json-schema-to-grammar.cpp then later // file: common/arg.cpp. They say source file singular but includes two files concatenated. Need review. Need likely provide findings, issues, suggestions. Need analyze code. Need maybe mention it's llama.cpp common code? Need review both files? Since includes two files, review both. Need be thorough. Need identify bugs, style, performance, security, correctness. Need maybe not run code. Need produce final with structured review.
+
+Need inspect code carefully.
+
+File 1: json-schema-to-grammar.cpp.
+
+Includes: json-schema-to-grammar.h, common.h, trie.h, unicode.h. using json = common_json.
+
+build_repetition:
+- max_items int, min_items int. has_max = max_items != INT_MAX.
+- if max_items == 0 return ""; if min_items ==0 && max_items==1 return item_rule + "?".
+- if separator empty: if min=1 && !has_max return +; if min=0 && !has_max return *; return {min,max}.
+Potential issue: if min_items > max_items? Not validated. Could produce invalid grammar. If max_items < min_items? Should handle.
+- separator case: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?".
+Potential issue: if max_items == 0 handled. If max_items == 1 and min_items ==0? separator case: has_max true, build_repetition(..., 0, 0) returns ""? Let's see: max_items=0 returns "" for inner. result = item_rule + " " + "" => trailing space. Then if min=0 wrap. Could be invalid. But max_items=1 min=0 earlier returns item_rule + "?" before separator? Yes if min=0 max=1 returns item_rule + "?" regardless separator. Good.
+If min=1 max=1: inner min=0 max=0 returns ""? build_repetition with max=0 returns ""; result item_rule + " " trailing. Could be invalid. But min=1 max=1 not caught? if min=0 max=1 only. For separator, min=1 max=1 should just item_rule. Current: has_max true, inner min=0 max=0 returns "", result item_rule + " ". invalid. Need fix.
+If min=0 max=2: inner min=0 max=1 returns inner + "?"; result item_rule + " " + inner? OK.
+If min=2 max=2: inner min=1 max=1? build_repetition with min=1 max=1 returns item_rule + "{1,1}"? Actually if min=1 max=1 and separator empty: not min=1 !has_max, not min=0 !has_max, returns {1,1}. OK.
+Potential issue: max_items = INT_MAX, has_max false, inner max_items = max_items (not max-1) for unbounded. OK.
+Potential issue: separator_rule may contain spaces? It's passed "\",\" space". OK.
+
+build_min_max_int:
+Recursive function to generate grammar for integer range.
+- has_min = min_value != INT64_MIN; has_max = max_value != INT64_MAX.
+- digit_range lambda.
+- more_digits lambda: out << "[0-9]"; if min_digits == max_digits && min_digits == 1 return; out << "{"; out << min_digits; if max_digits != min_digits { out << ","; if max_digits != INT_MAX out << max_digits; } out << "}".
+Potential issue: if min_digits > max_digits? Could happen? less_decimals = max(decimals_left-1,1). more_digits(0, decimals_left-1) if decimals_left=1 => more_digits(0,0) outputs [0-9]{0,0}? Let's check: min_digits=0 max_digits=0, not (== && ==1), out << "{" << 0; if max_digits != min_digits false; out << "}" => [0-9]{0,0}. Is that valid? Maybe grammar repetition {0,0} may be allowed? Could be weird. In has_min min_value=0 top_level: more_digits(0, less_decimals) where less_decimals=max(15,1)=15 if decimals_left=16. OK. In min_value <=9: more_digits(0, less_decimals) OK. In has_max max_value

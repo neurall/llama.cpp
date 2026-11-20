@@ -1,0 +1,3 @@
+run 30615 | upload_wait_tuned_first | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 18.24 t/s | prompt 758.5 t/s | 16 tokens | args: -np 1 | power 200+200 W | 2026-11-18 03:21:38
+
+<think>The user wants me to do a code review of two source files: `

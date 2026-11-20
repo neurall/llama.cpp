@@ -12,6 +12,7 @@
 #include "binary-ops.h"
 #include "vec.h"
 #include "ops.h"
+#include "ggml-bell-fork.h"
 #include "ggml.h"
 #include "common.h"
 #include "tiled/tiled.h"
@@ -1880,6 +1881,21 @@ static void ggml_compute_forward_mul_mat_id_impl(
 // so uploads can be timed around them
 static atomic_int g_moe_cpu_active;
 
+// A MoE cache product (src[3]: the host table, op_params[0]: the table's value for an expert that is not on a card) has host work when one of its picks is such
+// an expert. Every pick cached, skipped or negative (fully cached layers, empty deferred runs): nothing to compute, the op only zeroes its output.
+static bool ggml_moe_host_work(const struct ggml_tensor * dst) {
+    const struct ggml_tensor * ids = dst->src[2];
+    const int32_t * tbl   = (const int32_t *) dst->src[3]->data;
+    const int32_t   dummy = ggml_get_op_params_i32(dst, 0);
+    for (int64_t t = 0; t < ids->ne[1]; ++t) {
+        for (int64_t i = 0; i < ids->ne[0]; ++i) {
+            const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
+            if (e >= 0 && tbl[e] == dummy) { return true; }
+        }
+    }
+    return false;
+}
+
 static void ggml_compute_forward_mul_mat_id(
         const struct ggml_compute_params * params,
               struct ggml_tensor * dst) {
@@ -1895,18 +1911,7 @@ static void ggml_compute_forward_mul_mat_id(
     // nothing on the host (every id cached, skipped or negative: fully cached layers, empty deferred runs): each thread
     // zeroes its slice and returns, without quantizing src1 or the op's barriers (the graph barrier follows anyway);
     // the router observation still happens
-    bool host_work = false;
-    {
-        const struct ggml_tensor * ids = dst->src[2];
-        const int32_t * tbl   = (const int32_t *) dst->src[3]->data;
-        const int32_t   dummy = ggml_get_op_params_i32(dst, 0);
-        for (int64_t t = 0; t < ids->ne[1] && !host_work; ++t) {
-            for (int64_t i = 0; i < ids->ne[0] && !host_work; ++i) {
-                const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
-                host_work = e >= 0 && tbl[e] == dummy;
-            }
-        }
-    }
+    const bool host_work = ggml_moe_host_work(dst);
     if (!host_work && ggml_is_contiguous(dst)) {
         const size_t n = ggml_nbytes(dst), a = n*params->ith/params->nth, b = n*(params->ith + 1)/params->nth;
         memset((char *) dst->data + a, 0, b - a);
@@ -1923,6 +1928,20 @@ static void ggml_compute_forward_mul_mat_id(
     if (cb && atomic_fetch_add(&g_moe_cpu_active, -1) == 1) { // fetch_add(-1): MSVC has only the add shim
         cb(0, 0, ud);
     }
+}
+
+// fork: the decode bell on the CPU backend: the card's two steps as the header gives them (the reference of the backends' kernels)
+static void ggml_compute_forward_moe_bell(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
+    if (params->ith != 0) { return; }
+    struct ggml_bell * b; memcpy(&b, dst->op_params, sizeof(b));
+    GGML_ASSERT(b->n_used == dst->ne[0] && b->n_embd == dst->src[2]->ne[0]);
+    ggml_bell_publish(b, (const int32_t *) dst->src[0]->data, (const int32_t *) dst->src[1]->data, (const float *) dst->src[2]->data, (int32_t *) dst->data);
+}
+
+static void ggml_compute_forward_moe_rows(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
+    if (params->ith != 0) { return; }
+    struct ggml_bell * b; memcpy(&b, dst->op_params, sizeof(b));
+    ggml_bell_rows_take(b, (float *) dst->data);
 }
 
 /////////////////////////////////
@@ -2299,6 +2318,14 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_top_k_mask(params, tensor);
             } break;
+        case GGML_OP_MOE_BELL:
+            {
+                ggml_compute_forward_moe_bell(params, tensor);
+            } break;
+        case GGML_OP_MOE_ROWS:
+            {
+                ggml_compute_forward_moe_rows(params, tensor);
+            } break;
         case GGML_OP_MAP_CUSTOM1:
             {
                 ggml_compute_forward_map_custom1(params, tensor);
@@ -2453,6 +2480,11 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_CPY:
         case GGML_OP_DUP:
         case GGML_OP_CONT:
+            {
+                // fork: a small copy is over before a thread team has started. A decode layer of the MoE cache copies its 10 picks and its input (2560 floats) to
+                // the host, and that step asked for the whole team (tests/test-cpuplan-fork.cpp)
+                n_tasks = ggml_nbytes(node) <= 64*1024 ? 1 : n_threads;
+            } break;
         case GGML_OP_ADD:
         case GGML_OP_ADD_ID:
         case GGML_OP_ADD1:
@@ -2485,6 +2517,11 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_TOP_K_MASK:
             {
                 n_tasks = n_threads;
+            } break;
+        case GGML_OP_MOE_BELL:
+        case GGML_OP_MOE_ROWS:
+            {
+                n_tasks = 1;
             } break;
         case GGML_OP_REPEAT:
         case GGML_OP_REPEAT_BACK:
@@ -3159,6 +3196,13 @@ void ggml_cpu_tune_vec_dot(enum ggml_type type) {
 void ggml_cpu_tune_vec_dot(enum ggml_type type) { (void) type; }
 #endif
 
+// a dot product from outside this library for a type: every later multiply of the type runs it, in a graph of this backend too. libllama's AVX2 kernels
+// (src/llama-belldots-avx2-fork.cpp) come this way once its own timing on real weight rows picked one and its sums matched the dot it replaces. A timing
+// above that runs later takes it as the default and keeps it unless a form of this library is 5% quicker.
+void ggml_cpu_set_vec_dot(enum ggml_type type, ggml_vec_dot_t f) {
+    if (type >= 0 && type < GGML_TYPE_COUNT && f) { type_traits_cpu[type].vec_dot = f; }
+}
+
 struct ggml_cplan ggml_graph_plan(
           const struct ggml_cgraph * cgraph,
                                int   n_threads,
@@ -3187,6 +3231,7 @@ struct ggml_cplan ggml_graph_plan(
     memset(&cplan, 0, sizeof(struct ggml_cplan));
 
     int max_tasks = 1;
+    bool moe_chain = false, moe_idle = true;
 
     // thread scheduling for the different operations + work buffer size estimation
     for (int i = 0; i < cgraph->n_nodes; i++) {
@@ -3195,6 +3240,17 @@ struct ggml_cplan ggml_graph_plan(
         const int n_tasks = ggml_get_n_tasks(node, n_threads);
 
         max_tasks = MAX(max_tasks, n_tasks);
+
+        // fork: the host chain of a MoE cache layer (see below the loop)
+        if (node->op == GGML_OP_MUL_MAT_ID && node->src[3]) {
+            const struct ggml_tensor * ids = node->src[2]->view_src ? node->src[2]->view_src : node->src[2];
+            bool known = true;   // the picks are an input of this graph, so they are final now
+            for (int j = 0; j < cgraph->n_nodes && known; j++) { known = cgraph->nodes[j] != ids && cgraph->nodes[j] != node->src[2]; }
+            moe_chain = true;
+            moe_idle  = moe_idle && known && !ggml_moe_host_work(node);
+        } else if (n_tasks > 1 && ggml_nelements(node) > 65536) {
+            moe_idle = false;   // something else in the graph that wants its threads
+        }
 
         if ((node->op == GGML_OP_MUL_MAT || node->op == GGML_OP_MUL_MAT_ID) && node->src[0] && ggml_is_quantized(node->src[0]->type)) {
             ggml_cpu_tune_vec_dot(node->src[0]->type);   // the first time a quant type is multiplied: pick the faster form of its dot product
@@ -3404,6 +3460,13 @@ struct ggml_cplan ggml_graph_plan(
 
     if (work_size > 0) {
         work_size += CACHE_LINE_SIZE*(n_threads);
+    }
+
+    // fork: a host chain of the MoE cache whose picks are all on a card computes nothing: its products zero their outputs and the small ops around them run over
+    // zeros. One thread does that sooner than a team starts: a decode token has 48 such chains and most of them are idle (Qwen3.8 IQ3_S, 96.8% of the picks
+    // cached: about 15 of 480 picks a token on the host). A chain with an expert to compute keeps the team (tests/test-cpuplan-fork.cpp)
+    if (moe_chain && moe_idle) {
+        max_tasks = 1;
     }
 
     cplan.threadpool = threadpool;

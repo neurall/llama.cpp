@@ -271,6 +271,10 @@ int main() {
             // MiMo V2.6 12k/1k measured at fixed counts (2026-11-15, search off, tokens 200-999 of both runs): 16 threads 26.8 ms a token, 24 25.6, 31 25.8. 16 is 4.7%
             // slower, inside 5%, so this shape asks for 2%
             { "flat top at 24-31, 16 4.7% slower (MiMo measured), GPUs",   23.2, [](int n) { return 57.6 / n + 0.1 * std::max(0, n - 24); }, true, 1.02, 32 },
+            // the walk's neighbour checks (thread_plan; the old search settled 32 on 3 servers, 40 on one, 48 on two): a best between the start and its half, and one above the start
+            { "best at 24: 32 is 6% slower, 16 13%, GPUs",                 20.0, [](int n) { return 4.0 + (n > 24 ? 0.19 * (n - 24) : 0.38 * (24 - n)); }, true, 1.03, 32 },
+            { "best at 24, 16 as fast as 32 (6% slower), GPUs",            20.0, [](int n) { return 4.0 + 0.19 * std::abs(n - 24); }, true, 1.03, 32 },
+            { "compute-bound, SMT helps, best at 64, GPUs (start 32)",     20.0, [](int n) { return 400.0 / (std::min(n, 32) + 0.45 * std::max(0, n - 32)); }, true, 1.05, 32 },
         };
         for (const shape & sh : shapes) {
             double best = 1e30; int nbest = 0;
@@ -278,9 +282,10 @@ int main() {
             int good = 0, low = 0, high = 0, over12 = 0; double searched = 0.0, cost = 0.0;
             for (int seed = 1; seed <= 200; ++seed) {
                 std::mt19937 rng(seed); std::normal_distribution<double> g(0.0, 1.0); std::uniform_real_distribution<double> u01(0.0, 1.0);
-                thread_search ts; ts.start(sh.start);
+                thread_plan pl; pl.start(sh.start, 64);
+                thread_search ts; ts.start(pl.b, pl.cand());
                 for (int a = 0; a < 30; ++a) {
-                    if (ts.settled() && ts.won) { ts.start(ts.b); } else { ts.resume(); }   // the engine at an answer's first token
+                    if (ts.settled()) { if (!pl.settled()) { ts.start(pl.b, pl.cand()); } } else { ts.resume(); }   // the engine at an answer's first token
                     int in_search = 0;
                     for (int i = 0; i < 100; ++i) {
                         in_search += ts.sampling() ? 1 : 0;
@@ -290,11 +295,11 @@ int main() {
                         double t = (sh.base + 0.012 * up) * (1.0 + 0.05 * std::exp(-i / 40.0)) + sh.cpu(n) * (0.5 + 0.5 * x / 180.0);
                         t *= std::exp(0.04 * g(rng)) * (u01(rng) < 1.0 / 30.0 ? 1.25 : 1.0);
                         cost += (sh.base + sh.cpu(n)) / best;
-                        if (sh.cache) { ts.feed(t, x, up); } else { ts.feed(t); }
+                        if (sh.cache ? ts.feed(t, x, up) : ts.feed(t)) { pl.step(ts.won); }
                     }
                     searched += in_search; over12 += in_search > 12 ? 1 : 0;
                 }
-                const double r = (sh.base + sh.cpu(ts.b)) / best;
+                const double r = (sh.base + sh.cpu(pl.b)) / best;
                 if (r <= sh.tol) { ++good; } else if (ts.b < nbest) { ++low; } else { ++high; }
             }
             printf("thread search, %s: %d of 200 within %.0f%% of the best %d (off: %d too low, %d too high); %.1f tokens searched an answer, the counts used %.2f%% over the best\n",
@@ -302,6 +307,37 @@ int main() {
             check("thread search: within the shape's tolerance of the best count's time in 95% of the seeds", good >= 190);
             check("thread search: no answer spends more than 12 tokens searching", over12 == 0);
         }
+    }
+
+    {   // the walk's plan alone: which count is tried next
+        thread_plan p; p.start(32, 64);
+        check("thread plan: the half first", p.cand() == 16 && p.ph == 'h');
+        p.step(false);
+        check("thread plan: the half lost: the count between", p.cand() == 24 && p.ph == 'q');
+        p.step(false);
+        check("thread plan: that lost too and the walk never went down: 3/2 of the count", p.cand() == 48 && p.ph == 'u');
+        p.step(true);
+        check("thread plan: above won: all the threads next", p.b == 48 && p.cand() == 64 && p.ph == 'a');
+        p.step(false);
+        check("thread plan: settled on the last winner", p.settled() && p.b == 48);
+        thread_plan q; q.start(32, 64); q.step(true);
+        check("thread plan: the half won: its own half next", q.b == 16 && q.cand() == 8 && q.ph == 'h');
+        q.step(false);
+        check("thread plan: its half lost: the count between", q.cand() == 12 && q.ph == 'q');
+        q.step(false);
+        check("thread plan: then the count never tried, between it and the count it beat", q.cand() == 24 && q.ph == 'u');
+        q.step(true);
+        check("thread plan: that won: settled there, nothing at or above the count that lost", q.settled() && q.b == 24);
+        thread_plan q2; q2.start(32, 64); q2.step(false); q2.step(true);
+        check("thread plan: the count between won at once: the walk ends there", q2.settled() && q2.b == 24);
+        thread_plan r; r.start(64, 64); r.step(false); r.step(false);
+        check("thread plan: a start on all the threads has nothing above", r.settled() && r.b == 64);
+        thread_plan o; o.start(1, 64);
+        check("thread plan: one thread has no half and no count between: straight to the count above", o.ph == 'u' && o.cand() == 2);
+        thread_plan st; st.resume(16, 64, 'q', 32);
+        check("thread plan: a stored walk goes on at its phase, under the start it came down from", st.cand() == 12 && st.ph == 'q' && st.hi == 32);
+        st.step(false); st.step(false);
+        check("thread plan: a stored walk that came down ends under its start", st.settled() && st.b == 16);
     }
 
     // the drift watch beside the settled thread search (drift_watch). MiMo's decode after a 60k prompt runs in phases of about 320 tokens with and without expert uploads

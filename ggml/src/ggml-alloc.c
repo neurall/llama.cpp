@@ -526,7 +526,77 @@ struct ggml_gallocr {
     // fork: ggml_gallocr_get_graph_peak's answer per buffer for the plan in node_allocs and leaf_allocs (SIZE_MAX: not computed since the last reserve).
     // The expert cache asks before every graph: 0.17 ms per decode token over a 2,500-node plan that had not changed (Qwen3.8, perf record).
     size_t * peak; // [n_buffers]
+
+    // fork: frees held back (ggml_gallocr_set_spread_fork): a tensor's bytes go back to the allocator `spread` nodes after the node that read it last
+    struct galloc_held * held;
+    int n_held, held_head, held_cap;
+    int spread;    // the window of the graph being planned, in nodes (0: bytes go back at once, as stock)
+    int node_i;    // the node being planned
 };
+
+// fork: a decode graph runs on several streams of a card at once (ggml-streams-fork.h), and two launches that touch the same memory keep their graph
+// order whether or not one needs the other's result. Stock hands a freed buffer to the next node that fits, so independent branches of a layer came to
+// share memory and waited for each other (plan dump 2026-11-19, Qwen3.8: the delta net's beta projection behind alpha's add, the shared expert's down
+// projection behind an HC product). A backend that runs a graph that way says over how many nodes its streams stay apart (n_nodes: launches further
+// apart are joined in between) and which graphs it takes (every node within max_node_bytes). In such a graph, on device buffers, a freed tensor's bytes
+// go back n_nodes later, and only when the plan then still fits the memory the buffers have (never a bigger buffer for it; a size estimate plans as
+// stock). GGML_GALLOC_SPREAD=0 turns it off.
+struct galloc_held { struct ggml_dyn_tallocr * alloc; struct buffer_address addr; size_t size; int at; };
+static int    g_galloc_spread_nodes = 0;
+static size_t g_galloc_spread_bytes = 0;
+static bool   g_galloc_spread_host  = false;   // host buffers too (tests)
+GGML_API void ggml_gallocr_set_spread_fork(int n_nodes, size_t max_node_bytes, bool host_too);
+void ggml_gallocr_set_spread_fork(int n_nodes, size_t max_node_bytes, bool host_too) {
+    const char * e = getenv("GGML_GALLOC_SPREAD");
+    if (e != NULL && atoi(e) == 0) {
+        return;
+    }
+    g_galloc_spread_nodes = n_nodes;
+    g_galloc_spread_bytes = max_node_bytes;
+    g_galloc_spread_host  = host_too;
+}
+static int ggml_gallocr_spread_for(const struct ggml_cgraph * graph) {
+    if (g_galloc_spread_nodes <= 0 || graph->n_nodes < 32) {
+        return 0;
+    }
+    for (int i = 0; i < graph->n_nodes; i++) {
+        const struct ggml_tensor * t = graph->nodes[i];
+        if (t->view_src == NULL && ggml_nbytes(t) > g_galloc_spread_bytes) {
+            return 0;
+        }
+    }
+    return g_galloc_spread_nodes;
+}
+// the bytes freed at node `upto` or before go back to their allocators
+static void ggml_gallocr_held_release(ggml_gallocr_t galloc, int upto) {
+    while (galloc->held_head < galloc->n_held && galloc->held[galloc->held_head].at <= upto) {
+        const struct galloc_held * h = &galloc->held[galloc->held_head++];
+        ggml_dyn_tallocr_free_bytes(h->alloc, h->addr, h->size);
+    }
+}
+// does the plan in the allocators fit the memory the device buffers have now?
+static bool ggml_gallocr_plan_fits(ggml_gallocr_t galloc) {
+    for (int i = 0; i < galloc->n_buffers; i++) {
+        if (!g_galloc_spread_host && ggml_backend_buft_is_host(galloc->bufts[i])) {
+            continue;   // planned as stock: whatever it needs, it needed before
+        }
+        struct ggml_dyn_tallocr * a = galloc->buf_tallocs[i];
+        size_t sum = 0;
+        for (int c = 0; c < a->n_chunks; c++) {
+            sum += ggml_dyn_tallocr_max_size(a, c);
+        }
+        if (galloc->ext_buf[i] != NULL) {
+            if (a->n_chunks > 1 || sum > galloc->ext_cap[i]) { return false; }
+        } else if (galloc->buffers[i] == NULL) {
+            if (sum > 0) { return false; }
+        } else {
+            for (int c = 0; c < a->n_chunks; c++) {
+                if (ggml_dyn_tallocr_max_size(a, c) > ggml_vbuffer_chunk_size(galloc->buffers[i], c)) { return false; }
+            }
+        }
+    }
+    return true;
+}
 
 ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs) {
     ggml_gallocr_t galloc = (ggml_gallocr_t)calloc(1, sizeof(struct ggml_gallocr));
@@ -648,6 +718,7 @@ void ggml_gallocr_free(ggml_gallocr_t galloc) {
     }
 
     free(galloc->peak);
+    free(galloc->held);
 
     for (int i = 0; i < galloc->n_buffers; i++) {
         if (galloc->buffers != NULL) {
@@ -820,7 +891,16 @@ static void ggml_gallocr_free_node(ggml_gallocr_t galloc, struct ggml_tensor * n
     remove_allocated_tensor(alloc, hn->addr, node);
 #endif
 
-    ggml_dyn_tallocr_free_bytes(alloc, hn->addr, size);
+    if (galloc->spread > 0 && (g_galloc_spread_host || !ggml_backend_buft_is_host(buft))) {
+        if (galloc->n_held == galloc->held_cap) {
+            galloc->held_cap = galloc->held_cap ? 2 * galloc->held_cap : 1024;
+            galloc->held = realloc(galloc->held, sizeof(struct galloc_held) * (size_t) galloc->held_cap);
+            GGML_ASSERT(galloc->held != NULL);
+        }
+        galloc->held[galloc->n_held++] = (struct galloc_held) { alloc, hn->addr, size, galloc->node_i };
+    } else {
+        ggml_dyn_tallocr_free_bytes(alloc, hn->addr, size);
+    }
     hn->allocated = false;
 }
 
@@ -832,6 +912,8 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
     // clear hash tables
     ggml_hash_set_reset(&galloc->hash_set);
     memset(galloc->hash_values, 0, sizeof(struct hash_node) * galloc->hash_set.size);
+    galloc->n_held = galloc->held_head = 0;   // fork: see ggml_gallocr_set_spread_fork
+    galloc->node_i = -1;
 
     // allocate leafs
     // these may be tensors that the application is not using in the graph, but may still want to allocate for other purposes
@@ -877,6 +959,8 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
     for (int i = 0; i < graph->n_nodes; i++) {
         struct ggml_tensor * node = graph->nodes[i];
         int buffer_id = get_node_buffer_id(node_buffer_ids, i);
+        galloc->node_i = i;
+        if (galloc->spread > 0) { ggml_gallocr_held_release(galloc, i - galloc->spread); }   // fork: see ggml_gallocr_set_spread_fork
 
         // allocate parents (only leafs need to be allocated at this point)
         for (int j = 0; j < GGML_MAX_SRC; j++) {
@@ -933,6 +1017,8 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
             AT_PRINTF("\n");
         }
     }
+
+    ggml_gallocr_held_release(galloc, INT_MAX);   // fork: the allocators hold again what stock would hold here
 
     // fork: what is still allocated at the graph's end, always on (one pass over the nodes, at a re-plan only): a tensor no node reads is computed for nothing and
     // never freed, a view no node reads keeps its source to the end. The pass-size probe of 2026-11-14 reserved 58 GiB on CUDA0 for a 7-8 GiB graph that way and
@@ -1005,7 +1091,16 @@ static bool ggml_gallocr_reserve_n_impl(
     }
 
     // allocate in hash table
+    galloc->spread = no_alloc ? 0 : ggml_gallocr_spread_for(graph);   // fork: see ggml_gallocr_set_spread_fork
     ggml_gallocr_alloc_graph_impl(galloc, graph, node_buffer_ids, leaf_buffer_ids);
+    if (galloc->spread > 0 && !ggml_gallocr_plan_fits(galloc)) {   // not within the memory at hand: the plan as stock makes it
+        galloc->spread = 0;
+        for (int i = 0; i < galloc->n_buffers; i++) {
+            ggml_dyn_tallocr_reset(galloc->buf_tallocs[i]);
+        }
+        ggml_gallocr_alloc_graph_impl(galloc, graph, node_buffer_ids, leaf_buffer_ids);
+    }
+    galloc->spread = 0;
 
     // set the node_allocs from the hash table
     if (galloc->n_nodes < graph->n_nodes) {

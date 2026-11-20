@@ -1,0 +1,14 @@
+name,model,n,test,tokens,args,extra
+tc-q3-4k,qwen38,2,pf12k1k,512,,--env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+tc-q3-4k-bs,qwen38,2,pf12k1k,512,"-bs",--env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+tc-q3-4k-strata,qwen38,2,pf12k1k,512,,--env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --env STRATA_ROUTE_TAIL_SKIP=0
+tc-q3-14k,qwen38,2,pf14k1k,1024,,
+tc-q3-14k-bs,qwen38,2,pf14k1k,1024,"-bs",
+tc-q3-14k-strata,qwen38,2,pf14k1k,1024,,--env STRATA_ROUTE_TAIL_SKIP=0
+tc-q3-4k-bs-stg1,qwen38,2,pf12k1k,512,"-bs --moe staging=1",--env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+tc-q3-14k-bs-stg1,qwen38,2,pf14k1k,1024,"-bs --moe staging=1",
+tc-q3-14k-bs-rc,qwen38,2,pf14k1k,1024,"-bs --moe ring-cold=1",
+tc-q3-14k-bs-rc2,qwen38,2,pf14k1k,1024,"-bs --moe ring-cold=2",
+tc-q3-14k-bs-tail,qwen38,2,pf14k1k,1024,"-bs --moe ring-cold=2,cs-tail=1",
+tc-qni4-12k-strata,qn_iq4xs,2,pf12k1k,1024,,--env STRATA_ROUTE_TAIL_SKIP=0
+tc-q3-14k-bs-rc0,qwen38,2,pf14k1k,1024,"-bs --moe ring-cold=0",

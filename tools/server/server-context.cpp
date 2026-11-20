@@ -17,6 +17,7 @@
 #include "fit.h"
 #include "llama.h"
 #include "llama-fork-hooks.h"
+#include "../../src/llama-passplan-fork.h"   // ppx_cut_last: the checkpoint cut (pure, tests/test-pass-fork.cpp)
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
@@ -4904,12 +4905,13 @@ private:
                     int n_pass_plan = 0;
                     if (do_checkpoint) {
                         const int n_total = slot.task->n_tokens(), n_left = n_total - slot.prompt.n_tokens() - 4;
-                        n_pass_plan = n_left > 0 ? llama_moe_request_pass_fork(n_left, n_total, n_ubatch) : 0;
-                        // the cut on a multiple of 256 cells where one pass still holds the longer rest (the KV and its mask are laid out in 256-cell pads, see above)
-                        if (const int r = n_pass_plan > 0 && n_pass_plan < n_left ? (n_total - 4 - n_pass_plan) % 256 : 0;
-                            r > 0 && llama_moe_request_pass_fork(n_pass_plan + r, n_total, n_ubatch) == n_pass_plan + r) {
-                            n_pass_plan += r;
-                        }
+                        // the cut on a multiple of 256 cells (the KV and its mask are laid out in 256-cell pads, see above), the last pass never longer than the
+                        // equal ones where the passes before it can take the pad (ppx_cut_last); the first call of a request picks its plan, later ones keep it
+                        auto passes = [&](uint32_t m) -> uint32_t {
+                            const int32_t p = llama_moe_request_pass_fork((int32_t) m, n_total, n_ubatch);
+                            return p > 0 ? (m + (uint32_t) p - 1) / (uint32_t) p : 0;
+                        };
+                        n_pass_plan = n_left > 0 ? (int) ppx_cut_last((uint32_t) n_left, (uint32_t) (n_total - 4), 256, passes) : 0;
                     }
                     // add prompt tokens for processing in the current batch
                     while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < batch_cap) {

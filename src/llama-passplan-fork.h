@@ -70,6 +70,34 @@ static inline size_t ppx_ring_reserve(size_t unit_max_b, size_t unit_com_b, size
 // is cut only as far as an entry asks (llama-graph.cpp): half a layer at 2 chunks is one entry.
 static inline int ppx_extra_entries(int chunks, double share) { return std::max(1, (int) std::ceil(share * (double) chunks - 1e-9)) - 1; }
 
+// The server's checkpoint cut (llama_moe_request_pass_fork): n tokens are left before the request's 4-token tail and their passes end at `end` cells. The last of
+// their equal passes is cut off as its own call (the checkpoint lands before it); this is its size, with the cut on a multiple of `align` cells (the KV and its mask
+// are laid out in pads of that many cells). passes(m): the equal passes m tokens take under the pools' cap at the request's last cells, 0 = no plan.
+// The cut moves up to the next pad first: the last pass gets shorter and the passes before it a little longer, as long as they need no further pass (they run at
+// fewer cells, so they hold at least what the last one holds). Only where that costs a pass does it move down (a longer last pass, if one pass still holds it).
+// The last pass runs at the most cells, where the cap measured after the first passes can be lower than the estimate the plan was made with: Kimi K3.1, 12558
+// tokens, cap estimated 4416, measured 4160: the old rule made the last pass 4366 (the cut down to 8192), it ran as 2048 + 2318, four passes where three fit, every
+// pass streaming the experts from the SSD again (2026-11-20). Returns 0 when there is no plan.
+template <class Passes>
+static inline uint32_t ppx_cut_last(uint32_t n, uint32_t end, uint32_t align, Passes passes) {
+    const uint32_t k = n > 0 ? passes(n) : 0;
+    if (k == 0) { return 0; }
+    const uint32_t p = (n + k - 1) / k;
+    if (k == 1 || align == 0 || end < n) { return p; }
+    const uint32_t r = (end - p) % align;   // the cut lies r cells past a pad
+    if (r == 0) { return p; }
+    if (p > align - r && passes(n - (p - (align - r))) == k - 1) { return p - (align - r); }
+    if (p + r < n && passes(p + r) == 1) { return p + r; }
+    return p;
+}
+
+// A stream pass's fixed part (us): it uploads every expert over the link (up_us) and reads those only the SSD has (ssd_b bytes at ssd_gbs) side by side, so the
+// slower of the two. The SSD part is the call planner's Ts as well (llama_moe_cache_pp_decide_fork). Without it a pass of Kimi K3.1 was priced at its 20.5 s
+// upload while it streamed 290 GiB from the drives in 46-50 s: the chunk count of 4 passes (88 s) beat that of 3 (124 s), the prompt took 4 passes of ~48 s (2026-11-20).
+static inline double ppx_stream_pass_us(double up_us, double ssd_b, double ssd_gbs) {
+    return ssd_gbs > 0.0 && ssd_b > 0.0 ? std::max(up_us, ssd_b / (ssd_gbs * 1e3)) : up_us;
+}
+
 // What a prompt of n tokens takes as equal stream passes of at most cap tokens (us): a pass uploads every expert beside its compute (up_us) and computes its tokens
 // (comp_us_tok each): the longer of the two. *pass: the pass size.
 static inline double ppx_stream_us(uint32_t n, uint32_t cap, double up_us, double comp_us_tok, uint32_t * pass = nullptr) {
@@ -83,7 +111,17 @@ static inline double ppx_stream_us(uint32_t n, uint32_t cap, double up_us, doubl
 // per layer, each one more pass over every token of the pass (entry_us_tok: zeroed outputs, quantized inputs, a sum). Among the candidates within 1% of the lowest
 // time: the fewest passes (the upload a pass really takes is what the links' rates promise or more, never less), then the fewest chunks. us[i] (if given): each
 // candidate's time, < 0 where it cannot run. -1: none can run.
-static inline int ppx_pick_chunks(uint32_t n, const uint32_t * cap, const int * extra, int n_cand, double up_us, double comp_us_tok, double entry_us_tok, double * us = nullptr) {
+// cap_err[i] (nullptr: none): how much too high candidate i's cap came out when it was estimated before any pass measured its graph (ppx_cap_err); an estimated cap
+// counts that much less, so a candidate whose passes fill its estimate is priced with the pass it may need. Kimi K3.1, 2026-11-20: 6 chunks estimated 4416,
+// measured 4160, 8 chunks 4544 and 4352; both planned 3 passes of 4186 at one time, the 6 picked ran 4. Not for caps from measured graphs.
+static inline int ppx_pick_chunks(uint32_t n, const uint32_t * cap_in, const int * extra, int n_cand, double up_us, double comp_us_tok, double entry_us_tok, double * us = nullptr,
+                                  const double * cap_err = nullptr) {
+    uint32_t cap[16];
+    n_cand = std::min(n_cand, 16);
+    for (int i = 0; i < n_cand; ++i) {
+        const double e = cap_err ? std::min(1.0, std::max(0.0, cap_err[i])) : 0.0;
+        cap[i] = cap_in[i] == 0 ? 0 : std::max<uint32_t>(1, (uint32_t) ((double) cap_in[i] / (1.0 + e)));
+    }
     double t_min = -1.0;
     for (int i = 0; i < n_cand; ++i) {
         const double t = cap[i] > 0 ? ppx_stream_us(n, cap[i], up_us, comp_us_tok + entry_us_tok * (double) extra[i]) : -1.0;
@@ -99,4 +137,11 @@ static inline int ppx_pick_chunks(uint32_t n, const uint32_t * cap, const int * 
         if (t <= 1.01 * t_min && (best < 0 || k < kb)) { best = i; kb = k; }
     }
     return best;
+}
+
+// The caps' estimate error per candidate for ppx_pick_chunks: the caps of a pick made before any pass measured its graph (est) against those of a later pick for
+// the same request size and cells (now, the passes between measured). err[i]: how much candidate i's estimate came out too high, 0 when it was not (or when it cannot
+// run in one of the two). Per candidate: fewer chunks missed more (Kimi K3.1: 2 chunks 16.9%, 6 chunks 6.2%, 8 chunks 4.4%).
+static inline void ppx_cap_err(const uint32_t * est, const uint32_t * now, int n_cand, double * err) {
+    for (int i = 0; i < n_cand; ++i) { err[i] = est[i] > 0 && now[i] > 0 && est[i] > now[i] ? (double) est[i] / (double) now[i] - 1.0 : 0.0; }
 }

@@ -20,6 +20,7 @@
 #include "ggml-hist-fork.h"
 #include "ggml-impl.h"
 #include "ggml-read-fork.h"
+#include "ggml-rampool-tune-fork.h"
 
 #include <algorithm>
 #include <atomic>
@@ -107,12 +108,22 @@ struct rp_pool {
     void * ud = nullptr;
     std::map<int, int> dfd_of;          // file handle -> its O_DIRECT handle
     int    n_threads = 0;
+    int    n_tuned = 0;   // the threads the fill settled on (rp_tune_step); the readers start with them
 
     std::mutex              mu;         // tables, queue and records; held for microseconds
     std::condition_variable work_cv, done_cv;
     std::deque<rp_job>      demand;     // what callers wait for
     std::deque<rp_job>      pf;         // reads ahead for predicted later layers: a reader takes one only when no demand waits
     std::vector<std::thread> readers;
+    // the readers' own count (rp_tune_step on their rate): windows of >= 1 s and >= 1 GiB in which every take left work in the queue; a reader holds one
+    // slice (about 5 reads in flight), a fill thread about 32, so the fill's count says little about theirs (K3.1: 8 readers 41 in flight, b15843's 16 86)
+    rp_thread_tune rd_tune;
+    uint64_t rd_win_b = 0;
+    int64_t  rd_win_t0 = 0;
+    bool     rd_win_ok = true;
+    int      rd_cap = 64;
+    int      rd_running = 0;   // readers in their loop; past the settled count the extra ones leave (the count the log names is the count that reads)
+    std::string rd_steps;
     bool                    stop = false;
     std::atomic<uint32_t>   graph{ 2 };
     std::atomic<size_t>     memal{ 4 };  // memory alignment O_DIRECT takes here: 4 bytes on NVMe (queue/dma_alignment); an EINVAL raises it, the reader then goes through its bounce buffer
@@ -162,6 +173,15 @@ size_t rp_request_bytes(int fd) {
     (void) fd;
 #endif
     return 0;
+}
+
+// The drives the pool reads from: the most any of its files is read from (--multissd, ggml-read-fork.h sr_srcs_of). Each drive wants its own depth, so the fill
+// threads and the readers count them all: Kimi K3.1 2026-11-20, a second drive with one drive's 4 of each read 4.1 + 3.4 GB/s in the fill and 4.0 + 3.2 in
+// the prompt stream where fio reads the files at 6.1 + 4.3 (one reader alone tops out near 2.7 GB/s, the read-direct probe)
+static int rp_drives(const rp_pool * p) {
+    int n = 1;
+    for (const auto & t : p->tensors) { if (t->dfd >= 0) { n = std::max(n, sr_drives(t->dfd)); } }
+    return n;
 }
 
 // THE WRITER: bytes [off, off + n) of the file into [dst, dst + n). Whole sectors go straight into dst; the sectors a slice shares with its neighbours (the slices of a tensor do not start on
@@ -366,11 +386,13 @@ void rp_reader(rp_pool * p) {
         rp_job j;
         {
             std::unique_lock<std::mutex> lk(p->mu);
+            if (p->rd_tune.settled && p->rd_running > p->rd_tune.n) { p->rd_running--; break; }
             p->work_cv.wait(lk, [p]() { return p->stop || !p->demand.empty() || !p->pf.empty(); });
             if (p->stop) { break; }
             auto & q = p->demand.empty() ? p->pf : p->demand;
             j = q.front();
             q.pop_front();
+            if (p->demand.empty() && p->pf.empty()) { p->rd_win_ok = false; }   // the readers kept up: this window says nothing about more of them
             rp_rec & r = j.t->rec[j.e];
             if (r.state != RP_READING || r.claimed) { continue; }
             r.claimed = true;
@@ -391,6 +413,21 @@ void rp_reader(rp_pool * p) {
                 p->st_cold_b += t.esz;
                 p->rd_cold_b += t.esz;
                 c.cold += t.esz;
+                if (!p->rd_tune.settled) {
+                    p->rd_win_b += t.esz;
+                    const int64_t now = rp_now_us();
+                    if (now - p->rd_win_t0 >= 1000000 && p->rd_win_b >= ((uint64_t) 1 << 30)) {
+                        if (p->rd_win_ok) {
+                            const double gbs = (double) p->rd_win_b / ((double) (now - p->rd_win_t0) / 1e6) / 1e9;
+                            const int before = p->rd_tune.n;
+                            p->rd_tune = rp_tune_step(p->rd_tune, gbs, p->rd_cap);
+                            p->rd_steps += " " + std::to_string(before) + ":" + std::to_string(gbs).substr(0, 4);
+                            for (; p->rd_running < p->rd_tune.n && !p->stop; p->rd_running++) { p->readers.emplace_back(rp_reader, p); }   // they wait for this lock
+                            if (p->rd_tune.settled) { GGML_LOG_WARN("rampool: readers by window (readers:GB/s, the queue never empty):%s -> %d\n", p->rd_steps.c_str(), p->rd_tune.n); }
+                        }
+                        p->rd_win_b = 0; p->rd_win_t0 = now; p->rd_win_ok = true;
+                    }
+                }
             } else {
                 GGML_LOG_WARN("rampool: a read of %zu bytes at %llu failed: %s\n", t.esz, (unsigned long long) (t.off + (uint64_t) j.e * t.esz), strerror(errno));
                 c.owner[r.slot] = rp_owner();
@@ -558,7 +595,7 @@ void ggml_rampool_fill_fork(void) {
         for (size_t pass = 0; pass < 2; ++pass) { for (size_t i = s0 + pass; i < s1; i += 2) { spaced.push_back(jobs[i]); } }
     }
     std::atomic<size_t> next{ 0 };
-    std::atomic<uint64_t> bad{ 0 };
+    std::atomic<uint64_t> bad{ 0 }, done_b{ 0 };
     auto work = [&]() {
         rp_thread_setup();
         const size_t bn = std::max<size_t>(p->rq, RP_SECTOR);
@@ -568,6 +605,7 @@ void ggml_rampool_fill_fork(void) {
             if (i >= spaced.size()) { break; }
             const range & r = spaced[i];
             if (bounce == nullptr || !rp_read(p, r.t->dfd, r.t->fd, r.dst, r.n, r.off, bounce, bn)) { bad++; }
+            done_b.fetch_add(r.n, std::memory_order_relaxed);
             if (ck_left[r.ck].fetch_sub(1) == 1 && g_rp_chunk_done) {   // the chunk's last read: a failed one too (a failed fill drops the blocks below, the pin is harmless)
                 const rp_class & c = p->cls[r.t->cls];
                 g_rp_chunk_done(c.chunks[r.ck - ck0[r.t->cls]], p->ud);
@@ -576,8 +614,26 @@ void ggml_rampool_fill_fork(void) {
         free(bounce);
     };
     std::vector<std::thread> th;
-    for (int i = 0; i < p->n_threads; ++i) { th.emplace_back(work); }
+    // the thread count from the fill's own rate (ggml-rampool-tune-fork.h): windows of at least 1 s and 1 GiB, doubled while it reads more than 5% faster
+    rp_thread_tune tune;
+    tune.n = p->n_threads * rp_drives(p);
+    for (int i = 0; i < tune.n; ++i) { th.emplace_back(work); }
+    std::string steps;
+    while (!tune.settled && next.load() < spaced.size()) {
+        const uint64_t b0 = done_b.load();
+        const double w0 = rp_now_us();
+        while (next.load() < spaced.size() && (rp_now_us() - w0 < 1e6 || done_b.load() - b0 < ((uint64_t) 1 << 30))) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); }
+        if (next.load() >= spaced.size()) { break; }   // the fill ran out before the window closed: its rate is no window's
+        const double gbs = (double) (done_b.load() - b0) / ((rp_now_us() - w0) / 1e6) / 1e9;
+        const int before = tune.n;
+        tune = rp_tune_step(tune, gbs, 64);
+        steps += " " + std::to_string(before) + ":" + std::to_string(gbs).substr(0, 4);
+        for (int i = before; i < tune.n; ++i) { th.emplace_back(work); }
+    }
+    const int n_fill = (int) th.size();
+    p->n_tuned = tune.n;
     for (auto & x : th) { x.join(); }
+    if (!steps.empty()) { GGML_LOG_WARN("rampool: fill threads by window (threads:GB/s):%s -> %d for the readers\n", steps.c_str(), tune.n); }
     if (bad.load() > 0) { GGML_LOG_ERROR("rampool: %llu reads of the fill failed, those blocks are dropped\n", (unsigned long long) bad.load()); }
     for (auto & tp : p->tensors) {
         rp_tensor & t = *tp;
@@ -598,17 +654,23 @@ void ggml_rampool_fill_fork(void) {
     }
     const double s = std::max(1e-3, (rp_now_us() - t0) / 1e6);
     GGML_LOG_WARN("rampool: fill %.1f GiB read in %.1f s (%.2f GB/s, %d threads, the async engine at %zu KiB blocks x %d in flight, edge sectors in %zu KiB reads%s), %llu of %llu slices a card holds also in RAM (the blocks left after all others)\n", bytes / 1073741824.0, s, bytes / 1e9 / s,
-            p->n_threads, sr_blk() >> 10, sr_qd(), p->rq >> 10, p->tensors.empty() || p->tensors[0]->dfd >= 0 ? "" : ", no O_DIRECT here", (unsigned long long) n_card_in, (unsigned long long) n_card);
+            n_fill, sr_blk() >> 10, sr_qd(), p->rq >> 10, p->tensors.empty() || p->tensors[0]->dfd >= 0 ? "" : ", no O_DIRECT here", (unsigned long long) n_card_in, (unsigned long long) n_card);
     // readers: a reader reads one slice at a time, its pieces in flight together, so the drive's measured depth (sr_qd blocks of sr_blk) needs depth / pieces
     // readers. Qwen3.6 slices of about 0.5 MiB on the 4 stored read threads kept 8 blocks in flight: stream passes read 1.5-1.9 GB/s where fio read the same file
     // at 5.2-5.4 (2026-11-13); K3's slices of several MiB keep 4
     size_t esz_min = SIZE_MAX;
     for (const auto & t : p->tensors) { esz_min = std::min(esz_min, t->esz); }
     const size_t pieces = esz_min == SIZE_MAX ? 1 : std::max<size_t>(1, (esz_min + sr_blk() - 1) / sr_blk());
-    const int n_rd = std::max(p->n_threads, (int) std::min<size_t>(64, ((size_t) sr_qd() + pieces - 1) / pieces));
-    GGML_LOG_WARN("rampool: %d readers (slices from %.2f MiB: %zu blocks of %zu KiB each, %d in flight wanted)\n", n_rd, esz_min == SIZE_MAX ? 0.0 : esz_min / 1048576.0,
-            pieces, sr_blk() >> 10, sr_qd());
-    for (int i = 0; i < n_rd; ++i) { p->readers.emplace_back(rp_reader, p); }
+    const int drives = rp_drives(p);
+    const int n_rd = std::max({ p->n_threads * drives, p->n_tuned, (int) std::min<size_t>(64, ((size_t) drives * sr_qd() + pieces - 1) / pieces) });
+    GGML_LOG_WARN("rampool: %d readers (slices from %.2f MiB: %zu blocks of %zu KiB each, %d in flight wanted%s)\n", n_rd, esz_min == SIZE_MAX ? 0.0 : esz_min / 1048576.0,
+            pieces, sr_blk() >> 10, sr_qd(), drives > 1 ? " on each of two drives" : "");
+    {
+        std::lock_guard<std::mutex> lk(p->mu);
+        // the first window starts now and may hold idle time before the first prompt: it is never counted
+        p->rd_tune.n = n_rd; p->rd_cap = std::min(128, 64 * drives); p->rd_win_t0 = rp_now_us(); p->rd_win_ok = false;
+        for (; p->rd_running < n_rd; p->rd_running++) { p->readers.emplace_back(rp_reader, p); }
+    }
 }
 
 void ggml_rampool_close_fork(void) {
@@ -1008,6 +1070,9 @@ void ggml_rampool_stats_fork(struct ggml_rampool_stats * s, bool reset) {
         for (const auto & c : p->cls) { s->used += (uint64_t) (c.n_slots - c.free.size()) * c.size; }
     }
     if (reset) {
+        if (const std::string d = sr_drive_bytes(); !d.empty()) {   // after the fill, at each request's end and at exit: the split so far (--multissd)
+            GGML_LOG_WARN("rampool: read by drive since the pool opened: %s\n", d.c_str());
+        }
         p->st_asked = 0; p->st_hit = 0; p->st_cold = 0; p->st_refused = 0; p->st_evicted = 0; p->st_cold_b = 0; p->st_wait_us = 0; p->st_pp_hit = 0; p->st_pp_miss = 0;
     }
 }
