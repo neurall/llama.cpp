@@ -3331,14 +3331,18 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             const llama_moe_cache_layer_fork * nc = nl.ffn_up_exps && nl.ffn_gate_inp ? llama_moe_cache_lookup_fork(nl.ffn_up_exps) : nullptr;
             const auto dev_of = [](const ggml_tensor * t) { return t && t->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer)) : nullptr; };
             const ggml_backend_dev_t bdev = ggml_backend_get_device(mc_bell_b);
+            // --moe bell-pred-k=N: picks read ahead per layer (0: as many as the router takes; at most 32, the bell's room). K3 2026-11-20 at 16: 85% of the
+            // slices read ahead were asked for, but they covered 36% of the experts still read from the SSD (cold picks rank low in the prediction)
+            static const int pred_k = [] { const char * e = moe_opt("bell-pred-k"); return e ? atoi(e) : 0; }();
+            const int64_t kp = std::min<int64_t>(32, pred_k > 0 ? pred_k : n_expert_used);
             void * pb = nc && dev_of(nc->dev_table) == bdev && dev_of(nl.ffn_gate_inp) == bdev && nl.ffn_gate_inp->ne[0] == rin->ne[0] && ggml_is_contiguous(rin)
-                      ? llama_moe_cache_bell_pred_fork(nc, n_expert_used) : nullptr;
+                      ? llama_moe_cache_bell_pred_fork(nc, kp) : nullptr;
             if (pb) {
                 ggml_tensor * pl = ggml_mul_mat(ctx0, nl.ffn_gate_inp, ggml_reshape_2d(ctx0, rin, rin->ne[0], 1));   // [n_expert, 1]
                 if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID) { pl = ggml_sigmoid(ctx0, pl); }
                 if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SQRT_SOFTPLUS) { pl = ggml_sqrt(ctx0, ggml_softplus(ctx0, pl)); }
                 if (nl.ffn_exp_probs_b) { pl = ggml_add(ctx0, pl, nl.ffn_exp_probs_b); }   // the bias ranks, as in the real selection
-                ggml_tensor * pid = ggml_cont(ctx0, ggml_argsort_top_k(ctx0, pl, n_expert_used));   // [n_expert_used, 1]
+                ggml_tensor * pid = ggml_cont(ctx0, ggml_argsort_top_k(ctx0, pl, kp));   // [kp, 1]
                 // no input rides along: 4 floats of the router input stand in (the kernel copies x only for a missing pick, the host never reads it)
                 ggml_tensor * pr = ggml_moe_bell(ctx0, pid, nc->dev_table, ggml_view_1d(ctx0, rin, 4, 0), pb);
                 ggml_backend_sched_set_tensor_backend(sched, pr, mc_bell_b);

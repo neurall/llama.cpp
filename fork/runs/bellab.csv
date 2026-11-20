@@ -17,3 +17,4 @@ glm30-sg,glm,2,pf12k4k,4096,"--moe sparse-gate-decode=1",--env PERF_LEDGER=0
 k31-i-mir,k31,2,pfbest1k,1024,,--env LLAMA_MOE_MIRROR=/m2/k
 k31-i-mir-np,k31,2,pfbest1k,1024,"--moe bell-pred=0",--env LLAMA_MOE_MIRROR=/m2/k
 k31-i-pred,k31,2,pfbest1k,1024,,
+k31-i-k32,k31,2,pfbest1k,1024,"--moe bell-pred-k=32",--env LLAMA_MOE_MIRROR=/m2/k
