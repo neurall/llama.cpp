@@ -18529,6 +18529,10 @@ struct bell_chain {
     ggml_cgraph *  g;
     int8_t         pool_ok = -1;   // --moe bell-pool: -1 not looked at yet, 0 the graph runs, 1 the pool runs it
     ggml_tensor *  up = nullptr, * gate = nullptr, * down = nullptr;
+    float          limit = 0.0f;   // > 0: the chain's SwiGLU is ggml_swiglu_clamp's with this limit (GLM 5.3 Flash, DeepSeek 4.1)
+    int            act   = 0;      // 0: SwiGLU, 1: Kimi's SITU (bellpool_layer::act)
+    float          situ[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    bool           situ_u  = false;
 };
 static std::unordered_map<const llama_moe_cache_layer_fork *, bell_layer> g_bell_layers;
 static std::vector<bell_chain>                g_bell_chains;   // of the graph built last, in layer order
@@ -18674,17 +18678,63 @@ static bool bell_pool_type(const ggml_tensor * w, int64_t n_in, bellpool_type & 
     ty.q_row = ggml_row_size(tr->vec_dot_type, n_in);
     return true;
 }
-// the host chain is up, gate, swiglu(gate, up), down of the bell's input and nothing else: then the pool can run it
+// Kimi K3/K3.1's SITU (llama-graph.cpp, situ): h = mul(mul(scale(tanh(scale(gate, 1/beta)), beta), sigmoid(gate)), u') with u' = up or
+// scale(tanh(scale(up, 1/lb)), lb). The scales carry no bias. gate and up: the matmuls under it; the scales into c (bellpool_layer::situ)
+static bool bell_scale_of(const ggml_tensor * t, float & s) {
+    if (!t || t->op != GGML_OP_SCALE) { return false; }
+    float b = 0.0f;
+    memcpy(&s, &t->op_params[0], sizeof(float)); memcpy(&b, &t->op_params[1], sizeof(float));
+    return b == 0.0f;
+}
+static bool bell_unary_is(const ggml_tensor * t, ggml_unary_op op) { return t && t->op == GGML_OP_UNARY && ggml_get_unary_op(t) == op; }
+static ggml_tensor * bell_tanh_scaled(ggml_tensor * t, float & s0, float & s1) {   // scale(tanh(scale(x, s0)), s1): x, or nullptr
+    if (!bell_scale_of(t, s1) || !bell_unary_is(t->src[0], GGML_UNARY_OP_TANH) || !bell_scale_of(t->src[0]->src[0], s0)) { return nullptr; }
+    return t->src[0]->src[0]->src[0];
+}
+static bool bell_situ_match(ggml_tensor * h, bell_chain & c, ggml_tensor * & gate, ggml_tensor * & up) {
+    if (!h || h->op != GGML_OP_MUL || !h->src[0] || h->src[0]->op != GGML_OP_MUL) { return false; }
+    ggml_tensor * a = h->src[0];
+    gate = bell_tanh_scaled(a->src[0], c.situ[0], c.situ[1]);
+    if (!gate || gate->op != GGML_OP_MUL_MAT_ID || !bell_unary_is(a->src[1], GGML_UNARY_OP_SIGMOID) || a->src[1]->src[0] != gate) { return false; }
+    up = h->src[1];
+    c.situ_u = false;
+    if (up && up->op != GGML_OP_MUL_MAT_ID) { up = bell_tanh_scaled(up, c.situ[2], c.situ[3]); c.situ_u = true; }
+    return up && up->op == GGML_OP_MUL_MAT_ID && up != gate;
+}
+// the host chain is up, gate, an activation of the two the pool knows (SwiGLU, clamped SwiGLU, SITU), down of the bell's input and nothing else: then the pool can run it
 static bool bell_pool_check(bell_chain & c) {
-    ggml_tensor * mm[3] = { nullptr, nullptr, nullptr }; int n_mm = 0;
+    ggml_tensor * mm[3] = { nullptr, nullptr, nullptr }; int n_mm = 0, n_other = 0;
     ggml_tensor * glu = nullptr;
     for (int i = 0; i < ggml_graph_n_nodes(c.g); ++i) {
         ggml_tensor * t = ggml_graph_node(c.g, i);
         if (t->op == GGML_OP_MUL_MAT_ID) { if (n_mm == 3) { return false; } mm[n_mm++] = t; }
         else if (t->op == GGML_OP_GLU) { if (glu) { return false; } glu = t; }
-        else if (t->op != GGML_OP_VIEW && t->op != GGML_OP_RESHAPE && t->op != GGML_OP_NONE) { return false; }
+        else if (t->op != GGML_OP_VIEW && t->op != GGML_OP_RESHAPE && t->op != GGML_OP_NONE) { n_other++; }
     }
-    if (n_mm != 3 || !glu || ggml_get_glu_op(glu) != GGML_GLU_OP_SWIGLU || glu->op_params[1] != 0 || glu->src[1] == nullptr) { return false; }
+    c.act = 0;
+    if (!glu) {   // --moe bell-situ=0: Kimi's SITU keeps the CPU graph, as before 2026-11-20
+        static const bool situ_ok = [] { const char * e = moe_opt("bell-situ"); return !e || atoi(e) != 0; }();
+        ggml_tensor * gate = nullptr, * up = nullptr, * down = nullptr;
+        for (int i = 0; i < n_mm; ++i) { if (mm[i]->src[1] && mm[i]->src[1]->op == GGML_OP_MUL) { down = mm[i]; } }
+        if (!situ_ok || n_mm != 3 || !down || !bell_situ_match(down->src[1], c, gate, up)) { return false; }
+        if (n_other != (c.situ_u ? 9 : 6) || gate->src[1] != up->src[1]) { return false; }   // the ops of the match and nothing else
+        bool all = true;
+        for (int i = 0; i < 3; ++i) { all = all && (mm[i] == gate || mm[i] == up || mm[i] == down); }
+        if (!all) { return false; }
+        const int64_t n_embd = up->src[0]->ne[0], n_ff = up->src[0]->ne[1];
+        if (gate->src[0]->ne[0] != n_embd || gate->src[0]->ne[1] != n_ff || down->src[0]->ne[0] != n_ff || down->src[0]->ne[1] != n_embd || c.b->n_embd != n_embd || c.b->n_used > 16) { return false; }
+        bellpool_type tu, tg, td;
+        if (!bell_pool_type(up->src[0], n_embd, tu) || !bell_pool_type(gate->src[0], n_embd, tg) || !bell_pool_type(down->src[0], n_ff, td)) { return false; }
+        c.up = up; c.gate = gate; c.down = down; c.limit = 0.0f; c.act = 1;
+        return true;
+    }
+    if (n_other != 0) { return false; }
+    // --moe bell-clamp=0: a clamped SwiGLU keeps the CPU graph, as before 2026-11-20 (GLM 5.3 Flash and DeepSeek 4.1 ran every missed expert there)
+    static const bool clamp_ok = [] { const char * e = moe_opt("bell-clamp"); return !e || atoi(e) != 0; }();
+    const ggml_glu_op gop = glu ? ggml_get_glu_op(glu) : GGML_GLU_OP_COUNT;
+    if (n_mm != 3 || !glu || (gop != GGML_GLU_OP_SWIGLU && !(clamp_ok && gop == GGML_GLU_OP_SWIGLU_CLAMP)) || glu->op_params[1] != 0 || glu->src[1] == nullptr) { return false; }
+    c.limit = 0.0f;
+    if (gop == GGML_GLU_OP_SWIGLU_CLAMP) { memcpy(&c.limit, &glu->op_params[3], sizeof(float)); if (!(c.limit > 0.0f)) { return false; } }
     ggml_tensor * gate = glu->src[0], * up = glu->src[1], * down = nullptr;
     for (ggml_tensor * t : mm) { if (t != gate && t != up) { down = t; } }
     if (!down || down->src[1] != glu || gate->op != GGML_OP_MUL_MAT_ID || up->op != GGML_OP_MUL_MAT_ID || gate->src[1] != up->src[1]) { return false; }
@@ -18706,7 +18756,15 @@ static bool bell_pool_serve(bell_chain & c, const int32_t * miss, int n) {
     if (!pool) { return false; }
     if (c.pool_ok < 0) {
         c.pool_ok = bell_pool_check(c) ? 1 : 0;
-        if (!c.pool_ok) { LLAMA_LOG_WARN("moe-cache: bell pool: layer %d keeps the CPU graph (its host chain is not up, gate, swiglu, down)\n", c.pub->il); }
+        if (!c.pool_ok) {   // what the chain holds instead, so a new architecture's shape shows in the log
+            std::string ops;
+            for (int i = 0; i < ggml_graph_n_nodes(c.g) && ops.size() < 300; ++i) {
+                const ggml_tensor * t = ggml_graph_node(c.g, i);
+                if (t->op == GGML_OP_VIEW || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_NONE) { continue; }
+                ops += (ops.empty() ? "" : " ") + std::string(t->op == GGML_OP_GLU ? ggml_glu_op_name(ggml_get_glu_op(t)) : ggml_op_desc(t));
+            }
+            LLAMA_LOG_WARN("moe-cache: bell pool: layer %d keeps the CPU graph (its host chain is not up, gate, a known activation, down: %s)\n", c.pub->il, ops.c_str());
+        }
     }
     if (!c.pool_ok) { return false; }
     // the router observation the gate op makes on the CPU path (ggml-cpu.c, mul_mat_id): the cache counts every pick from it
@@ -18721,6 +18779,8 @@ static bool bell_pool_serve(bell_chain & c, const int32_t * miss, int n) {
     L.n_embd = (int) c.up->src[0]->ne[0]; L.n_ff = (int) c.up->src[0]->ne[1];
     bell_pool_type(c.up->src[0], L.n_embd, L.up); bell_pool_type(c.gate->src[0], L.n_embd, L.gate); bell_pool_type(c.down->src[0], L.n_ff, L.down);
     L.x = (const float *) ggml_bell_x(c.b);
+    L.limit = c.limit; L.act = c.act; L.situ_u = c.situ_u;
+    for (int k = 0; k < 4; ++k) { L.situ[k] = c.situ[k]; }
     const size_t row = sizeof(float) * (size_t) c.b->n_embd;
     for (int i = 0; i < c.b->n_used; ++i) {
         if (miss[i] < 0) { continue; }

@@ -127,6 +127,61 @@ int main() {
             for (int e = 0; e < 2; ++e) { for (int i = 0; i < n_embd; ++i) { assert(a[e][i] == b[e][i] && a[e][i] != -7.0f); } }
         }
     }
-    printf("ok: bell pool, 1/3/8 workers, 50 layers each, float and quantized input, wake after sleep, up and gate in one pass, down rows in pairs\n");
+    {   // GLM 5.3 Flash and DeepSeek 4.1 clamp their SwiGLU (ggml_swiglu_clamp): min(gate, limit) and clamp(up, -limit, limit) before the silu product, bit
+        // for bit as ggml_compute_forward_swiglu_clamp_f32. Without it the pool refused their chains and every missed expert ran the CPU graph (2026-11-20)
+        const int n_embd = 32, n_ff = 24;
+        std::mt19937 rng(21);
+        std::uniform_real_distribution<float> U(-1.0f, 1.0f);
+        std::vector<float> x(n_embd), wu((size_t) n_ff * n_embd), wg((size_t) n_ff * n_embd), wd((size_t) n_embd * n_ff, 0.0f), o(n_embd, -9.0f);
+        for (auto * v : { &x, &wu, &wg }) { for (float & f : *v) { f = U(rng); } }
+        for (int r = 0; r < n_ff; ++r) { wd[(size_t) r * n_ff + r] = 1.0f; }   // down row r picks hidden value r: out[r] = h[r] exactly
+        const float limit = 0.4f;
+        bellpool pool(3);
+        bellpool_layer L;
+        L.n_embd = n_embd; L.n_ff = n_ff; L.n = 1; L.x = x.data(); L.limit = limit;
+        L.up = L.gate = { dot_f32, nullptr, (size_t) n_embd * 4, (size_t) n_embd * 4 };
+        L.down = { dot_f32, nullptr, (size_t) n_ff * 4, (size_t) n_ff * 4 };
+        L.w_up[0] = (const char *) wu.data(); L.w_gate[0] = (const char *) wg.data(); L.w_down[0] = (const char *) wd.data(); L.out[0] = o.data();
+        pool.run(L);
+        int clamped = 0;
+        for (int r = 0; r < n_ff; ++r) {
+            float u = 0, g = 0;
+            dot_f32(n_embd, &u, 0, wu.data() + (size_t) r * n_embd, 0, x.data(), 0, 1);
+            dot_f32(n_embd, &g, 0, wg.data() + (size_t) r * n_embd, 0, x.data(), 0, 1);
+            clamped += g > limit || std::fabs(u) > limit;
+            const float gc = std::min(g, limit), uc = std::clamp(u, -limit, limit);
+            assert(o[r] == gc / (1.f + expf(-gc)) * uc);
+        }
+        assert(clamped > n_ff / 4);   // the case clamps for real
+    }
+    for (int with_u = 0; with_u < 2; ++with_u) {   // Kimi K3/K3.1 SITU: beta*tanh(g/beta) * sigmoid(g) * (lb*tanh(u/lb) or u), op by op as the CPU graph computes it
+        const int n_embd = 32, n_ff = 24;
+        std::mt19937 rng(31 + with_u);
+        std::uniform_real_distribution<float> U(-2.0f, 2.0f);
+        std::vector<float> x(n_embd), wu((size_t) n_ff * n_embd), wg((size_t) n_ff * n_embd), wd((size_t) n_embd * n_ff, 0.0f), o(n_embd, -9.0f);
+        for (auto * v : { &x, &wu, &wg }) { for (float & f : *v) { f = U(rng); } }
+        for (int r = 0; r < n_ff; ++r) { wd[(size_t) r * n_ff + r] = 1.0f; }
+        const float beta = 2.5f, lb = 1.5f;
+        bellpool pool(3);
+        bellpool_layer L;
+        L.n_embd = n_embd; L.n_ff = n_ff; L.n = 1; L.x = x.data();
+        L.act = 1; L.situ[0] = 1.0f / beta; L.situ[1] = beta; L.situ[2] = 1.0f / lb; L.situ[3] = lb; L.situ_u = with_u != 0;
+        L.up = L.gate = { dot_f32, nullptr, (size_t) n_embd * 4, (size_t) n_embd * 4 };
+        L.down = { dot_f32, nullptr, (size_t) n_ff * 4, (size_t) n_ff * 4 };
+        L.w_up[0] = (const char *) wu.data(); L.w_gate[0] = (const char *) wg.data(); L.w_down[0] = (const char *) wd.data(); L.out[0] = o.data();
+        pool.run(L);
+        for (int r = 0; r < n_ff; ++r) {
+            float u = 0, g = 0;
+            dot_f32(n_embd, &u, 0, wu.data() + (size_t) r * n_embd, 0, x.data(), 0, 1);
+            dot_f32(n_embd, &g, 0, wg.data() + (size_t) r * n_embd, 0, x.data(), 0, 1);
+            float a = g * (1.0f / beta); a = tanhf(a); a = a * beta;   // ggml_scale, ggml_tanh, ggml_scale
+            const float sg = 1.f / (1.f + expf(-g));                   // ggml_sigmoid
+            a = a * sg;                                                 // ggml_mul
+            float uu = u;
+            if (with_u) { uu = u * (1.0f / lb); uu = tanhf(uu); uu = uu * lb; }
+            assert(o[r] == a * uu);
+        }
+    }
+    printf("ok: bell pool, 1/3/8 workers, 50 layers each, float and quantized input, wake after sleep, up and gate in one pass, down rows in pairs, clamped SwiGLU, SITU\n");
     return 0;
 }

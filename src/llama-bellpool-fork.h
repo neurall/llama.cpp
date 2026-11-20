@@ -12,6 +12,7 @@
 // tests/test-bellpool-fork.cpp).
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -48,6 +49,10 @@ struct bellpool_layer {   // one layer's missing experts for one token
     const char * w_up[16], * w_gate[16], * w_down[16];   // expert matrices: row r at w + r * w_row
     float * out[16];                              // n_embd floats each
     const float * x = nullptr;                    // n_embd
+    float limit = 0.0f;                           // > 0: ggml_swiglu_clamp's (GLM 5.3 Flash, DeepSeek 4.1): min(gate, limit), clamp(up, -limit, limit) first
+    int   act   = 0;                              // 0: SwiGLU (limit above); 1: Kimi K3/K3.1's SITU, scales situ[0..3] (1/beta, beta, 1/lb, lb), situ_u: the up side's tanh
+    float situ[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    bool  situ_u  = false;
 };
 
 // the rows [lo, hi) of a phase of `total` rows split over n workers, worker w: contiguous, sizes differ by at most one
@@ -111,6 +116,14 @@ struct bellpool {
                 L.up.dot(L.n_embd, &u, 0, L.w_up[e] + (size_t) r * L.up.w_row, 0, qu, 0, 1);
                 L.gate.dot(L.n_embd, &g, 0, L.w_gate[e] + (size_t) r * L.gate.w_row, 0, qg, 0, 1);
             }
+            if (L.act == 1) {   // SITU op by op as the CPU graph: scale, tanh, scale; sigmoid; mul; (up: scale, tanh, scale); mul
+                const float a  = std::tanh(g * L.situ[0]) * L.situ[1];
+                const float sg = 1.0f / (1.0f + std::exp(-g));
+                const float uu = L.situ_u ? std::tanh(u * L.situ[2]) * L.situ[3] : u;
+                hu[(size_t) t] = (a * sg) * uu;
+                continue;
+            }
+            if (L.limit > 0.0f) { g = std::min(g, L.limit); u = std::clamp(u, -L.limit, L.limit); }   // as ggml_compute_forward_swiglu_clamp_f32
             hu[(size_t) t] = g / (1.0f + std::exp(-g)) * u;
         }
     }
