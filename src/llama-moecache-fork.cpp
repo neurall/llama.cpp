@@ -18520,6 +18520,8 @@ struct bell_layer {
     ggml_context * tctx  = nullptr;
     ggml_tensor *  table = nullptr;   // "no expert is on a card": the host chain computes every pick it is given
     uint32_t       seen  = 0;
+    int            cmp_n = 0, cmp_rows = 0, cmp_same = 0;   // --moe bell-cmp (bell_pool_cmp)
+    double         cmp_diff = 0.0, cmp_ref = 0.0;
 };
 struct bell_chain {
     const llama_moe_cache_layer_fork * pub;
@@ -18817,6 +18819,26 @@ static int bell_tail_skip(ggml_bell * b, int32_t * miss) {
     return k;
 }
 
+// --moe bell-cmp=N (dev, slow): a layer's first N pooled tokens run the CPU graph too, and the largest difference of the pool's rows from the graph's is
+// logged once per layer. The pool takes a chain by its shape (bell_pool_check); this shows on real weights that it computes what the graph computes
+static void bell_pool_cmp(bell_chain & c, bell_layer & bl, const int32_t * miss) {
+    static const int n_cmp = [] { const char * e = moe_opt("bell-cmp"); return e ? atoi(e) : 0; }();
+    if (n_cmp <= 0 || bl.cmp_n >= n_cmp) { return; }
+    if (ggml_backend_graph_compute(c.cpu, c.g) != GGML_STATUS_SUCCESS) { GGML_ABORT("moe-cache: bell: the host chain failed"); }
+    const int64_t ne = c.b->n_embd;
+    for (int i = 0; i < c.b->n_used; ++i) {
+        if (miss[i] < 0) { continue; }
+        const float * p = (const float *) ggml_bell_rows(c.b) + (size_t) i * ne, * g = (const float *) c.out->data + (size_t) i * ne;
+        for (int64_t k = 0; k < ne; ++k) { bl.cmp_diff = std::max(bl.cmp_diff, (double) fabsf(p[k] - g[k])); bl.cmp_ref = std::max(bl.cmp_ref, (double) fabsf(g[k])); }
+        bl.cmp_rows++;
+        bl.cmp_same += memcmp(p, g, sizeof(float) * (size_t) ne) == 0;
+    }
+    if (++bl.cmp_n == n_cmp) {
+        LLAMA_LOG_WARN("moe-cache: bell pool check: layer %d (%s), %d tokens, %d rows: largest difference %.3g, largest value %.3g, %d rows bit-equal\n",
+                       c.pub->il, c.act == 1 ? "situ" : c.limit > 0.0f ? "swiglu clamp" : "swiglu", n_cmp, bl.cmp_rows, bl.cmp_diff, bl.cmp_ref, bl.cmp_same);
+    }
+}
+
 static void bell_serve(bell_chain & c) {
     bell_layer & bl = g_bell_layers[c.pub];
     ggml_bell * b = c.b;
@@ -18845,6 +18867,7 @@ static void bell_serve(bell_chain & c) {
     const int64_t bt0 = bt_on ? ggml_time_us() : 0;
     const bool pooled = bell_pool_serve(c, miss, n_run);   // the rows straight into the bell's memory
     if (!pooled && ggml_backend_graph_compute(c.cpu, c.g) != GGML_STATUS_SUCCESS) { GGML_ABORT("moe-cache: bell: the host chain failed"); }
+    if (pooled && n_run > 0) { bell_pool_cmp(c, bl, miss); }
     const int64_t bt1 = bt_on ? ggml_time_us() : 0;
     g_bell_n_layers++;
     if (n > 0) {

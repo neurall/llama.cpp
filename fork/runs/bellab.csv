@@ -1,4 +1,15 @@
 name,model,n,test,tokens,args,extra
+glm30-on,glm,2,pf12k4k,4096,,--env PERF_LEDGER=0
 glm30-nc,glm,2,pf12k4k,4096,"--moe bell-clamp=0",--env PERF_LEDGER=0
+ds-on,ds,2,pf12k4k,4096,,--env PERF_LEDGER=0
 ds-nc,ds,2,pf12k4k,4096,"--moe bell-clamp=0",--env PERF_LEDGER=0
+k31-i-on,k31,2,pfbest1k,1024,,
 k31-i-ns,k31,2,pfbest1k,1024,"--moe bell-situ=0",
+glm30-cmp,glm,1,pf1k,256,"--moe bell-cmp=8",--env PERF_LEDGER=0
+ds-cmp,ds,1,pf1k,256,"--moe bell-cmp=8",--env PERF_LEDGER=0
+k31-cmp,k31,1,pf1k,256,"--moe bell-cmp=8",
+qni4-cmp,qn_iq4xs,1,pf1k,256,"--moe bell-cmp=8",--env PERF_LEDGER=0
+glm30-tm,glm,1,pf12k1k,1024,,"--env PERF_LEDGER=0 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1"
+ds-tm,ds,1,pf12k1k,1024,,"--env PERF_LEDGER=0 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1"
+k31-tm,k31,1,pfbest1k,1024,,"--env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1"
+qni4-tm,qn_iq4xs,1,pf12k1k,1024,,"--env PERF_LEDGER=0 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1"
