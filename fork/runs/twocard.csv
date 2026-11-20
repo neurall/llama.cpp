@@ -9,3 +9,4 @@ tc-q3-4k-bs-stg1,qwen38,2,pf12k1k,512,"-bs --moe staging=1",--env PERF_PTOK=4096
 tc-q3-14k-bs-stg1,qwen38,2,pf14k1k,1024,"-bs --moe staging=1",
 tc-q3-14k-bs-rc,qwen38,2,pf14k1k,1024,"-bs --moe ring-cold=1",
 tc-q3-14k-bs-rc2,qwen38,2,pf14k1k,1024,"-bs --moe ring-cold=2",
+tc-q3-14k-bs-tail,qwen38,2,pf14k1k,1024,"-bs --moe ring-cold=2,cs-tail=1",

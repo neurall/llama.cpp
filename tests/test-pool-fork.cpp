@@ -1253,6 +1253,23 @@ static void test_regress_ring_cold_order() {
     report("levels 0 and 1: an entry planned ahead takes a cached expert with decode value (the regression)", poolx_ring_cold_ok(0, true, 800.0) && poolx_ring_cold_ok(1, true, 800.0), "");
     report("level 2: an entry planned ahead takes only blocks that lose nothing; the entries needed now and next take the coldest",
            !poolx_ring_cold_ok(2, true, 800.0) && !poolx_ring_cold_ok(2, true, 1e-9) && poolx_ring_cold_ok(2, true, 0.0) && poolx_ring_cold_ok(2, false, 800.0), "");
+    // --moe cs-tail: the upload area's blocks first, never the last queued entry's (its compute may still read them) nor a layer's to come
+    report("tail first: free, empty, own computed, cached computed, a claim; not the layer computing, a layer to come, a claim over one",
+           poolx_tail_first(0) && poolx_tail_first(1) && poolx_tail_first(2) && poolx_tail_first(3) && poolx_tail_first(5) &&
+           !poolx_tail_first(8) && !poolx_tail_first(4) && !poolx_tail_first(6) && !poolx_tail_first(7), "");
+    report("tail order: a tail block before a free block elsewhere, the rest as before",
+           poolx_ring_before_tail(true, 3, 800.0, false, 0, 0.0, true) && !poolx_ring_before_tail(false, 0, 0.0, true, 3, 800.0, true) &&
+           poolx_ring_before_tail(false, 0, 0.0, false, 3, 5.0, true) == poolx_ring_before(0, 0.0, 3, 5.0, true), "");
+    // the moves: hottest into coldest while hotter; free/empty (-1) take anything ("don't drop anything" while there are gaps)
+    {
+        const std::vector<double> mv = { 5.0, 900.0, 0.0, 40.0 }, ds = { 30.0, -1.0, 2000.0, 1.0 };
+        const auto pr = poolx_tail_moves(mv, ds);
+        report("moves: 900 into the free block, 40 into the 1.0, 5 into the 30.0 refused (colder), 0 stays", pr.size() == 2 &&
+               pr[0].first == 1 && pr[0].second == 1 && pr[1].first == 3 && pr[1].second == 3, "");
+        const auto pf = poolx_tail_moves(std::vector<double>{ 0.0, 0.0, 3.0 }, std::vector<double>{ -1.0, -1.0, -1.0, -1.0 });
+        report("moves: with gaps every mover goes, even a never-used one", pf.size() == 3, "");
+        report("moves: no destination, nothing moves", poolx_tail_moves(mv, std::vector<double>{}).empty(), "");
+    }
 }
 static void test_regress_room_give_back_chunks() {
     printf("Testing [bug: a block given back with a chunk the driver could not back, Qwen3.8 IQ4_XS room_graphs_clear 2026-11-16] the room's give-back in whole chunks:\n");

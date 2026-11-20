@@ -105,3 +105,5 @@ q1-rc2-g2k,qwen38,2,pf12k1k,2048,"-bs --moe ring-cold=2",--env CUDA_VISIBLE_DEVI
 q1-rc2-p14k,qwen38,2,pf14k1k,1024,"-bs --moe ring-cold=2",--env CUDA_VISIBLE_DEVICES=0
 q1-strata-g2k,qwen38,2,pf12k1k,2048,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38 --env STRATA_ROUTE_TAIL_SKIP=0
 q1-strata-p14k,qwen38,2,pf14k1k,1024,,--env CUDA_VISIBLE_DEVICES=0 --env STRATA_ROUTE_TAIL_SKIP=0
+q1-tail-g2k,qwen38,2,pf12k1k,2048,"-bs --moe ring-cold=2,cs-tail=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-tail-p14k,qwen38,2,pf14k1k,1024,"-bs --moe ring-cold=2,cs-tail=1",--env CUDA_VISIBLE_DEVICES=0

@@ -191,10 +191,35 @@ static inline double poolx_ring_lost(int tier, bool up_now, double s) { return t
 // coldest. Qwen3.8 IQ3_S one card, 4k prompt, 2026-11-20: the entries planned ahead took computed layers' cached experts as cheap blocks (7770 claims, 1442
 // cached experts a pass) and the prompt left 3732 experts (7.1 GB, 248 of the layers' top 10) to refill in decode
 static inline bool poolx_ring_cold_ok(int level, bool cheap, double lost) { return !(level >= 2 && cheap && lost > 0.0); }
+// --moe cs-tail=1 (user 2026-11-20: "staging moved to moecache tail. moving used moes after use to closest gaps based on their hotness after whole layer processed
+// in pp freeing space for uploader again", "just 1 layer", "rest layers prefetch to gaps or coldest", "don't drop anything"): the blocks behind the floor (one entry
+// of the largest class, cs_ring_floor) are the stream's upload area, taken before every other block; and every expert of the pass's layers in a block the stream
+// takes moves card to card first, into a block of its class outside the tail, the hottest into the coldest (free and empty first), while it scores higher than what
+// lies there. The entry after a tail entry takes gaps or the coldest outside the tail (ring-cold).
+// A tail block taken first: free, empty, an expert of a queued layer (it moves out first), another class's bytes over nothing of a layer to come; never the last
+// queued entry's own (tier 8: its compute may still read it, the entry would wait for it) nor a layer's to come (4, 6)
+static inline bool poolx_tail_first(int tier) { return tier <= 3 || tier == 5 || tier == 9; }
+// The moves out of the blocks the stream takes (cs-tail), one class: the movers' scores hottest first into the destinations' scores (free and empty: -1) coldest
+// first, while the mover scores higher. Returns (mover, destination) index pairs.
+static inline std::vector<std::pair<size_t, size_t>> poolx_tail_moves(const std::vector<double> & mover, const std::vector<double> & dest) {
+    std::vector<size_t> a(mover.size()), b(dest.size());
+    std::iota(a.begin(), a.end(), (size_t) 0);
+    std::iota(b.begin(), b.end(), (size_t) 0);
+    std::stable_sort(a.begin(), a.end(), [&](size_t x, size_t y) { return mover[x] > mover[y]; });
+    std::stable_sort(b.begin(), b.end(), [&](size_t x, size_t y) { return dest[x] < dest[y]; });
+    std::vector<std::pair<size_t, size_t>> out;
+    for (size_t i = 0; i < a.size() && i < b.size() && mover[a[i]] > dest[b[i]]; ++i) { out.push_back({ a[i], b[i] }); }
+    return out;
+}
 static inline bool poolx_ring_before(int tier_x, double rank_x, int tier_y, double rank_y, bool cold = false) {
     const int rx = poolx_ring_rank_of(tier_x, cold), ry = poolx_ring_rank_of(tier_y, cold);
     if (rx != ry) { return rx < ry; }
     return rank_x < rank_y;
+}
+// --moe cs-tail: the upload area's blocks (poolx_tail_first) before every other block, the rest as poolx_ring_before
+static inline bool poolx_ring_before_tail(bool tail_x, int tier_x, double rank_x, bool tail_y, int tier_y, double rank_y, bool cold) {
+    if (tail_x != tail_y) { return tail_x; }
+    return poolx_ring_before(tier_x, rank_x, tier_y, rank_y, cold);
 }
 
 template <class P> static size_t poolx_lend_round(const P & ap, size_t bytes) {
