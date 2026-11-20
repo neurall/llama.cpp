@@ -1661,7 +1661,10 @@ void llama_context::sched_reserve() {
         // 0.7 s before every request's first pass (one RTX 3090, 2026-11-19), the decode graph built and captured again. A set of the same kinds builds the
         // graph the scheduler was reserved with; a graph that needs more (a larger top-k) is placed as any graph is.
         sr.dirty = false;
-        if (sampler_sig_fork(sampling.samplers) == sr.reserved) {
+        // with the expert cache no kind of sampler needs one either: each graph gets its compute memory when it runs (the pool's lend; a separate
+        // buffer grows once in the allocator). The startup reserve has no samplers, so every first -bs request still paid a whole one: two cards,
+        // 4k prompt, 1303 t/s against 1830 without -bs (2026-11-20)
+        if (cparams.moe_cache || sampler_sig_fork(sampling.samplers) == sr.reserved) {
             return;
         }
         sched_need_reserve = true;

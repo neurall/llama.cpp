@@ -85,3 +85,4 @@ q1-pad0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_KV_D
 q1-cand0,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_ROWREAD_CAND=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-nobs,qwen38,2,pf12k1k,512,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-tailref,qwen38,2,pf12k1k,512,"-bs --moe tail-refill=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-at0,qwen38,2,pf12k1k,512,"-bs --moe autotune=0",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38

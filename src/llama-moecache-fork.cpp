@@ -10208,7 +10208,7 @@ void llama_moe_cache_vram_watch_fork(bool prompt) {
     const uint32_t k = ++n_calls;
     std::vector<int64_t> ran;   // the passes of this call whose class was not seen yet (room_lend)
     ran.swap(g_room_ran);
-    if (!prompt && (k & 31) != 0 && !g_room_check && g_room_pending.empty()) {
+    if (!prompt && (k & 31) != 0 && !g_room_check && ran.empty()) {   // a call that ran no pending shape changes no count: every 32nd as before (a prompt shape stays pending for a whole answer)
         return;
     }
     (void) poolx_room_after_call(g_room_pending, g_room_seen, ran);   // a class not seen yet gets the whole tail area again at its next lend (room_lend)
