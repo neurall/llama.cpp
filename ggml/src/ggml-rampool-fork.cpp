@@ -20,6 +20,7 @@
 #include "ggml-hist-fork.h"
 #include "ggml-impl.h"
 #include "ggml-read-fork.h"
+#include "ggml-rampool-tune-fork.h"
 
 #include <algorithm>
 #include <atomic>
@@ -107,6 +108,7 @@ struct rp_pool {
     void * ud = nullptr;
     std::map<int, int> dfd_of;          // file handle -> its O_DIRECT handle
     int    n_threads = 0;
+    int    n_tuned = 0;   // the threads the fill settled on (rp_tune_step); the readers start with them
 
     std::mutex              mu;         // tables, queue and records; held for microseconds
     std::condition_variable work_cv, done_cv;
@@ -567,7 +569,7 @@ void ggml_rampool_fill_fork(void) {
         for (size_t pass = 0; pass < 2; ++pass) { for (size_t i = s0 + pass; i < s1; i += 2) { spaced.push_back(jobs[i]); } }
     }
     std::atomic<size_t> next{ 0 };
-    std::atomic<uint64_t> bad{ 0 };
+    std::atomic<uint64_t> bad{ 0 }, done_b{ 0 };
     auto work = [&]() {
         rp_thread_setup();
         const size_t bn = std::max<size_t>(p->rq, RP_SECTOR);
@@ -577,6 +579,7 @@ void ggml_rampool_fill_fork(void) {
             if (i >= spaced.size()) { break; }
             const range & r = spaced[i];
             if (bounce == nullptr || !rp_read(p, r.t->dfd, r.t->fd, r.dst, r.n, r.off, bounce, bn)) { bad++; }
+            done_b.fetch_add(r.n, std::memory_order_relaxed);
             if (ck_left[r.ck].fetch_sub(1) == 1 && g_rp_chunk_done) {   // the chunk's last read: a failed one too (a failed fill drops the blocks below, the pin is harmless)
                 const rp_class & c = p->cls[r.t->cls];
                 g_rp_chunk_done(c.chunks[r.ck - ck0[r.t->cls]], p->ud);
@@ -585,9 +588,26 @@ void ggml_rampool_fill_fork(void) {
         free(bounce);
     };
     std::vector<std::thread> th;
-    const int n_fill = p->n_threads * rp_drives(p);
-    for (int i = 0; i < n_fill; ++i) { th.emplace_back(work); }
+    // the thread count from the fill's own rate (ggml-rampool-tune-fork.h): windows of at least 1 s and 1 GiB, doubled while it reads more than 5% faster
+    rp_thread_tune tune;
+    tune.n = p->n_threads * rp_drives(p);
+    for (int i = 0; i < tune.n; ++i) { th.emplace_back(work); }
+    std::string steps;
+    while (!tune.settled && next.load() < spaced.size()) {
+        const uint64_t b0 = done_b.load();
+        const double w0 = rp_now_us();
+        while (next.load() < spaced.size() && (rp_now_us() - w0 < 1e6 || done_b.load() - b0 < ((uint64_t) 1 << 30))) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); }
+        if (next.load() >= spaced.size()) { break; }   // the fill ran out before the window closed: its rate is no window's
+        const double gbs = (double) (done_b.load() - b0) / ((rp_now_us() - w0) / 1e6) / 1e9;
+        const int before = tune.n;
+        tune = rp_tune_step(tune, gbs, 64);
+        steps += " " + std::to_string(before) + ":" + std::to_string(gbs).substr(0, 4);
+        for (int i = before; i < tune.n; ++i) { th.emplace_back(work); }
+    }
+    const int n_fill = (int) th.size();
+    p->n_tuned = tune.n;
     for (auto & x : th) { x.join(); }
+    if (!steps.empty()) { GGML_LOG_WARN("rampool: fill threads by window (threads:GB/s):%s -> %d for the readers\n", steps.c_str(), tune.n); }
     if (bad.load() > 0) { GGML_LOG_ERROR("rampool: %llu reads of the fill failed, those blocks are dropped\n", (unsigned long long) bad.load()); }
     for (auto & tp : p->tensors) {
         rp_tensor & t = *tp;
@@ -616,7 +636,7 @@ void ggml_rampool_fill_fork(void) {
     for (const auto & t : p->tensors) { esz_min = std::min(esz_min, t->esz); }
     const size_t pieces = esz_min == SIZE_MAX ? 1 : std::max<size_t>(1, (esz_min + sr_blk() - 1) / sr_blk());
     const int drives = rp_drives(p);
-    const int n_rd = std::max(p->n_threads * drives, (int) std::min<size_t>(64, ((size_t) drives * sr_qd() + pieces - 1) / pieces));
+    const int n_rd = std::max({ p->n_threads * drives, p->n_tuned, (int) std::min<size_t>(64, ((size_t) drives * sr_qd() + pieces - 1) / pieces) });
     GGML_LOG_WARN("rampool: %d readers (slices from %.2f MiB: %zu blocks of %zu KiB each, %d in flight wanted%s)\n", n_rd, esz_min == SIZE_MAX ? 0.0 : esz_min / 1048576.0,
             pieces, sr_blk() >> 10, sr_qd(), drives > 1 ? " on each of two drives" : "");
     for (int i = 0; i < n_rd; ++i) { p->readers.emplace_back(rp_reader, p); }
