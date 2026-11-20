@@ -189,3 +189,16 @@ static inline bool ggml_stream_plan_check(const std::vector<ggml_stream_unit> & 
     }
     return true;
 }
+
+// Which graphs the plan may split, and the scratch their side streams keep (ggml-cuda.cu: the plan at capture, ggml_backend_cuda_nodes_scratch_fork). A graph with
+// a node over GGML_STREAMS_NODE_MAX stays on one stream (a prompt pass's kernels fill the card one at a time; a view or a node that writes into another tensor
+// has that tensor's size and says nothing). A graph the plan may split keeps two pieces a side stream at the top of the lent region (ggml_cuda_pool_scratch_side),
+// each the most a product beside the main chain takes (side_b); a graph it may not split takes none. Kimi K3.1, 2026-11-20: the room went to every graph, a
+// 5056-token prompt graph's small-output projections took 6 x their scratch, +0.07-0.08 MiB a token of lend on each card, and the last of three passes no
+// longer fit beside the KV: four passes against the release's three (GGML_CUDA_STREAMS=0 gave the release's lend back).
+constexpr size_t GGML_STREAMS_NODE_MAX = (size_t) 4 << 20;
+static inline bool ggml_stream_graph_may_split(size_t max_node_bytes) { return max_node_bytes <= GGML_STREAMS_NODE_MAX; }
+static inline size_t ggml_stream_side_room(int n_streams, size_t side_b, size_t max_node_bytes) {
+    if (n_streams < 2 || !ggml_stream_graph_may_split(max_node_bytes)) { return 0; }
+    return (size_t) (n_streams - 1) * 2 * ((side_b + 255) / 256 * 256);
+}

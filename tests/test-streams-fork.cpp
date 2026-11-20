@@ -178,5 +178,14 @@ int main() {
         assert(n_side > 0 && n_wait > 0);
         printf("ok: %d streams, 4000 random graphs, %ld units beside the main chain, %ld waits, estimated time %.1f%% shorter on average\n", k, n_side, n_wait, 100.0 * gain / 4000);
     }
+    {   // the side streams' scratch only for a graph the plan may split. Kimi K3.1's 5056-token prompt graph (2026-11-20): its largest node 5056 x 7168 x 4 B,
+        // the side product's scratch about 40 MB; the 6 x 40 MB it had been given cost the third pass its room beside the KV
+        assert(ggml_stream_side_room(4, (size_t) 40 << 20, (size_t) 5056 * 7168 * 4) == 0);
+        assert(ggml_stream_side_room(4, 1000, (size_t) 2 << 20) == (size_t) 3 * 2 * 1024);   // a decode graph, every node within 4 MiB: two pieces a side stream
+        assert(ggml_stream_side_room(2, 256, GGML_STREAMS_NODE_MAX) == 2 * 256);
+        assert(ggml_stream_side_room(0, 1000, 1024) == 0 && ggml_stream_side_room(1, 1000, 1024) == 0);   // streams off (GGML_CUDA_STREAMS=0)
+        assert(ggml_stream_graph_may_split(GGML_STREAMS_NODE_MAX) && !ggml_stream_graph_may_split(GGML_STREAMS_NODE_MAX + 1));
+        printf("ok: side-stream scratch only for graphs the plan may split\n");
+    }
     return 0;
 }

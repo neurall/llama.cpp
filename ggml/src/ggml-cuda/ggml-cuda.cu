@@ -4675,6 +4675,7 @@ static size_t ggml_cuda_fattn_scratch_fork(int device, const ggml_tensor * dst) 
 // once (some path tests read the current device's properties, ggml_cuda_should_use_mmq: shared memory per block; switching per node cost 0.2 ms per DeepSeek
 // 4.1 decode step).
 static int ggml_cuda_streams_fork();
+static size_t ggml_cuda_stream_node_max_fork(const ggml_tensor * const * nodes, int n, const char ** name = nullptr);
 static size_t ggml_backend_cuda_nodes_scratch_fork(int device, const ggml_tensor * const * nodes, int n) {
     ggml_cuda_fattn_f16_scratch_fork[device] = true;
     int prev = -1;
@@ -4696,7 +4697,7 @@ static size_t ggml_backend_cuda_nodes_scratch_fork(int device, const ggml_tensor
             case GGML_OP_MUL_MAT: {
                 const size_t mm = ggml_cuda_mm_scratch_fork(device, node->src[0], node->src[1], node, 0);
                 need = std::max(need, mm);
-                if (ggml_nbytes(node) <= ((size_t) 4 << 20)) { side = std::max(side, mm); }
+                if (ggml_nbytes(node) <= GGML_STREAMS_NODE_MAX) { side = std::max(side, mm); }
                 break;
             }
             case GGML_OP_FLASH_ATTN_EXT: need = std::max(need, ggml_cuda_fattn_scratch_fork(device, node));                           break;
@@ -4719,9 +4720,8 @@ static size_t ggml_backend_cuda_nodes_scratch_fork(int device, const ggml_tensor
     if (has_mm && ggml_cuda_q8_reuse_on()) {
         need += GGML_PAD((size_t) Q8R_LANES * Q8R_SLOTS * Q8R_SLOT_BYTES, 256);   // the q8 reuse slots stay taken under every node of the graph
     }
-    if (n > 1 && ggml_cuda_streams_fork() > 0) {
-        // the side streams' pieces stay at the top of the region until the streams are joined (ggml_cuda_pool_scratch_side): room for two a stream
-        need += (size_t) (ggml_cuda_streams_fork() - 1) * 2 * GGML_PAD(side, 256);
+    if (n > 1) {   // the side streams' pieces stay at the top of the region until the streams are joined (ggml_cuda_pool_scratch_side), in a graph the plan may split
+        need += ggml_stream_side_room(ggml_cuda_streams_fork(), side, ggml_cuda_stream_node_max_fork(nodes, n));
     }
     return need;
 }
@@ -5583,6 +5583,19 @@ static void ggml_backend_cuda_synchronize(ggml_backend_t backend) {
 static bool ggml_cuda_is_view_or_noop(const ggml_tensor * t) {
     return ggml_is_empty(t) || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_TRANSPOSE ||
            t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_NONE;
+}
+
+// the largest node the stream plan judges a graph by (ggml_stream_graph_may_split): views and nodes that write into another tensor left out; name: that node's
+static size_t ggml_cuda_stream_node_max_fork(const ggml_tensor * const * nodes, int n, const char ** name) {
+    size_t m = 0;
+    for (int i = 0; i < n; ++i) {
+        const ggml_tensor * t = nodes[i];
+        if (!ggml_cuda_is_view_or_noop(t) && t->view_src == nullptr && ggml_nbytes(t) > m) {
+            m = ggml_nbytes(t);
+            if (name) { *name = t->name; }
+        }
+    }
+    return m;
 }
 
 // fork: the streams for a card's part of a decode graph (ggml-streams-fork.h): GGML_CUDA_STREAMS=2..4, 4 unless set.
@@ -8283,11 +8296,8 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
             if (rec_on && use_cuda_graph && cuda_graph_update_required && stream_ctx.concurrent_events.empty() && cgraph->n_nodes >= 32) {
                 // a decode graph: a prompt pass's kernels fill the card one at a time, nothing to gain beside them. A node that writes into another tensor
                 // (a row of the KV, a state) has that tensor's size and says nothing
-                const char * why = nullptr;
-                for (int i = 0; i < cgraph->n_nodes && !why; ++i) {
-                    const ggml_tensor * t = cgraph->nodes[i];
-                    if (!ggml_cuda_is_view_or_noop(t) && t->view_src == nullptr && ggml_nbytes(t) > ((size_t) 4 << 20)) { why = t->name; }
-                }
+                const char * why = nullptr, * big = nullptr;
+                if (!ggml_stream_graph_may_split(ggml_cuda_stream_node_max_fork(cgraph->nodes, cgraph->n_nodes, &big))) { why = big; }
                 std::lock_guard<std::mutex> lock(g_cuda_stream_rec_mtx);
                 const auto it = g_cuda_stream_recs.find({ cuda_ctx->device, graph_key });
                 static std::atomic<int> said{0};
