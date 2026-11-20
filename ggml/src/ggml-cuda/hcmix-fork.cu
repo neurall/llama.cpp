@@ -55,7 +55,7 @@ static __global__ void hcf_down(const uint8_t * __restrict__ w, int64_t row_byte
                                 (float) (int8_t) ((v >> 16) & 255u) * xv.z + (float) (int8_t) (v >> 24) * xv.w);
         }
 #pragma unroll
-        for (int o = 16; o > 0; o >>= 1) { acc += __shfl_xor_sync(0xffffffffu, acc, o); }
+        for (int o = 16; o > 0; o >>= 1) { acc += __shfl_xor_sync(0xffffffffu, acc, o, 32); }
         if (lane == 0 && row0 + r < R) { part[(int64_t) kc * R + row0 + r] = acc; }
     }
 }
@@ -106,7 +106,7 @@ static __global__ void hcf_up(const uint8_t * __restrict__ w, int64_t row_bytes,
                                 (float) (int8_t) ((v >> 16) & 255u) * xv.z + (float) (int8_t) (v >> 24) * xv.w);
         }
 #pragma unroll
-        for (int o = 16; o > 0; o >>= 1) { acc += __shfl_xor_sync(0xffffffffu, acc, o); }
+        for (int o = 16; o > 0; o >>= 1) { acc += __shfl_xor_sync(0xffffffffu, acc, o, 32); }
         if (lane == 0) { gate[warp * RPW + r] = acc; }
     }
     __syncthreads();
