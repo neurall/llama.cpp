@@ -1,11 +1,7 @@
 # Rocket LLama 
 
 
-# up to 46x faster prefill and 34x decode on big models 
-<img width="1889" height="627" alt="image" src="https://github.com/user-attachments/assets/a1740ca8-11d0-4c7f-bcb4-6d436277e35e" />
-
-
-
+# up to 25x faster prefill and 2x decode on big models 
 
 Fork of llama.cpp with multi gpu acceleration even for models bigger than total gpu mem. 
 But even on single 5090 20x pp and 2x t gains 
