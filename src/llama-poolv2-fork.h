@@ -568,14 +568,53 @@ static inline pv2_zone pv2_sort_range(const pv2_heap & h, size_t Z, size_t budge
     std::vector<size_t> cand;
     for (const auto & [s, r] : h.res) { if (s < Z && !r.pin && r.id != PV2_HOLD && r.heat > min_heat) { cand.push_back(s); } }
     std::stable_sort(cand.begin(), cand.end(), [&](size_t a, size_t b) { const pv2_res & x = h.res.at(a), & y = h.res.at(b); return x.heat != y.heat ? x.heat > y.heat : a < b; });
+    // 1. exact swaps: a hot resident takes the place of the coldest resident above Z of the very same size and unit (the cold one leaves): no fragment, no chain, O(n log n)
+    std::map<std::pair<size_t, size_t>, std::vector<size_t>> by_size;   // (n, u) -> starts above Z, colder first
+    for (const auto & [s, r] : sub.res) { if (!r.pin && r.id != PV2_HOLD) { by_size[{ r.n, r.u }].push_back(s); } }
+    for (auto & [k, v] : by_size) { std::stable_sort(v.begin(), v.end(), [&](size_t a, size_t b) { const pv2_res & x = sub.res.at(a), & y = sub.res.at(b); return x.heat != y.heat ? x.heat < y.heat : a < b; }); }
+    std::map<std::pair<size_t, size_t>, size_t> next_cold;
+    std::vector<size_t> rest;
     for (size_t s : cand) {
+        const pv2_res & r = h.res.at(s);
+        if (z.bytes + r.n > budget) { break; }
+        size_t fs = PV2_NONE;   // a free window above Z first: nothing leaves
+        for (const auto & [ga, gl] : sub.gaps) {
+            const size_t c = pv2_fit(ga, ga + gl, r.n, r.u, Z);
+            if (c != PV2_NONE) { fs = c; break; }
+        }
+        if (fs != PV2_NONE) {
+            z.steps.push_back({ r.id, s, fs });
+            z.bytes += r.n;
+            pv2_res moved = r; moved.pin = true;
+            pv2_add(sub, fs, moved);
+            continue;
+        }
+        auto it = by_size.find({ r.n, r.u });
+        size_t & ix = next_cold[{ r.n, r.u }];
+        if (it != by_size.end() && ix < it->second.size() && sub.res.at(it->second[ix]).heat < r.heat) {
+            const size_t cs = it->second[ix++];
+            const int32_t cid = sub.res.at(cs).id;
+            z.evicted.push_back(cid);
+            z.steps.push_back({ cid, cs, PV2_NONE });
+            z.steps.push_back({ r.id, s, cs });
+            z.bytes += r.n;
+            pv2_res moved = r; moved.pin = true;
+            sub.res[cs] = moved;   // same bytes, new owner: later passes neither evict nor shift it
+        } else {
+            rest.push_back(s);
+        }
+    }
+    // 2. what no same-size cold resident could take: a free window, else a chain over colder residents (pv2_plan_move), a few only (each costs a search)
+    size_t tried = 0;
+    for (size_t s : rest) {
+        if (tried++ >= 32) { break; }
         const pv2_res & r = h.res.at(s);
         if (z.bytes + r.n > budget) { break; }
         const pv2_move mv = pv2_plan_move(sub, Z, r.n, r.u, r.heat, budget - z.bytes - r.n);
         if (!mv.ok || mv.s == PV2_NONE) { continue; }
-        for (size_t es : mv.evict) { z.evicted.push_back(sub.res.at(es).id); z.steps.push_back({ sub.res.at(es).id, es, PV2_NONE }); }   // an eviction is a step with no destination, in order
+        for (size_t es : mv.evict) { z.evicted.push_back(sub.res.at(es).id); z.steps.push_back({ sub.res.at(es).id, es, PV2_NONE }); }
         pv2_apply_move(sub, mv, r);
-        sub.res.at(mv.s).pin = true;   // placed: a later mover neither evicts nor shifts it (its copy would be wasted)
+        sub.res.at(mv.s).pin = true;
         for (const auto & st : mv.steps) { z.steps.push_back(st); }
         z.steps.push_back({ r.id, s, mv.s });
         z.bytes += mv.bytes + r.n;
