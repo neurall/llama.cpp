@@ -7732,7 +7732,9 @@ def stock_gain(peek, res, build=None):
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
         q = "select tps, pp, build, bno, start_ts, rowid from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'{G} order by start_ts desc limit 12"
         qa = (os.path.basename(peek[0]), tst)
-        rs = c.execute(q.replace("{G}", " and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), qa).fetchall()   # the same prompt only: pf12k1k (instruction + 12k source, 1k answer) is stored as pf12k with about 1024 tokens; an old 12k run with a 64-token answer was another prompt
+        rs = c.execute(q.replace("{G}", " and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), qa).fetchall()
+        if not rs and " and ts >= " in HWF[0]:   # no stock run since the machine changed (HW_SINCE): the newest one before it, its build and date show in the table (user 2026-11-21)
+            rs = c.execute(q.replace(HWF[0], re.sub(r" and ts >= '[^']*'", "", HWF[0])).replace("{G}", " and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), qa).fetchall()   # the same prompt only: pf12k1k (instruction + 12k source, 1k answer) is stored as pf12k with about 1024 tokens; an old 12k run with a 64-token answer was another prompt
         tm = max(x[0] for x in res) if res else 0
         if build and str(build).startswith("stock"): rs = [x for x in rs if abs(float(x[0]) - tm) > 0.002 * tm][:1]   # a stock cell is compared with the previous stock run (this run is already in the table)
         r = rs[0] if rs else None
