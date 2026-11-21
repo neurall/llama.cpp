@@ -2711,7 +2711,13 @@ static void pv2_zone_sort(moe_cache * mc, size_t a, size_t b) {
     optime_t _ot(OP_ZONE_SORT);
     std::lock_guard<std::mutex> lk(mc->mtx);
     pv2_refresh(mc, false, true);   // every resident's keep rank now
-    const pv2_zone zp = pv2_sort_range(v.main, b, (size_t) 4 << 30, 0);
+    pv2_heap hp = v.main;   // an expert whose upload is queued, running or not yet published stays where it is (a worker copies into its place)
+    for (auto & [x, r] : hp.res) {
+        if (r.id < 0) { continue; }
+        const layer_state & lq = mc->layers[(size_t) (r.id / v.E)];
+        if (lq.slot_in_flight[(size_t) (r.id % v.E)] || lq.queued[(size_t) (r.id % v.E)]) { r.pin = true; }
+    }
+    const pv2_zone zp = pv2_sort_range(hp, b, (size_t) 4 << 30, 0);
     if (zp.steps.empty()) { return; }
     auto & ap = mc->alias[v.ap_idx];
     uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf);
