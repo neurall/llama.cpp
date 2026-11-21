@@ -7142,8 +7142,9 @@ LIVE_RATE = {}   # live speed of the cell's server: last sample, current rates a
 def live_rate_step(st, now, n_prompt, n_dec):
     """one /slots sample (about every 3 s): tokens per second since the last sample of the same phase, and the maximum so far per phase. pp = prompt tokens while it prefills, t = tokens written once it decodes. Returns (phase, rate) or None for the first sample of a phase."""
     phase = "t" if n_dec else "pp"; n = n_dec if n_dec else n_prompt
-    if st.get("phase") != phase or st.get("n") is None or n < st["n"] or not n:
+    if st.get("phase") != phase or st.get("n") is None or n < st["n"]:
         st.update(phase=phase, t=now, n=n); return None
+    if n == st["n"]: return None   # nothing new: the clock stays at the last change (stock reports a 2048-token batch only at its end: 2048 tokens over 1.5 s read 1364 t/s, real 2.3)
     dt = now - st["t"]
     if dt <= 0: return None
     rate = (n - st["n"]) / dt
