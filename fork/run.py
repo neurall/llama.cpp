@@ -7198,7 +7198,10 @@ def best_ref(model, test):
         except Exception: _BEST_REF[key] = None
     return _BEST_REF[key]
 CELL_REC = []       # structured twin of CELL_LINES: the final table is built from it
+RELAX_LVL = [2]      # how far stock_row may relax when RELAX_STOCK is on: 1 a shorter answer of the same test, 2 also another test; best_gainer walks 0, 1, 2
+RELAX_ERA = [True]    # off while `run status` weighs each hardware state against its own stock (best_gainer): no stock row of another state stands in
 RELAX_STOCK = [False]  # display only (`run status`, the skipped cells of -nrt/-nrts): a stock run of another answer length / before the machine change / another test stands in when none fits; a live run never uses it (store_gains writes its gain into runs.db)
+BEST_RUN_COL = [False]  # -br: the best run column (build, prompt, speeds, ms per token, power of our best earlier run)
 STATUS_FMT = [False]  # -nrts: the skipped cells show in the `run status` format: one line, the best run, stock gains (user 2026-11-21)
 STOCK_REC = [None]  # set by stock_gain: the stock numbers behind its text
 CELL_LINES = []     # one summary line per finished cell, printed when the list ends
@@ -7298,14 +7301,14 @@ def live_clear():
 OLDER_MIN_BNO = 13509   # builds before this are not shown as older gainers (user 2026-10-19)
 
 
-def older_gainers(model, test, cur_bno, st, gm, limit=2):
+def older_gainers(model, test, cur_bno, st, gm, limit=2, min_bno=None, gen=None):
     """earlier builds of ours with a bigger overall gain over the same stock numbers than this build: [(build, bno, date, t, pp, gain t/s, gain pp)], best first"""
     import sqlite3
     if not model or not test or not st or not str(cur_bno).isdigit(): return []
     try:
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
         rows = c.execute("select coalesce(nullif(\"commit\",''), build), bno, tps, pp, start_ts, rowid from runs where model=? and test=? and build not like 'stock%' and build not like 'strata%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and bno<? and bno>=? and coalesce(env,'') not like '%warmpass%' and n_gen between ? and ?",
-                         (os.path.basename(model), ALIASES.get(test, test), int(cur_bno), OLDER_MIN_BNO, (ALIAS_TOKENS.get(test) or 0) // 2, (ALIAS_TOKENS.get(test) or 10**9) * 2)).fetchall()
+                         (os.path.basename(model), ALIASES.get(test, test), int(cur_bno), OLDER_MIN_BNO if min_bno is None else min_bno, (gen or ALIAS_TOKENS.get(test) or 0) // 2, (gen or ALIAS_TOKENS.get(test) or 10**9) * 2)).fetchall()
     except sqlite3.Error: return []
     by = {}
     for b, n, t, p, ts, rid in rows: by.setdefault((str(b)[:9], n), []).append((float(t), float(p) if p else None, str(ts)[:10], rid))
@@ -7317,6 +7320,54 @@ def older_gainers(model, test, cur_bno, st, gm, limit=2):
         if g > gm: out.append((g, b, int(n), max(x[2] for x in v), t, p, gt, gp, max(x[3] for x in v)))
     out.sort(reverse=True)
     return [(b, n, d, t, p, gt, gp, rid) for g, b, n, d, t, p, gt, gp, rid in out[:limit]]
+
+
+def hw_label(rid):
+    """the RAM of the machine that made runs.db row rid, from its hardware line (`[256g ddr4 ...`): "256"; "" when the row has none"""
+    import sqlite3
+    try: r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select hwline from runs where rowid=?", (rid,)).fetchone()
+    except sqlite3.Error: r = None
+    m = re.match(r"\[(\d+)g", (r[0] or "") if r else "")
+    return m.group(1) if m else ""
+
+
+def best_gainer(model, test, all_hw=True, gen=None):
+    """`run status` (user 2026-11-21: "best gainers from all hw merged", "go as far in history as needed", "we need to know global state of things"): in every
+    hardware state of the machine (PC1: since HW_SINCE and before it, 256 and 128 GiB) the build of ours with the biggest overall gain over that state's own stock
+    (the median of the build's runs, as older_gainers, any build number), the best of them: dict(t, p, gt, gp, gm, bno, rid, st, sp, sb, sid, hw), None without one"""
+    if not model or not test: return None
+    hw = row_hw()
+    eras = [HWF[0]] if not all_hw or HW_TEXT[0] or os.environ.get("RUN_SIMJOE") else [hw_filter(hw)] + ([f" and hw='{hw}' and ts < '{HW_SINCE[hw]}'" + ONE_REQ] if hw in HW_SINCE else [])
+    best, keep, kr, kl, ke = None, HWF[0], RELAX_STOCK[0], RELAX_LVL[0], RELAX_ERA[0]
+    try:
+        RELAX_ERA[0] = ke and not all_hw   # -nrts (this state only): the stock the cell's own line uses; status: each state its own
+        for lvl in (range(3) if all_hw else (RELAX_LVL[0],)):   # status: a stock run of the same test and answer length in any state beats a stand-in (a shorter answer, then another test) in any other
+            if all_hw: RELAX_STOCK[0] = lvl > 0; RELAX_LVL[0] = lvl
+            for hf in eras:
+                HWF[0] = hf
+                r = stock_row((model, test), [])
+                if not r or not r[0]: continue
+                st = dict(t=float(r[0]), p=float(r[1]) if r[1] else None)
+                g = older_gainers(model, test, 10**9, st, 0.0, limit=1, min_bno=0, gen=gen)   # gen: the answer length the cell asks (a 64-token answer is no 1k cell)
+                if not g: continue
+                b, n, d, t, p, gt, gp, rid = g[0]
+                gs = [x for x in (gt, gp) if x]; gm = math.prod(gs) ** (1 / len(gs))
+                if best is None or gm > best["gm"]:
+                    best = dict(t=t, p=p, gt=gt, gp=gp, gm=gm, bno=n, rid=rid, st=st["t"], sp=st["p"], sid=r[5], sb=int(r[3]) if r[3] else (re.search(r"b(\d+)", str(r[2])) or [0, "?"])[1], hf=hf)
+            if best: break
+    finally:
+        HWF[0] = keep; RELAX_ERA[0] = ke; RELAX_STOCK[0] = kr; RELAX_LVL[0] = kl
+    if best: best["hw"] = hw_label(best["rid"]) or era_label(best["hf"])
+    return best
+
+
+def era_label(hf):
+    """the RAM of a hardware state (a row filter of best_gainer) from the newest row of it that has a hardware line: "128"; "" when none has"""
+    import sqlite3
+    try: r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select hwline from runs where coalesce(hwline,'') like '[%'" + hf + " order by ts desc limit 1").fetchone()
+    except sqlite3.Error: r = None
+    m = re.match(r"\[(\d+)g", r[0] if r else "")
+    return m.group(1) if m else ""
 
 
 def passes_save(model, test, build):
@@ -7633,7 +7684,7 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         elif r.get("stock_row") and res:   # a stock cell and none of ours yet: the stock numbers in the stock columns, ours empty
             st = dict(t=t, p=p, ob="", od="", sb=r.get("sbno") or "?", sd=r.get("sdate") or "", sid=r.get("rid")); t = p = None; rid_show = None
         gt = t / st["t"] if st and t else None; gp = p / st["p"] if st and p and st["p"] else None
-        body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" + (f" {min(99, int(100 * el / r['exp']))}%" if el is not None and r.get("exp") else "") if el is not None else f"~{int(r['est'] // 60)}:{int(r['est'] % 60):02d}" if r.get("est") else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), loop=loop_flag(rid_show), t=f(t, 2), p=f(p, 1), g=gpus_used(rid_show),
+        body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" + (f" {min(99, int(100 * el / r['exp']))}%" if el is not None and r.get("exp") else "") if el is not None else f"~{int(r['est'] // 60)}:{int(r['est'] % 60):02d}" if r.get("est") else "", load=r["lt"].split(" p ")[0].replace("l ", ""), fail=bool(r["rc"]), loop=loop_flag(rid_show), t=f(t, 2), p=f(p, 1), g=gpus_used(rid_show),
                          st=f(st["t"], 2) if st else "", sp=f(st["p"], 1) if st and st["p"] else "", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, ppl=(ppl_pair(r.get("model"), st.get("ob")) if st and st.get("ob") else ""), nost=(not st and not r["stock_row"])))
         pn_, og_, _pl = run_tokens(rid_show) if rid_show and t and p and not r.get("ref") and not r.get("stock_row") else (None, None, "")
         bb = best_by_time(r.get("model"), r.get("build"), (pn_, og_) if pn_ and og_ else None) if not r.get("ref") and not r.get("stock_row") and res else None   # this run against the best earlier run of ours, both timed at this run's token mix
@@ -7645,14 +7696,21 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         body[-1]["stfmt"] = bool(r.get("section") or (STATUS_FMT[0] and r.get("skipped")))   # this line in the status format (a cell that ran now keeps its own result)
         body[-1]["bt"] = (f"b{st['ob']} {st['od'][5:]} vs b{st['sb']} {st['sd'][5:]}" if st["ob"] else f"stock b{st['sb']} {st['sd'][5:]}") if st else ""; body[-1]["bts"] = (f"b{st['ob']} vs b{st['sb']}" if st["ob"] else f"stock b{st['sb']}") if st else ""
         gs = [g for g in (gt, gp) if g]; body[-1]["gm"] = math.prod(gs) ** (1 / len(gs)) if gs else 0   # overall gain: geometric mean of decode and prompt gain
+        body[-1]["sb_"] = st.get("sb", "") if st else ""
         body[-1]["old"] = [dict(name=r["name"], is_old=True, out="", id=str(orid), sid="", prompt=r.get("prompt") or "", time="", load="", fail=False, t=f(t, 2), p=f(p, 1), st="", sp="", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=False, gm=0, old=[],
-                                bt=f"b{n} {d[5:]} {b}", bts=f"b{n} {b}", st_=None, g=gpus_used(orid)) for b, n, d, t, p, gt, gp, orid in older_gainers(r.get("model"), r.get("test"), st["ob"], st, body[-1]["gm"])] if st and not live and not r.get("ref") else []
-    for x in body:   # older builds' lines carry the cell's stock numbers; a line with stock only takes the newest older run of ours in its place (user 2026-11-21)
+                                bt=f"b{n} {d[5:]} {b}", bts=f"b{n} {b}", st_=None, g=gpus_used(orid), bno=n) for b, n, d, t, p, gt, gp, orid in older_gainers(r.get("model"), r.get("test"), st["ob"], st, body[-1]["gm"])] if st and not live and not r.get("ref") else []
+    def tl(rid):   # time and load columns of runs.db row rid
+        el_, lt_ = run_times(rid)
+        return dict(time=f"{int(el_ // 60)}:{int(el_ % 60):02d}" if el_ else "", load=lt_.split(" p ")[0].replace("l ", ""))
+    for x, r_ in zip(body, recs):   # older builds' lines carry the cell's stock numbers; a line with stock only takes the newest older run of ours in its place (user 2026-11-21)
         for o in x.get("old", []): o["st"], o["sp"] = x["st"], x["sp"]
         gm_ = lambda y: math.prod(g) ** (1 / len(g)) if (g := [v for v in (y.get("gtv"), y.get("gpv")) if v]) else (float(y["t"]) / 1e6 if y.get("t") else 0)
         if x.get("old") and (not x["t"] or x.get("stfmt")):   # `run status`: one line per cell, its best run (by gain over stock, else decode t/s)
             o = max(x["old"], key=gm_)
-            if not x["t"] or gm_(o) > gm_(x): x.update({k: o[k] for k in ("t", "p", "gt", "gp", "gtv", "gpv", "bt", "bts", "id", "g") if k in o}); x["gm"] = gm_(x) if x.get("gtv") or x.get("gpv") else 0
+            if not x["t"] or gm_(o) > gm_(x):
+                x.update({k: o[k] for k in ("t", "p", "gt", "gp", "gtv", "gpv", "bt", "bts", "id", "g") if k in o}); x["gm"] = gm_(x) if x.get("gtv") or x.get("gpv") else 0
+                if o.get("bno") and x.get("sb_"):   # the builds column as for a run: ours vs stock, with the perplexity pair, answer lengths, time and load of that run (user 2026-11-21)
+                    x.update(bt=f"b{o['bno']} vs b{x['sb_']}", bts=f"b{o['bno']} vs b{x['sb_']}", ppl=ppl_pair(r_.get("model"), o["bno"]), out=out_len(o["id"], x["sid"] or None), **tl(o["id"]))
             if x.get("stfmt"): x["old"] = []
             else: x["old"].remove(o) if o in x["old"] and x["t"] == o["t"] else None
     for x, r_ in zip(body, recs):   # `run status`, a cell with no run in the window, no stock and so no older lines: its best older run of ours, no gain (user 2026-11-21: k31-io, k31-o)
@@ -7671,6 +7729,18 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         if not x["gm"] and og:
             x["gm"] = max(og)
             if x.get("section") == "queued": x["section"] = None
+    for x, r_ in zip(body, recs):   # `run status`: every cell's line is its best gainer over all builds and the machine's hardware states, each against its own stock (best_gainer); -nrts: of this state
+        if not x.get("stfmt") or x.get("section") == "running" or not r_.get("model"): continue
+        bg = best_gainer(r_["model"], r_["test"], all_hw=bool(x.get("section")), gen=r_.get("asked") or None)
+        if bg and (x.get("section") or not x["t"] or bg["gm"] >= (x["gm"] or 0)):   # status: the best gainer always (its search holds the line's own build)
+            x.update(t=f(bg["t"], 2), p=f(bg["p"], 1), gt=f(bg["gt"], 2), gp=f(bg["gp"], 2), gtv=bg["gt"], gpv=bg["gp"], gm=bg["gm"], st=f(bg["st"], 2), sp=f(bg["sp"], 1) if bg["sp"] else "",
+                     bt=f"b{bg['bno']} vs b{bg['sb']}", bts=f"b{bg['bno']} vs b{bg['sb']}", id=str(bg["rid"]), sid=str(bg["sid"] or ""), ppl=ppl_pair(r_["model"], bg["bno"]),
+                     out=out_len(bg["rid"], bg["sid"]), g=gpus_used(bg["rid"]), hw=bg["hw"], keeptail=True, vt="", vtv=None, **tl(bg["rid"]))
+            if BEST_RUN_COL[0]:   # -br: the best run by time at this run's token mix, any build
+                pn_, og_, _pl = run_tokens(bg["rid"])
+                x["vp"] = best_run_text(best_by_time(r_["model"], "-", (pn_, og_) if pn_ and og_ else None))
+        else: x["hw"] = hw_label(x["id"]) if x.get("id") else ""
+        x["old"] = []
     if not any(x.get("section") == "running" for x in body):   # `run status` with no list running: a cell with values is a result, not a queue entry, and sorts by its gain (user 2026-11-21)
         for x in body:
             if x.get("section") == "queued" and x["t"]: x["section"] = None
@@ -7680,36 +7750,41 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
     for x in allrows: x.setdefault("xfer", ""); x.setdefault("vt", ""); x.setdefault("vp", ""); x.setdefault("vtv", None); x.setdefault("vpv", None)
     show_x = any(x["xfer"] not in ("", "f32", "f16") for x in body)   # the hand-off column only when a cell of ours ran with other than the f32 default
     wd = lambda k, h: max([len(h)] + [len(x.get(k, "")) for x in allrows])
-    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("g", "par gpus"), ("st", "stock t/s"), ("sp", "stock pp"), ("gt", "x t/s"), ("gp", "x pp"), ("vt", "vs best"), ("vp", "best runp"), ("ppl", "ppl us/stock"), ("bt", "builds"), ("id", "id"), ("sid", "stock id"))}
+    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("g", "gpus"), ("hw", "hw"), ("st", "st t/s"), ("sp", "st pp"), ("gt", "x t/s"), ("gp", "x pp"), ("vt", "vs best"), ("vp", "best runp"), ("ppl", "ppl us/stock"), ("bt", "builds"), ("id", "id"), ("sid", "st id"))}
     if live:   # one finished cell as it happens: fixed minimum widths so the rows of successive cells line up
         W["name"] = NAMEW[0] - 1   # the longest name of the list, whatever this cell is called
         for k, mw in (("prompt", 7), ("out", 7), ("xfer", 4), ("time", 5), ("load", 6), ("t", 7), ("p", 8), ("g", 4), ("st", 9), ("sp", 8), ("gt", 7), ("gp", 7), ("vt", 7), ("vp", 60), ("ppl", 13), ("bt", 16), ("id", 5), ("sid", 8)): W[k] = max(W[k], mw)
         for x in allrows: x["bt"] = x.get("bts", x["bt"])   # short builds, so every row decides the same columns
         W["bt"] = max([16, len("builds")] + [len(x["bt"]) for x in allrows])
     def width(keys): return sum(W[k] + 2 for k in keys)
-    ours = ["name", "prompt", "out"] + (["xfer"] if show_x else []) + ["time", "load", "t", "p", "g"]; stk = ["st", "sp", "gt", "gp", "vt", "vp", "ppl", "bt", "id", "sid"]
+    ours = ["name", "prompt", "out"] + (["xfer"] if show_x else []) + ["time", "load", "t", "p", "g"] + (["hw"] if any(x.get("hw") for x in body) else []); stk = ["st", "sp", "gt", "gp", "vt"] + (["vp"] if BEST_RUN_COL[0] else []) + ["ppl", "bt", "id", "sid"]   # the best run column on -br only (user 2026-11-21)
+    if not live:   # a column empty on every row takes no room (user 2026-11-21: "compactify")
+        ours = [k for k in ours if k in ("name", "prompt", "t", "p") or any(x.get(k) for x in allrows)]; stk = [k for k in stk if any(x.get(k) for x in allrows)]
     while width(ours + stk) > cols and len(ours) > 3 and ("load" in ours or "time" in ours): ours.remove("load" if "load" in ours else "time")
     if width(ours + stk) > cols:   # next to go: the dates in the builds column
         for x in allrows: x["bt"] = x["bts"]
         W["bt"] = max([len("builds")] + [len(x["bt"]) for x in allrows] + ([16] if live else []))
     wrap = False   # never a row in two lines (user 2026-10-24: the stock part on a second line under the name was unreadable); columns are dropped above instead
-    H = {"prompt": "prompt", "out": "out", "xfer": "xfer", "time": "time", "load": "load", "t": "t/s", "p": "pp", "g": "par gpus", "st": "stock t/s", "sp": "stock pp", "gt": "x t/s", "gp": "x pp", "vt": "vs best", "vp": "best run", "ppl": "ppl us/stock", "bt": "builds", "id": "id", "sid": "stock id"}
-    HC = {"prompt": 36, "out": 36, "xfer": 35, "t": 96, "g": 35, "st": 96, "gt": 96, "p": 93, "sp": 93, "gp": 93, "vt": 96, "vp": 93, "ppl": 36, "time": 37, "load": 33, "bt": 90, "id": 37, "sid": 36}
+    H = {"prompt": "prompt", "out": "out", "xfer": "xfer", "time": "time", "load": "load", "t": "t/s", "p": "pp", "g": "gpus", "hw": "hw", "st": "st t/s", "sp": "st pp", "gt": "x t/s", "gp": "x pp", "vt": "vs best", "vp": "best run", "ppl": "ppl us/stock", "bt": "builds", "id": "id", "sid": "st id"}   # st = stock: short heads, so the builds, perplexity and ids fit (user 2026-11-21)
+    HC = {"prompt": 36, "out": 36, "xfer": 35, "t": 96, "g": 35, "hw": 35, "st": 96, "gt": 96, "p": 93, "sp": 93, "gp": 93, "vt": 96, "vp": 93, "ppl": 36, "time": 37, "load": 33, "bt": 90, "id": 37, "sid": 36}
     hl = lambda keys: "".join("  " + col(HC[k], f"{H[k]:<{W[k]}}" if k in ("bt", "vp") else f"{H[k]:>{W[k]}}") for k in keys)
     out = [" " * W["name"] + hl(ours[1:]) + ("" if wrap else hl(stk))]
     if wrap: out.append(" " * W["name"] + hl(stk))
     if not headers: out = []   # `run status`: rows only
     if hdr_out is not None: hdr_out.extend(out); out = []   # live rows: the header goes to the caller (printed once)
     for x in allrows:
-        c = {"prompt": ("36", x["prompt"]), "out": ("36", x["out"]), "xfer": ("35", x["xfer"]), "time": ("37", x["time"]), "load": ("33", x["load"]), "t": ("1;96", x["t"]), "p": ("1;92", x["p"]), "g": ("35", x.get("g", "")), "st": ("96", x["st"]), "sp": ("92", x["sp"])}
+        c = {"prompt": ("36", x["prompt"]), "out": ("36", x["out"]), "xfer": ("35", x["xfer"]), "time": ("37", x["time"]), "load": ("33", x["load"]), "t": ("1;96", x["t"]), "p": ("1;92", x["p"]), "g": ("35", x.get("g", "")), "hw": ("35", x.get("hw", "")), "st": ("96", x["st"]), "sp": ("92", x["sp"])}
         cell = lambda k: "  " + col(c[k][0], f"{c[k][1]:>{W[k]}}")
         gcell = lambda k, v: "  " + (col("1;91" if v < 1 else "37" if v < 2 else "1;97" if v < 10 else "1;93" if v < 40 else "1;92", f"{x[k]:>{W[k]}}") if v is not None else " " * W[k])   # below 1 red, 1-2 plain, 2x bold white, 10x yellow, 40x green
         vcell = lambda k: "  " + (col("1;91" if x[k + "v"] < 0.99 else "1;92" if x[k + "v"] > 1.01 else "37", f"{x[k]:>{W[k]}}") if x.get(k + "v") else col(90, f"{x[k]:>{W[k]}}") if x.get(k) == "first" else " " * W[k])   # against the best earlier run of ours: below 0.99 red (worse), above 1.01 green (better), "first" without one
         ln = col(37 if x.get("is_old") else {"done": "1;92", "running": "1;97", "queued": "90"}.get(x.get("section"), 1), f"{x['name']:<{W['name']}}") + "".join(cell(k) for k in ours[1:]) + (col(31, " FAIL") if x["fail"] else "") + (col(33, " LOOP") if x.get("loop") else "")   # name colour = state (`run status`): green done, white running, grey next
         bcell = lambda: "  " + col(90, f"{x.get('vp', ''):<{W['vp']}}")   # the best run: build, prompt, pp and t with ms per token, power limits
-        tail = cell("st") + cell("sp") + gcell("gt", x["gtv"]) + gcell("gp", x["gpv"]) + vcell("vt") + bcell() + "  " + col(36, f"{x.get('ppl', ''):>{W['ppl']}}") + "  " + col(37 if x.get("is_old") else 36, f"{x['bt']:<{W['bt']}}") + "".join("  " + col(37 if k == "id" else 36, f"{x[k]:>{W[k]}}") for k in ("id", "sid"))
+        part = {"st": lambda: cell("st"), "sp": lambda: cell("sp"), "gt": lambda: gcell("gt", x["gtv"]), "gp": lambda: gcell("gp", x["gpv"]), "vt": lambda: vcell("vt"), "vp": bcell,
+                "ppl": lambda: "  " + col(36, f"{x.get('ppl', ''):>{W['ppl']}}"), "bt": lambda: "  " + col(37 if x.get("is_old") else 36, f"{x['bt']:<{W['bt']}}"),
+                "id": lambda: "  " + col(37, f"{x['id']:>{W['id']}}"), "sid": lambda: "  " + col(36, f"{x['sid']:>{W['sid']}}")}   # the columns of stk, in its order (the header's)
+        tail = "".join(part[k]() for k in stk)
         if not x["st"] and not x.get("is_old") and not x.get("keeptail"):   # no stock row to compare with: the stock cells stay empty, "vs best" (against our own earlier builds) is still shown
-            tail = " " * sum(W[k] + 2 for k in ("st", "sp", "gt", "gp")) + vcell("vt") + bcell()
+            tail = "".join(" " * (W[k] + 2) if k in ("st", "sp", "gt", "gp") else part[k]() for k in stk if k in ("st", "sp", "gt", "gp", "vt", "vp"))
             if not (x.get("vtv") or x.get("vp") or "first" == x.get("vt")): tail = ""
         if wrap and tail.strip(): out += [ln, col(37, f"{x['name']:<{W['name']}}") + tail]
         else: out.append(ln + tail)
@@ -7757,21 +7832,23 @@ def own_build_no(build):
     except Exception: return "?"
 
 
-def stock_gain(peek, res, build=None):
-    """"  | stock 38.20 t/s pp 1900.0  x1.20 t/s  x5.0 pp  (bNNNN 2026-10-18)": the median speeds of the cell over the newest stock row of the same model and test in runs.db (nothing when there is none)"""
+def stock_row(peek, res, build=None):
+    """the stock run a cell is compared with (stock_gain): (t/s, pp, build, build number, start, rowid), None when there is none"""
     import sqlite3
+    r = None
     try:   # rows are stored under the test the alias resolves to (pf12k1k is pf12k with a 1024-token answer): the newest stock row with about that answer length; a stock run with a short answer (64 tokens) is not a comparison for a 1k answer, so there is none then
         gen = ALIAS_TOKENS.get(peek[1]); tst = ALIASES.get(peek[1], peek[1])
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
         q = "select tps, pp, build, bno, start_ts, rowid from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'{G} order by start_ts desc limit 12"
         qa = (os.path.basename(peek[0]), tst)
+        hwf_x = re.sub(r" and ts >= '[^']*'", "", HWF[0]) if RELAX_ERA[0] else HWF[0]   # the relaxed lookups below: before the machine change too, unless each state counts alone
         rs = c.execute(q.replace("{G}", " and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), qa).fetchall()
-        if not rs and RELAX_STOCK[0] and " and ts >= " in HWF[0]:   # no stock run since the machine changed (HW_SINCE): the newest one before it, its build and date show in the table (user 2026-11-21)
+        if not rs and RELAX_STOCK[0] and RELAX_ERA[0] and " and ts >= " in HWF[0]:   # no stock run since the machine changed (HW_SINCE): the newest one before it, its build and date show in the table (user 2026-11-21)
             rs = c.execute(q.replace(HWF[0], re.sub(r" and ts >= '[^']*'", "", HWF[0])).replace("{G}", " and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), qa).fetchall()
-        if not rs and RELAX_STOCK[0] and gen:   # no stock run of about this answer length: a shorter one, stopped by the clock (stock K3.1: 357 tokens at 0.31 t/s; its decode rate stands, user 2026-11-21)
-            rs = c.execute(q.replace(HWF[0], re.sub(r" and ts >= '[^']*'", "", HWF[0])).replace("{G}", ""), qa).fetchall()
-        if not rs and RELAX_STOCK[0]:   # shortcut: no stock run on this test at all (K3.1 edit4c, tetrisc): the model's newest stock decode rate on another test, of about this answer length when there is one; no stock prompt rate (another prompt). A stock run of this test replaces it (user 2026-11-21: k31 rows with values, sorted)
-            fb = lambda g: [(t_, None, b_, n_, ts_, id_) for t_, b_, n_, ts_, id_ in c.execute("select tps, build, bno, start_ts, rowid from runs where model=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + re.sub(r" and ts >= '[^']*'", "", HWF[0]) + " and coalesce(env,'') not like '%warmpass%'" + g + " order by start_ts desc limit 8", (qa[0],)).fetchall()]
+        if not rs and RELAX_STOCK[0] and RELAX_LVL[0] >= 1 and gen:   # no stock run of about this answer length: a shorter one, stopped by the clock (stock K3.1: 357 tokens at 0.31 t/s; its decode rate stands, user 2026-11-21)
+            rs = c.execute(q.replace(HWF[0], hwf_x).replace("{G}", ""), qa).fetchall()
+        if not rs and RELAX_STOCK[0] and RELAX_LVL[0] >= 2:   # shortcut: no stock run on this test at all (K3.1 edit4c, tetrisc): the model's newest stock decode rate on another test, of about this answer length when there is one; no stock prompt rate (another prompt). A stock run of this test replaces it (user 2026-11-21: k31 rows with values, sorted)
+            fb = lambda g: [(t_, None, b_, n_, ts_, id_) for t_, b_, n_, ts_, id_ in c.execute("select tps, build, bno, start_ts, rowid from runs where model=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + hwf_x + " and coalesce(env,'') not like '%warmpass%'" + g + " order by start_ts desc limit 8", (qa[0],)).fetchall()]
             rs = (gen and fb(" and n_gen between %d and %d" % (gen // 2, gen * 2))) or fb("")
         tm = max(x[0] for x in res) if res else 0
         if build and str(build).startswith("stock"): rs = [x for x in rs if abs(float(x[0]) - tm) > 0.002 * tm][:1]   # a stock cell is compared with the previous stock run (this run is already in the table)
@@ -7779,7 +7856,13 @@ def stock_gain(peek, res, build=None):
         if r and not (build and str(build).startswith("stock")):   # ours against stock: the best run of the newest stock build, like the best run of ours
             same = [x for x in rs if x[2] == r[2]]
             r = (max(float(x[0]) for x in same), max((float(x[1]) for x in same if x[1]), default=None), r[2], r[3], r[4], r[5])
-    except sqlite3.Error: return ""
+    except sqlite3.Error: return None
+    return r
+
+
+def stock_gain(peek, res, build=None):
+    """"  | stock 38.20 t/s pp 1900.0  x1.20 t/s  x5.0 pp  (bNNNN 2026-10-18)": the median speeds of the cell over the newest stock row of the same model and test in runs.db (nothing when there is none)"""
+    r = stock_row(peek, res, build)
     STOCK_REC[0] = None
     if not r or not r[0]: return ""
     t = max(x[0] for x in res); p = max(x[1] for x in res)
@@ -8398,7 +8481,7 @@ def run_list_detached(name, argv, cmd=None):
         finally:
             try: os.remove(RUN_LIVE)
             except OSError: pass
-    if "-n" in argv or "--dry" in argv: return run_list(name, argv)
+    if any(a in ("-n", "--dry", "--status", "-status", "-nrts") for a in argv): return run_list(name, argv)   # nothing runs: inline, never a detached run (a second --status attached to the first one's output, 2026-11-21)
     def alive():
         try:
             rec = json.load(open(RUN_LIVE)); alive_or_raise(rec["pid"])
@@ -8495,9 +8578,10 @@ def run_list(name, argv):
     ap.add_argument("-ns", "--no-stats", dest="no_stats", action="store_true", help="the default now (kept for old command lines). No live stats: nothing samples the machine or polls the server while a cell runs (status probes, nvidia-smi / sys / slots samplers on a remote box); only the clock is shown. For timings the monitor cannot touch")
     ap.add_argument("-sc", "-su", "--stock-first", action="store_true", help="every cell runs on the newest official stock binary first, then on -b (same session, so the gain line compares like with like)")
     ap.add_argument("-day", "--day", action="store_true", help="the day power limits (x4 card 220 W, x16 card 280 W) for the whole run, also at night (the schedule drops to 200/200 W from 23:50): same as -pl 220/280")
-    ap.add_argument("--status", action="store_true", help="print the table of the cells run today (the -nrt table: t/s, pp, stock, gains) and the cells still to run; nothing is run, started or touched (the web view calls this)")
+    ap.add_argument("--status", "-status", action="store_true", help="print the table of the cells run today (the -nrt table: t/s, pp, stock, gains) and the cells still to run; nothing is run, started or touched (the web view calls this)")
     ap.add_argument("-nrt", "--not-today", nargs="?", type=int, const=1, default=0, metavar="DAYS", help="skip cells (and so models) that already have their runs in runs.db from the last DAYS days (default 1 = today); a stock pulled within those days is not replaced by a newer release")
     ap.add_argument("-hw", metavar="TEXT", help="rows of the machine whose hardware line holds TEXT (comma list, all must match), any date: -hw 3700 (the old 128 GiB desktop), -hw 3975 or -hw 256g (now); stock, best runs and gains all from those rows")
+    ap.add_argument("-br", "--best-run", action="store_true", help="the best run column in the tables: our best earlier run of the cell (build, prompt, speeds, ms per token, power)")
     ap.add_argument("-nrts", nargs="?", type=int, const=1, default=None, metavar="DAYS", help="-nrt (skip the cells that already ran in the last DAYS days, default 1; the others run) with the --status table: every skipped cell on one line, its best run on any build, stock gains, sorted from best")
     ap.add_argument("-pin", dest="force_pin", action="store_true", help="force pinned RAM for every cell (-lm pin) instead of the default auto; `-nm` is the mmap counterpart. In a row's args column: -pin")
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
@@ -8540,7 +8624,9 @@ def run_list(name, argv):
     if o.dense_split: o.cell_args = (o.cell_args + " dense-split=" + {"on": "1", "off": "0"}.get(o.dense_split, o.dense_split)).strip()
     if o.status: o.not_today = o.not_today or 1; o.nodl = True
     if o.nrts is not None: o.not_today = o.nrts or 1; STATUS_FMT[0] = True; o.nodl = True
+    BEST_RUN_COL[0] = o.best_run
     RELAX_STOCK[0] = bool(o.status)   # -nrts: -nrt, the skipped cells in the status format
+    RELAX_ERA[0] = not o.status   # status weighs every hardware state against its own stock (best_gainer): a stock row of another state never stands in
     if o.day and not o.power: o.power = "220/280"
     if o.no_pool is not None: os.environ["RUN_KEEP_POOL"] = "1"   # -nm: the cells never unmount the pool either (pool_sanity); a model bigger than the pool loads without it, the pool stays for the next ones
     if o.dbg: os.environ["RUN_DBG"] = "1"   # the cells and servers of the list see it
@@ -8666,8 +8752,7 @@ def run_list(name, argv):
             ref = ours_reference(r["model"], r["test"]); pn0, og0, _x = run_tokens(ref["id"]) if ref and ref.get("id") else (None, None, "")
             ot = ((pn0 or 64) / ref["p"], out0 / ref["t"]) if ref and ref.get("p") and ref.get("t") else None
         if not ot: continue
-        r["extra"] = (r.get("extra") or "") + f" --env PERF_BOX={ot[0]:.1f},{ot[1]:.1f}"
-        print(col(90, f"{r['name']}: stock measured by the clock: prompt stopped after {ot[0]:.0f} s, answer after {ot[1]:.0f} s (ours)"), flush=True)
+        r["extra"] = (r.get("extra") or "") + f" --env PERF_BOX={ot[0]:.1f},{ot[1]:.1f}"   # no line per cell (user 2026-11-21: "remove these unasked for rows")
     if o.hog_gpu and not o.dry and o.nrts is None and rows and (o.real_hold or all(str(r["_b"]).startswith("stock") for r in rows)):   # -sim on a list of stock cells: stock cannot fake free memory (no --moe sim-vram), so the VRAM is really held, on every card, until the list ends
         v = str(o.hog_gpu).lower().rstrip("ib").rstrip("b"); free_mib = int(float(v[:-1]) if v.endswith("m") else float(v[:-1] if v.endswith("g") else v) * (1 if v.endswith("m") else 1024))
         import atexit   # (run_list imports it further down for simjoe: without this line the name is a local there and unbound here)
