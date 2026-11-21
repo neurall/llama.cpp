@@ -18814,6 +18814,11 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     lp = pp_no_staging() && moe_split_mode() == 1 && !chain && !dec && !mix && m <= 0.0;   // the old rules weigh no layer parallel: only --moe moe-split=home runs it
     g_pp_lp_call = lp;
     }
+    if (mc->v2.on) {   // pool-v2: the prompt chain's uploads, the k arm, the mix and layer parallel are not on the heap: the decode chain or the stream into it
+        chain = false; mix = false; lp = false; m = 0.0;
+        g_pp_mix_call = false; g_pp_lp_call = false;
+        if (!dec) { g_pp_mb = ub_max; }
+    }
     // The stream into the cache's blocks (cs_begin, cs_layer): the stream's own copies (whole layers, ahead of compute, on the expert card's upload stream) with the cache's
     // blocks as their destination, the kernels reading the tables. --moe pp-path=cstream forces it; with --moe staging=0 every stream pick is it (user 2026-11-12: the
     // staging removal changes only where the stream uploads to; 11-11 had dropped the stream for the chains instead, which upload one expert at a time, 3x slower at 12k).
