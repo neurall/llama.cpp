@@ -51,12 +51,16 @@ tables change: they hold the expert's start in units of its layer, -1 uncached (
    With unit views `ne02` is millions: v2 keeps `u = B` for such layers until mmf reads the table.
 
 Checked by test-backend-ops `MUL_MAT_ID ... unit` (tests/test-backend-ops.cpp `test_mul_mat_id_unit`): a view with `nb[2]` one unit of about 4 KiB, experts at
-unit offsets with gaps, 1/8/512 tokens, with and without `src[3]`/`src[4]`; IQ3_S, Q4_K, IQ4_XS, Q8_0, F16; CUDA0 50/50 (build poolv2_unit_stride).
+unit offsets with gaps, 1/8/512 tokens, with and without `src[3]`/`src[4]`; IQ3_S, Q4_K, IQ4_XS, Q8_0, F16, and since stage 1 Q6_K, IQ4_NL, IQ2_S, IQ3_XXS,
+Q2_0 (every expert type of OLMoE and Qwen3.8 IQ3_S): CUDA0 100/100 (build poolv2_unit_views; 50/50 on poolv2_unit_stride before the second row).
 
 ### Vulkan (checked, not ported)
 
-Vulkan0 (RTX 3090, driver 595.104, `VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json`, the 595 GL userspace on `LD_LIBRARY_PATH`) passes the same
-50 cases. They are small (138 units): correct, not at scale. What fails at a real pool:
+Vulkan0 (RTX 3090, driver 595.104) passes the same cases: 50/50, and 100/100 with the second row (poolv2_unit_views_vk). To run it on PC1: the 595 GL
+userspace (`VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json`, `/p/bw/p2p/userspace-595{,-gl}/usr/lib/x86_64-linux-gnu` on `LD_LIBRARY_PATH`) and
+`__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json`: without the last one Mesa's EGL loads libLLVM, whose static init crashes against
+the build's static libstdc++ (segfault in `__once_proxy` before any test). The cases are small (at most a few hundred units): correct, not at scale. What fails
+at a real pool:
 
 * `n_as = ne02` (ggml-vulkan.cpp:8048): with unit views that is the unit count. `count_experts` (count_experts.comp:108-175, one workgroup) walks the experts in
   chunks of 1024 and reads every id twice per chunk: a 20 GB pool at 8 KiB units is about 2,500 chunks per matmul. Port: with `src[4]`, `n_as` = the table's
@@ -196,6 +200,26 @@ Each stage builds, keeps `pool-v2=0` the same bytes and the same picks, and has 
    by heat / landed / evicted colder, refill experts and bytes. Landing size from the first prompt's in-flight peak + one expert.
 4. **The prompt chains and Qwen3.8.** `pp_upload_fork` (chain-up, ahead-up), `pp_blocks`/`pp_chain_fork` and the pass planner's reserve in bytes. Then Qwen3.8
    IQ3_S one card 15.5k/1k against `pool-v2=0`.
+
+### Stage 1 as built
+
+Lines of the commit that added it (dev build poolv2_unit_views):
+
+* V2:31 `pv2_shape_of` (the unit), V2:42 `pv2_view_ne2` (a class's views reach its last block's slices), V2:43 `pv2_block_entry` (block b = b x B / u units);
+  tests/test-poolv2-fork.cpp: the real classes of Qwen3.8 IQ3_S (8 type pairs) and OLMoE (2), B % u == 0, entry x u = offset, inside the view, u = B is today.
+* M:258 `layer_state::tbl_mul` (B / u, 1 without pool-v2), M:366 `moe_cache::pv2`; M:2367 `slot_off(view, ls, slot)` = slot x nb[2] x tbl_mul, M:2368 `slot_tbl`.
+* M:10505-10515: the knob: one card, a backend that answers `ggml_backend_fork_unit_views_fork` (ggml-cuda.cu:10257, registered at 10285), else one line
+  "pool-v2=1 is off: <why>". M:10064 `pv2_layer_unit`: float slice types keep u = B. M:11024-11048: the views (`ne[2]`, `nb[2] = u`, `nb[3]`), `tbl_mul`,
+  one line per card "pool-v2 on CUDA0: ... unit N B (K a block)".
+* Device tables: `flush_tables` multiplies by `tbl_mul_of(pub)` (M:4928, 4954; the guard's copies stay slots), the stream's snapshot (M:13558, its guard copy
+  divided back), shadows take their twin's `tbl_mul` (M:12610), `swap_layers` moves it with the views (M:15204).
+* Offsets through `slot_off`: upload worker (M:11654-11752, every branch), `upload_slice` takes the offset (M:4865), adoption and the staged path's resident
+  lookups (M:4771/4817/4822, 5313/5329, 5364/5374: the test "a block holds the slice" uses the block, not nb[2]), `jit_fork`'s pool branch (M:12441-12443),
+  the stream's 2D copies (M:13504: the pitch is the block), verify (M:14011), the prompt chain (M:14347-14350, 14441-14444), `swap_layers` (M:15182-15232).
+* tests/test-backend-ops.cpp `test_mul_mat_id_unit`: Q6_K, IQ4_NL, IQ2_S, IQ3_XXS, Q2_0 beside IQ3_S, Q4_K, IQ4_XS, Q8_0, F16 (100 cases).
+* Checked: test-poolv2-fork OK; `test-backend-ops -o MUL_MAT_ID -p unit` CUDA0 100/100, Vulkan0 100/100; the build's regress list (7 models, `pool-v2=0`)
+  passed. Open, for the engine rows: OLMoE verify list with `pool-v2=1` (0 bad slices, greedy answers equal to `pool-v2=0`), Qwen3.8 IQ3_S one card 15.5k/1k
+  (decode equal to `pool-v2=0`: stage 1 places as today).
 
 Later: Vulkan (above), the CPU reference's `src[3]`/`src[4]`, mmf's table grid (float experts), several cards (shadows, expert split, JIT pool, layer swaps),
 compaction (move residents when stranded gaps pass a bound; the replay shows 200 MiB flat), the eager pre-fill of the prompt's first layers before a prompt.
