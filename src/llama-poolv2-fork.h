@@ -341,6 +341,25 @@ static inline std::vector<size_t> pv2_heat_dist(const std::vector<int64_t> & hea
 // the target start of n bytes at distance d below the top of [lo, top): the cold end lo when it would not fit
 static inline size_t pv2_target(size_t lo, size_t top, size_t d, size_t n) { return top - lo >= d + n ? top - d - n : lo; }
 
+// c2: the target in the main heap [lo, hi) whose landing hole [M, H) holds no expert: packed down from the top as if the hole were not there
+static inline size_t pv2_target_main(size_t lo, size_t hi, size_t M, size_t H, size_t d, size_t n) {
+    const size_t t = pv2_target(lo, hi - (H - M), d, n);
+    return t >= M ? t + (H - M) : t;
+}
+// c2 decode: the heat of the decode cache's score (xscore) on the heap's scale; a victim must be colder than the newcomer by the pay-back margin
+static inline int64_t pv2_decode_heat(double xscore) { return std::llround(1e6 * xscore); }
+static inline int64_t pv2_victim_heat(double xscore, double margin) { return pv2_decode_heat(xscore - margin); }
+// c2 decode: the targets (pv2_heat_dist, ~2 ms on 24.6k experts) are refreshed at the first step and every 64 steps, never per pick (last: PV2_NONE none yet)
+static constexpr uint64_t PV2_DIST_EVERY = 64;
+static inline bool pv2_dist_due(uint64_t step, uint64_t last) { return last == PV2_NONE || step >= last + PV2_DIST_EVERY; }
+// c2: a main-heap window for n bytes near target t: the free window nearest t anywhere in the heap first, else (heat above INT64_MIN) residents colder than
+// `heat` within reach (pv2_place)
+static inline pv2_pick pv2_pick_main(const pv2_heap & h, size_t t, size_t n, size_t u, int64_t heat, size_t reach) {
+    const pv2_pick p = pv2_place(h, t, n, u, std::numeric_limits<int64_t>::min(), h.hi - h.lo, true);
+    if (p.s != PV2_NONE || heat == std::numeric_limits<int64_t>::min()) { return p; }
+    return pv2_place(h, t, n, u, heat, reach, true);
+}
+
 struct pv2_cand { int32_t id; size_t n, u; int64_t heat; };
 // The switch to decode (user 2026-11-21: "this tail layer sized area is fully refilled and reclaimed by hottest missing moes"): the landing area keeps no cold
 // leftovers. Over its residents (decode heat set by the caller) and `miss` (experts no heap holds, hottest first), hottest first, a resident before a newcomer

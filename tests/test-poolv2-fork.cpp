@@ -270,6 +270,47 @@ static int unit_tests() {
         for (size_t i = 1; i < o.size(); ++i) { packs = packs && d[o[i]] == d[o[i - 1]] + n[o[i - 1]]; }
         check("boot order: the heap packs down from the top along it", packs);
     }
+    {   // c2 target: packed down from the top of the main heap [0, 1000) with the landing hole [600, 800) skipped
+        check("target main: the hottest just under the top", pv2_target_main(0, 1000, 600, 800, 0, 100) == 900);
+        check("target main: below the hole as it is", pv2_target_main(0, 1000, 600, 800, 150, 100) == 550);
+        check("target main: a target at the hole's start goes above it", pv2_target_main(0, 1000, 600, 800, 100, 100) == 800);
+        check("target main: past the heap: its cold end", pv2_target_main(0, 1000, 600, 800, 750, 100) == 0);
+        check("target main: no hole is pv2_target", pv2_target_main(0, 1000, 1000, 1000, 150, 100) == pv2_target(0, 1000, 150, 100));
+    }
+    {   // c2 decode heat: xscore x 1e6; a victim must be colder than the newcomer by the pay-back margin; the dist refresh every 64 steps
+        check("decode heat: xscore x 1e6", pv2_decode_heat(0.25) == 250000 && pv2_decode_heat(0.0) == 0);
+        check("victim heat: less the margin", pv2_victim_heat(0.25, 0.05) == 200000);
+        check("dist due: at the first step and every 64", pv2_dist_due(0, PV2_NONE) && !pv2_dist_due(63, 0) && pv2_dist_due(64, 0) && pv2_dist_due(130, 64));
+        pv2_heap h = pv2_make(0, 1000);
+        pv2_add(h, 400, { 1, 100, pv2_decode_heat(0.22), false });    // colder than 0.25, not by the margin 0.05
+        pv2_add(h, 500, { 2, 100, pv2_decode_heat(0.10), false });    // colder by more than the margin
+        pv2_hold(h, 0, 400); pv2_hold(h, 600, 1000);                  // no free byte left
+        const pv2_pick p = pv2_pick_main(h, 400, 100, 100, pv2_victim_heat(0.25, 0.05), 1000);
+        check("pick main: only a victim colder by the margin leaves", p.s == 500 && p.evict.size() == 1 && p.evict[0] == 500);
+    }
+    {   // c2 pick main: a free window anywhere in the heap first (the target's reach does not limit it), else colder victims within reach; brute force
+        std::mt19937_64 rng(7);
+        int seen[3] = { 0, 0, 0 };   // free window, over victims, none
+        for (int it = 0; it < 3000; ++it) {
+            pv2_heap h = pv2_make(0, 4000);
+            if (rng() % 2) { pv2_hold(h, 2400, 3200); }   // a landing hole
+            for (int k = 0; k < 40; ++k) {
+                const size_t s = rng() % 4000 / 8 * 8, n = 40 + rng() % 300;
+                if (s + n <= 4000) { pv2_add(h, s, { k, n, (int64_t) (rng() % 10), rng() % 8 == 0 }); }
+            }
+            const size_t  u = 8, n = 40 + rng() % 300, t = rng() % 4000, reach = rng() % 1200;
+            const int64_t heat = rng() % 4 ? (int64_t) (rng() % 12) : std::numeric_limits<int64_t>::min();
+            const pv2_pick p = pv2_pick_main(h, t, n, u, heat, reach);
+            const want_t w = brute(h, t, n, u, std::numeric_limits<int64_t>::min(), h.hi - h.lo);
+            const bool free_any = w.fe != PV2_NONE || w.fa != PV2_NONE;
+            const bool ok = free_any || heat == std::numeric_limits<int64_t>::min() ? pick_ok(h, p, t, n, u, std::numeric_limits<int64_t>::min(), h.hi - h.lo, true)
+                                                                                    : pick_ok(h, p, t, n, u, heat, reach, true);
+            check("pick main: free window anywhere first, else colder victims within reach (brute force)", ok);
+            seen[p.s == PV2_NONE ? 2 : p.evict.empty() ? 0 : 1]++;
+        }
+        printf("pick main: %d free windows, %d over victims, %d none\n", seen[0], seen[1], seen[2]);
+        check("pick main: every outcome is exercised", seen[0] > 100 && seen[1] > 100 && seen[2] > 100);
+    }
     {   // the switch to decode: the hottest of residents and missing experts that fill the area stay or come in, cold leftovers leave
         pv2_heap h = pv2_make(0, 1000);
         pv2_add(h, 0,   { 1, 200, 5, false });
