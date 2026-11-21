@@ -353,6 +353,72 @@ static void move_tests() {
     }
 }
 
+// pv2_sort_step's oracle: the best single move on this heap state (any resident not pinned, any aligned start free but for its own bytes), by distance gained
+// toward its target, then the lower id, then the lower start; only moves within `left` bytes and with a gain
+static bool brute_sort_best(const pv2_heap & h, const std::map<int32_t, size_t> & tgt, size_t left, pv2_step & best) {
+    size_t bg = 0;
+    bool found = false;
+    for (const auto & [s, r] : h.res) {
+        const auto it = tgt.find(r.id);
+        if (r.pin || it == tgt.end() || r.n > left) { continue; }
+        for (size_t x = (h.lo + r.u - 1) / r.u * r.u; x + r.n <= h.hi; x += r.u) {
+            bool free = true;
+            for (const auto & [s2, r2] : h.res) { if (s2 != s && s2 < x + r.n && x < s2 + r2.n) { free = false; } }
+            const size_t d0 = pv2_dist(s, it->second), d1 = pv2_dist(x, it->second);
+            if (!free || d1 >= d0) { continue; }
+            const size_t g = d0 - d1;
+            if (!found || g > bg || (g == bg && (r.id < best.id || (r.id == best.id && x < best.to)))) { found = true; bg = g; best = { r.id, s, x }; }
+        }
+    }
+    return found;
+}
+static void sort_tests() {
+    {   // a hot expert left at the cold end moves next to its target; a sorted heap needs nothing
+        pv2_heap h = pv2_make(0, 100);
+        pv2_add(h, 0,  { 1, 10, 9, false, 1 });   // hot, target 90
+        pv2_add(h, 10, { 2, 10, 1, false, 1 });   // cold, target 0
+        pv2_add(h, 80, { 3, 10, 5, false, 1 });   // target 80
+        std::map<int32_t, size_t> tgt = { { 1, 90 }, { 2, 0 }, { 3, 80 } };
+        auto st = pv2_sort_step(h, tgt, SIZE_MAX);
+        check("sort: the misplaced hot expert moves to its target first", !st.empty() && st[0].id == 1 && st[0].from == 0 && st[0].to == 90);
+        check("sort: then the cold one slides to the cold end, then nothing is left to gain", st.size() == 2 && st[1].id == 2 && st[1].to == 0);
+        pv2_heap g = h;
+        for (const auto & s : st) { const pv2_res v = pv2_drop(g, s.from); check("sort: each step applies", pv2_add(g, s.to, v)); }
+        check("sort: a heap in place needs no move", pv2_sort_step(g, tgt, SIZE_MAX).empty());
+        check("sort: the budget caps the bytes moved", pv2_sort_step(h, tgt, 15).size() == 1 && pv2_sort_step(h, tgt, 9).empty());
+        h.res.at(0).pin = true;
+        st = pv2_sort_step(h, tgt, SIZE_MAX);
+        check("sort: a pinned expert never moves", std::none_of(st.begin(), st.end(), [](const pv2_step & s) { return s.id == 1; }));
+    }
+    {   // the property test: every step is the oracle's best single move on the state before it, the budget holds, misplacement only falls
+        std::mt19937 g(1121);
+        bool all = true;
+        size_t steps = 0;
+        for (int it = 0; it < 300; ++it) {
+            std::map<int32_t, size_t> uo, tgt;
+            pv2_heap h = rand_move_heap(g, uo);
+            for (const auto & [s, r] : h.res) { tgt[r.id] = g() % h.hi; }
+            const size_t budget = g() % 2 ? g() % 12 : SIZE_MAX;
+            const auto st = pv2_sort_step(h, tgt, budget);
+            size_t left = budget;
+            pv2_heap a = h;
+            for (const auto & s : st) {
+                pv2_step b;
+                const bool f = brute_sort_best(a, tgt, left, b);
+                const size_t n = a.res.count(s.from) ? a.res.at(s.from).n : 0;
+                if (!f || b.id != s.id || b.from != s.from || b.to != s.to) { all = false; break; }
+                const pv2_res v = pv2_drop(a, s.from);
+                if (!pv2_add(a, s.to, v)) { all = false; break; }
+                left -= n; ++steps;
+            }
+            pv2_step b;
+            all = all && heap_ok(a, uo) && !brute_sort_best(a, tgt, left, b);   // stops only when nothing fits the budget and gains
+        }
+        check("sort: 300 random heaps: each step is the best single move, the budget holds, it stops only when no move gains", all && steps > 100);
+        printf("sort oracle: %zu steps\n", steps);
+    }
+}
+
 static int unit_tests() {
     {   // the free map: take splits an extent, give merges with both neighbours
         pv2_heap h = pv2_make(0, 1000);
@@ -763,6 +829,7 @@ static int unit_tests() {
                heap_ok(misaligned, u1) ? "MISSED" : "caught", pick_ok(h, wrong, 100, 200, 1, 5, 1000, true) ? "MISSED" : "caught");
     }
     move_tests();
+    sort_tests();
     printf("%s: %d failure(s)\n", g_fail ? "FAIL" : "OK", g_fail);
     return g_fail ? 1 : 0;
 }

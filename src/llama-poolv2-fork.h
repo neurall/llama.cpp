@@ -505,6 +505,41 @@ static inline pv2_move pv2_plan_move(const pv2_heap & h, size_t t, size_t n, siz
     return mv;
 }
 
+// c2 background re-sort (user 2026-11-21): moves that bring residents toward their heat targets (tgt: id -> target start, pv2_target_main), at most `budget`
+// bytes in all, run at the decode switch and between tokens (safe points only). Greedy: each step is the single move with the largest distance gained (the gain
+// per byte moved), ties to the lower id then the lower start, into a window free but for the mover's own bytes; pinned or held ones and ids without a target
+// stay. shortcut: single moves into free bytes only, so a full heap is not re-sorted; swaps through a scratch window when the measured misplacement needs them.
+static inline std::vector<pv2_step> pv2_sort_step(const pv2_heap & h0, const std::map<int32_t, size_t> & tgt, size_t budget) {
+    std::vector<pv2_step> out;
+    pv2_heap h = h0;
+    for (;;) {
+        pv2_step best { 0, 0, 0 };
+        size_t bg = 0;
+        std::vector<size_t> starts;
+        for (const auto & [s, r] : h.res) { starts.push_back(s); }
+        for (size_t s : starts) {
+            const pv2_res r = h.res.at(s);
+            const auto it = tgt.find(r.id);
+            if (r.pin || it == tgt.end() || r.n > budget) { continue; }
+            pv2_drop(h, s);
+            size_t x = PV2_NONE;
+            for (const auto & [a, len] : h.gaps) {
+                const size_t y = pv2_fit(a, a + len, r.n, r.u, it->second);
+                if (y != PV2_NONE && (x == PV2_NONE || pv2_dist(y, it->second) < pv2_dist(x, it->second))) { x = y; }
+            }
+            pv2_add(h, s, r);
+            if (x == PV2_NONE || pv2_dist(x, it->second) >= pv2_dist(s, it->second)) { continue; }
+            const size_t g = pv2_dist(s, it->second) - pv2_dist(x, it->second);
+            if (g > bg || (g == bg && r.id < best.id)) { bg = g; best = { r.id, s, x }; }
+        }
+        if (bg == 0) { return out; }
+        const pv2_res v = pv2_drop(h, best.from);
+        pv2_add(h, best.to, v);
+        budget -= v.n;
+        out.push_back(best);
+    }
+}
+
 struct pv2_cand { int32_t id; size_t n, u; int64_t heat; };
 // The switch to decode (user 2026-11-21: "this tail layer sized area is fully refilled and reclaimed by hottest missing moes"): the landing area keeps no cold
 // leftovers. Over its residents (decode heat set by the caller) and `miss` (experts no heap holds, hottest first), hottest first, a resident before a newcomer
