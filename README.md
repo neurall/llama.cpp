@@ -1,15 +1,15 @@
 # Rocket LLama 
 
 
-# up to 25x faster prefill and 2x decode on big models 
+# up to 46x faster input tokens\s and 17x output t\s especially on best big models 
 
-Fork of llama.cpp with multi gpu acceleration even for models bigger than total gpu mem. 
+<img width="1894" height="621" alt="image" src="https://github.com/user-attachments/assets/a6be5bb1-7bb7-4b63-b25b-5c4112d7dc64" />
+
+Fork of llama.cpp with multi gpu acceleration possible even for models bigger than total gpu mem. 
+
 But even on single 5090 20x pp and 2x t gains 
-
-
-
-In other words tha gains you see bellow are not from multigpu yet just from more efficient vram mmgmt
-ie the same 20x speedup in mimo is happening on single 5090 too.
+so the gains you see bellow are not just from multigpu 
+but mostly just from more efficient vram mmgmt
 
 ```sh
 llama-server -m MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf
