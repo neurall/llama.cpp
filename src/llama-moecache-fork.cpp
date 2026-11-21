@@ -378,7 +378,7 @@ struct moe_cache {
         bool     shadow = false;                   // stage 2b: the heap only mirrors the size classes (pool-v2=1 where the heap cannot run)
         pv2_heap main, land;
         size_t   M = 0, H = 0, cur = 0;            // cur: the landing area's cursor
-        size_t   reach = (size_t) 256 << 20;       // a placement looks this far either way of its target (test-poolv2-fork --sim)
+        size_t   reach = (size_t) 64 << 20;       // a placement looks this far either way of its target (test-poolv2-fork --sim)
         std::vector<int64_t> hv;                   // per id, while a prompt stream runs (tiered): the keep rank (decode-hot set above, the rest by global hotness)
         bool     tiered = false;
         std::vector<size_t> dist;                  // per id: its distance from the hot end in the heat in force (pv2_heat_dist): a main placement's target
