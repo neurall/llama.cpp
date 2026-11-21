@@ -13182,7 +13182,7 @@ const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_mo
 }
 // --moe cs-chunks for the graph builder (1: whole layers), and the index of a part's shadow (-1: the layer itself): the name of the part's table read carries it,
 // cs_split_cb finds the ring entry by it
-int llama_moe_cache_cs_chunks_fork() { return g_cache ? cs_chunks() : 1; }
+int llama_moe_cache_cs_chunks_fork() { return g_cache && !g_cache->v2.on ? cs_chunks() : 1; }   // pool-v2: a layer is one stream entry (no chunk shadows)
 int llama_moe_cache_cs_shadow_ix_fork(const llama_moe_cache_layer_fork * part) {
     moe_cache * mc = g_cache;
     if (!mc || !part) { return -1; }
