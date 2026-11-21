@@ -2,9 +2,8 @@
 
 
 # up to 46x faster prefill and 34x decode on big models 
+<img width="1889" height="627" alt="image" src="https://github.com/user-attachments/assets/a1740ca8-11d0-4c7f-bcb4-6d436277e35e" />
 
-<img width="1881" height="557" alt="image" src="https://github.com/user-attachments/assets/0a5fc32e-0027-442f-b673-7b326a35ef2d" />
-<img width="1745" height="527" alt="image" src="https://github.com/user-attachments/assets/074c88ed-9319-4008-91c5-3acd9d03f94b" />
 
 
 
