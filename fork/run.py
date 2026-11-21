@@ -8620,7 +8620,7 @@ def run_list(name, argv):
     ap.add_argument("-draft", "--draft", dest="draft", type=int, metavar="N", help="speculative draft on OUR cells of every model that has a `draft =` file in models.ini (ds: the DSpark draft): depth N (--spec-draft-n-max N and --moe spec-depth=N, the tuner out of the loop); the row name gets -draftN; stock cells and models without a draft file run as before")
     ap.add_argument("-a", "--cell-args", default="", metavar="ARGS", help="extra cell arguments for OUR cells (not stock), e.g. -a \"moe:split-f16=1\" (one moe: word per --moe key); stored in the args column of the runs, so the rows stay apart from the defaults. -nrt matches by cell, not by arguments: leave it off for an A/B")
     ap.add_argument("-pt", "--prompt-type", dest="pt", metavar="LIST", help="only the cells of these prompt types (comma list): i = input-heavy (mimo-i), io = input+output-heavy (mimo-io), o = output-heavy (mimo-o); the last word of the row name")
-    ap.add_argument("-ps", "--prompt-size", dest="ps", action="append", metavar="TEST", help="run THESE sizes instead of the list's own, for the models the other filters leave (repeatable): 100k4k = the source cut at 100k tokens behind an instruction, 4000 answer tokens; 4k512 = 4k tokens, 512 answer tokens; 100k = prompt only (the list's answer length); tetrisc4k = that test with 4000 answer tokens; any other name is a test as it is")
+    ap.add_argument("-ps", "--prompt-size", dest="ps", action="append", metavar="TEST", help="run THESE sizes instead of the list's own, for the models the other filters leave (repeatable): 100k4k = the source cut at 100k tokens behind an instruction, 4000 answer tokens; 4k512 = 4k tokens, 512 answer tokens; 4096t512 = exactly 4096 prompt tokens of the model's tokenizer, 512 answer tokens; 1p10 = a prompt that fills one pass of the model's measured pass maximum, 10 answer tokens; 100k = prompt only (the list's answer length); tetrisc4k = that test with 4000 answer tokens; any other name is a test as it is")
     ap.add_argument("-ub", "--ubatch", dest="ub", metavar="LIST", help="micro-batch clamps, a comma list (4k,8k,16k; k = 1024): every selected cell once per size with the server argument -ub N, which clamps the largest micro-batch per card (the automatic one is never raised); rows are named <name>-ub<size>")
     ap.add_argument("-sim", dest="hog_gpu", help="VRAM left free on every GPU for OUR cells (the server reports only that free and refuses past it, nothing held: --moe sim-vram): -sim 16g = every card behaves like a 16 GiB card; a bare number is GiB, m = MiB")
     ap.add_argument("-simram", dest="hog_ram", help="RAM left free for OUR cells (--moe sim-ram): -simram 32g; a bare number is GiB, m = MiB")
@@ -8721,6 +8721,12 @@ def run_list(name, argv):
         def _ps(p, r):   # 100k4k = prompt of 100k tokens + 4000 answer tokens; 100k = prompt only (the list's answer length); tetrisc4k = that test, 4000 answer tokens
             r = dict(r, extra=" ".join(re.sub(r"--env PERF_P(?:TOK|NAME)=\S+", "", r.get("extra") or "").split()))   # a best-prompt row's cut (PERF_PTOK) would run its own prompt size, not this one
             if (m := re.fullmatch(r"(\d+)m((?:\d+k)?)", p)): p = f"{int(m[1]) * 1024}k{m[2]}"   # 1m1k = 1024k1k
+            if (m := re.fullmatch(r"(\d+)p(?:(\d+)(k?))?", p)):   # 1p10: a prompt that fills N passes of the model's newest measured pass maximum here (latest_pass_cap), 10 answer tokens (user 2026-11-21)
+                cap = latest_pass_cap(r["model"], o.machine)
+                if not cap: sys.exit(f"-ps {p}: {model_alias(r['model'])} has no measured pass maximum on this machine yet (run.py calib --ceil)")
+                p = f"{int(m[1]) * int(cap) - 32}t" + (m[2] + m[3] if m[2] else "")   # 32 under: the maximum moves a little run to run (4192, 4224 on K3.1)
+            if (m := re.fullmatch(r"(\d+)t(?:(\d+)(k?))?", p)):   # 4096t512: a prompt of exactly 4096 tokens of this model's own tokenizer (PERF_PTOK cuts the chat prompt), 512 answer tokens (user 2026-11-21)
+                p = f"{-(-int(m[1]) // 1024)}k" + (m[2] + m[3] if m[2] else ""); r = dict(r, extra=f"{r['extra']} --env PERF_PTOK={int(m[1])}".strip())
             if (m := re.fullmatch(r"(\d+)k(?:(\d+)(k?))?", p)):   # the source cut at that many tokens behind an instruction (PS_INSTR); an instruct model needs its chat template. 4k512: 512 answer tokens (user 2026-11-21)
                 # --keep-loops: beyond the source's length the prompt repeats it, and an answer about a repeated text may loop; repeating the request (3 more
                 # full prompts: ~15 min ours, ~3.5 h stock at 200k) cannot change that. The row keeps loop=1 (out of every statistic), the prompt speed stands.
@@ -8761,12 +8767,12 @@ def run_list(name, argv):
     for r in rows:   # every stock cell is measured by the clock (PERF_BOX; user 2026-11-21: the default for any stock run, -s, -sc or the -nrt gap, was models bigger than 80% of RAM): the same request as ours, stopped when our prompt time and our answer time have passed
         if not str(r["_b"]).startswith("stock") or "PERF_BOX" in (r.get("extra") or ""): continue
         out0 = int(r.get("tokens") or 1024); mt = re.search(r"PERF_PTOK=(\d+)", r.get("extra") or "")
-        if mt: ot = our_best_times(r["model"], out0)
+        if mt and "PERF_PNAME=" in (r.get("extra") or ""): ot = our_best_times(r["model"], out0)
         else:
             ref = ours_reference(r["model"], r["test"]); pn0, og0, _x = run_tokens(ref["id"]) if ref and ref.get("id") else (None, None, "")
             ot = ((pn0 or 64) / ref["p"], out0 / ref["t"]) if ref and ref.get("p") and ref.get("t") else None
         if not ot and (mk := re.fullmatch(r"pf(\d+)k", r["test"])) and (ra := ours_rates_any(r["model"])):   # a size we never ran (-ps 3k512, stock first): our newest rates on any test of the model, its prompt about N*1024 tokens
-            ot = (int(mk[1]) * 1024 / ra[0], out0 / ra[1])
+            ot = ((int(mt[1]) if mt else int(mk[1]) * 1024) / ra[0], out0 / ra[1])
         if not ot: continue
         if o.stock_clip:   # -scl: one shortened request instead (stock_scaled_request: what stock reads in our prompt time, what it writes in our answer time), so its answer follows its own prompt as ours does; the note marks it bp2=b<prompt>-o<answer>
             ptok = int(mt[1]) if mt else (pn0 or 0)
@@ -9181,10 +9187,12 @@ def stock_rates(model):
 
 
 def ours_rates_any(model):
-    """(prompt t/s, decode t/s) of our newest run of this model on this machine's current hardware, any test; None without one"""
+    """(prompt t/s, decode t/s) of our newest run of this model on this machine's current hardware with a prompt of 1000+ tokens (a short chat prompt's rate is
+    its first-token latency: K3.1 tetrisc 1.4 t/s), any test; None without one"""
     import sqlite3
     try:
-        r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select pp, tps from runs where model=? and build not like 'stock%' and build not like 'strata%' and cast(ok as integer)=1 and pp > 0 and tps > 0" + HWF[0] + " order by ts desc limit 1", (os.path.basename(model),)).fetchone()
+        r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select pp, tps from runs where model=? and build not like 'stock%' and build not like 'strata%' and cast(ok as integer)=1 and pp > 0 and tps > 0"
+            " and cast(substr(note, instr(note, 'prompt_n=') + 9) as integer) >= 1000" + HWF[0] + " order by ts desc limit 1", (os.path.basename(model),)).fetchone()
         return (float(r[0]), float(r[1])) if r else None
     except sqlite3.Error: return None
 
@@ -9272,11 +9280,17 @@ def clamp_passes(tokens, cap):
 def latest_pass_cap(model_path, machine="pc1"):
     """the engine's real pass maximum of the newest run of this model on this machine with the VRAM in use (runs.db ubatch_max: the smallest of its ceilings and the
     stream's chunk cap, decisions()); None when no run recorded one"""
+    import sqlite3
     try:
         g = int(hw_key()[:-1])
         con = sqlite3.connect(f"file:{RUNS_DB}?mode=ro", uri=True)
+        # a prompt that ran in several passes shows the size the engine really cut (pf_pass); ubatch_max alone follows each request's context (Kimi K3.1 tetrisc
+        # under -c 1024: 992, its 13k prompt: 4224 a pass)
+        for um, vm, ps, pt in con.execute("select ubatch_max, vram_mib, pf_passes, pf_pass from runs where model = ? and hw = ? and ubatch_max > 0 and vram_mib > 0 order by ts desc limit 50",
+                                          (os.path.basename(model_path), machine.split("-")[0])):   # runs.db keeps the file name
+            if abs(round(float(vm) / 1024) - g) <= 1 and str(ps or "").isdigit() and int(ps) > 1 and str(pt or "").isdigit(): return int(pt)
         for um, vm in con.execute("select ubatch_max, vram_mib from runs where model = ? and hw = ? and ubatch_max > 0 and vram_mib > 0 order by ts desc limit 50",
-                                  (model_path, machine.split("-")[0])):
+                                  (os.path.basename(model_path), machine.split("-")[0])):
             if abs(round(float(vm) / 1024) - g) <= 1: return int(um)
     except (sqlite3.Error, ValueError, TypeError): pass
     return None
