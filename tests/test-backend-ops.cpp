@@ -6200,6 +6200,115 @@ struct test_mul_mat_id_shared : public test_case {
     }
 };
 
+// MUL_MAT_ID over a classless expert pool: the experts sit at unit offsets of one buffer, read through a view whose expert stride nb[2] is one unit
+// (smaller than an expert), so the ids are unit offsets. with_table adds what the expert-cache chain gives a pass of several tokens (llama-graph mc_mm):
+// the expert ids and the table expert -> unit (src[3], src[4]), which CUDA's MMQ and sorted path read instead of the ids.
+struct test_mul_mat_id_unit : public test_case {
+    const ggml_type type_a;
+    const int n_expert;
+    const int n_used;
+    const bool b; // broadcast x: one row per token (gate and up), else one per pick (down)
+    const int64_t m;
+    const int64_t k;
+    const int64_t n_tokens;
+    const bool with_table;
+    const int64_t unit_blocks; // the unit: unit_blocks blocks of type_a
+
+    ggml_tensor * ids   = nullptr;
+    ggml_tensor * sel   = nullptr; // with_table: the rows of the expert ids (see build_graph)
+    ggml_tensor * table = nullptr;
+
+    std::string vars() override {
+        return VARS_TO_STR9(type_a, n_expert, n_used, b, m, k, n_tokens, with_table, unit_blocks);
+    }
+
+    double max_nmse_err() override {
+        return 5e-4;
+    }
+
+    size_t  unit_bytes()       const { return unit_blocks*ggml_type_size(type_a); }
+    size_t  expert_bytes()     const { return m*ggml_row_size(type_a, k); }
+    int64_t units_per_expert() const { return (expert_bytes() + unit_bytes() - 1)/unit_bytes(); }
+    // the units below n_used stay free (see build_graph), then each expert after a gap of up to 3 units
+    int64_t n_units()          const { return n_used + n_expert*(units_per_expert() + 3); }
+
+    test_mul_mat_id_unit(ggml_type type_a, int n_expert, int n_used, bool b, int64_t m, int64_t k, int64_t n_tokens, bool with_table, int64_t unit_blocks)
+        : type_a(type_a), n_expert(n_expert), n_used(n_used), b(b), m(m), k(k), n_tokens(n_tokens), with_table(with_table), unit_blocks(unit_blocks) {
+            GGML_ASSERT(n_used <= n_expert);
+            GGML_ASSERT(!with_table || n_tokens > 1); // the graph gives the table to passes of several tokens only
+            GGML_ASSERT(unit_bytes() < expert_bytes());
+        }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        const size_t row_bytes = ggml_row_size(type_a, k);
+        // the units, then two experts of slack for reads past the last expert's rows
+        ggml_tensor * heap = ggml_new_tensor_2d(ctx, type_a, k, (n_units()*unit_bytes() + 2*expert_bytes() + row_bytes - 1)/row_bytes);
+        ggml_set_name(heap, "heap");
+        ggml_tensor * w = ggml_view_3d(ctx, heap, k, m, n_units(), row_bytes, unit_bytes(), 0);
+        ggml_set_name(w, "w");
+
+        ggml_tensor * x = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, k, b ? 1 : n_used, n_tokens);
+        ggml_set_name(x, "x");
+
+        ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_used, n_tokens);
+        ggml_set_name(ids, "ids");
+
+        ggml_tensor * out = ggml_mul_mat_id(ctx, w, x, ids);
+        if (n_tokens > 1) {
+            out->op_params[1] = 1; // zero the outputs first, as the graph does for a pass of several tokens
+        }
+        if (with_table) {
+            // the CPU takes src[3] for its host table (ggml-cpu.c: a pick runs there when its entry equals op_params[0], 0 here): the expert ids sit in
+            // rows n_units long and zero past the picks, so every unit offset (n_used and up) reads a 0 and the reference computes every pick
+            sel = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_units(), n_tokens);
+            ggml_set_name(sel, "sel");
+            table = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, n_expert);
+            ggml_set_name(table, "table");
+            out->src[3] = ggml_view_2d(ctx, sel, n_used, n_tokens, sel->nb[1], 0);
+            out->src[4] = table;
+        }
+        ggml_set_name(out, "out");
+
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            if (t->type != GGML_TYPE_I32 && !ggml_is_view_op(t->op)) {
+                init_tensor_uniform(t); // the heap as rows: the view w is not contiguous
+            }
+        }
+
+        std::random_device rd;
+        std::default_random_engine rng(rd());
+        // expert e at unit tbl[e], in order, each after a random gap of 0-3 units
+        std::vector<int32_t> tbl(n_expert), order(n_expert);
+        int64_t off = n_used;
+        for (int e = 0; e < n_expert; e++) {
+            off += rng() % 4;
+            tbl[e] = (int32_t) off;
+            off += units_per_expert();
+            order[e] = e;
+        }
+        GGML_ASSERT(off <= n_units());
+
+        // per token n_used distinct experts at random: ids get their units, the rows of sel the experts
+        std::vector<int32_t> units(n_used*n_tokens), experts(n_units()*n_tokens, 0);
+        for (int64_t t = 0; t < n_tokens; t++) {
+            std::shuffle(order.begin(), order.end(), rng);
+            for (int i = 0; i < n_used; i++) {
+                units[t*n_used + i]      = tbl[order[i]];
+                experts[t*n_units() + i] = order[i];
+            }
+        }
+        ggml_backend_tensor_set(ids, units.data(), 0, ggml_nbytes(ids));
+        if (with_table) {
+            ggml_backend_tensor_set(sel, experts.data(), 0, ggml_nbytes(sel));
+            ggml_backend_tensor_set(table, tbl.data(), 0, ggml_nbytes(table));
+        }
+    }
+};
+
 // GGML_OP_OUT_PROD
 struct test_out_prod : public test_case {
     const ggml_type type_a;
@@ -12146,6 +12255,19 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (ggml_type type_a : {GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q8_0, GGML_TYPE_MXFP4, GGML_TYPE_IQ4_NL, GGML_TYPE_IQ3_S}) {
         for (int n : {1, 8, 64}) {
             test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 8, 2, false, 64, n, 256, 96, false, false, 4*(int64_t) ggml_type_size(type_a)));
+        }
+    }
+    // a classless expert pool (no size classes): can the expert kernels read a view whose nb[2] is one unit of about 4 KiB, smaller than an expert, with unit offsets as ids (and the table)
+    for (ggml_type type_a : {GGML_TYPE_IQ3_S, GGML_TYPE_Q4_K, GGML_TYPE_IQ4_XS, GGML_TYPE_Q8_0, GGML_TYPE_F16}) {
+        for (bool b : {true, false}) {
+            for (int64_t n : {1, 8, 512}) {
+                for (bool with_table : {false, true}) {
+                    if (with_table && n == 1) {
+                        continue;
+                    }
+                    test_cases.emplace_back(new test_mul_mat_id_unit(type_a, 8, 2, b, 256, 512, n, with_table, 4096/(int64_t) ggml_type_size(type_a)));
+                }
+            }
         }
     }
 
