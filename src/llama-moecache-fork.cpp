@@ -2575,6 +2575,9 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
     // (placed layer by layer, layer 0's hottest experts took the first blocks: the first ones every prompt pass borrows)
     struct pick { double heat; size_t il; int32_t e; };
     std::vector<pick> picks;
+    const size_t v2E = mc->layers.empty() ? 0 : mc->layers[0].glob_count.size();
+    std::vector<int64_t> v2heat;   // pool-v2 (c1): every picked expert's heat on one scale, id = layer entry x E + expert; -1 not picked
+    if (mc->v2.on && !mc->fill_layers) { v2heat.assign(mc->layers.size() * v2E, -1); }
     for (size_t il = 0; il < mc->layers.size(); ++il) {
         auto & ls = mc->layers[il];
         if (ok) {
@@ -2599,10 +2602,15 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
         for (uint64_t c : ls.glob_count) { total += c; }
         for (int32_t i = 0; i < std::min<int32_t>(ls.n_cache, (int32_t) ids.size()); ++i) {
             picks.push_back({ (double) ls.glob_count[ids[i]] / (double) std::max<uint64_t>(1, total), il, ids[i] });   // share of the layer's picks: comparable across layers
+            if (!v2heat.empty()) { GGML_ASSERT(ls.glob_count.size() == v2E); v2heat[il * v2E + ids[i]] = pv2_share_heat(ls.glob_count[ids[i]], total); }
         }
     }
     mc->profile_ready.store(ok, std::memory_order_release);
     std::stable_sort(picks.begin(), picks.end(), [](const pick & a, const pick & b) { return a.heat > b.heat; });
+    if (!v2heat.empty()) {   // pool-v2 (c1): the heat order the heap packs by (ties to the lower id), still placed in free blocks by pick_slot
+        picks.clear();
+        for (int32_t id : pv2_boot_order(v2heat)) { picks.push_back({ (double) v2heat[id], (size_t) id / v2E, (int32_t) (id % v2E) }); }
+    }
     for (const auto & pk : picks) {
         auto & ls = mc->layers[pk.il];
         double best;

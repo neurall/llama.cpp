@@ -246,6 +246,30 @@ static int unit_tests() {
         check("target: below the hotter ones", pv2_target(0, 100, 20, 10) == 70);
         check("target: past the heap: its cold end", pv2_target(0, 100, 95, 10) == 0);
     }
+    {   // c1 boot fill: OLMoE's shape (16 layers x 64 experts, 8 used): one heat scale over all layers (a count's share of its layer x 1e9), hottest first,
+        // ties to the lower id (id = layer x 64 + expert), the unpicked (heat < 0) left out; along the order the heap packs down from the top
+        const int L = 16, E = 64;
+        std::vector<int64_t> heat(L * E, -1);
+        for (int l = 0; l < L; ++l) {
+            for (int e = 0; e < 10; ++e) { heat[l * E + e] = pv2_share_heat(100 - 10 * e + (l % 2), 1000); }   // 10 picked per layer
+        }
+        check("share heat: a count's share x 1e9", pv2_share_heat(1, 4) == 250000000 && pv2_share_heat(0, 0) == 0 && pv2_share_heat(3, 0) == 3000000000LL);
+        const auto o = pv2_boot_order(heat);
+        bool desc = o.size() == (size_t) L * 10, ties = true;
+        for (size_t i = 1; desc && i < o.size(); ++i) {
+            desc = heat[o[i - 1]] >= heat[o[i]];
+            if (heat[o[i - 1]] == heat[o[i]]) { ties = ties && o[i - 1] < o[i]; }
+        }
+        check("boot order: every picked expert once, hottest first", desc);
+        check("boot order: ties to the lower id", ties);
+        check("boot order: an odd layer's hottest before layer 0's", o[0] == 1 * E + 0 && o[7] == 15 * E + 0 && o[8] == 0 * E + 0);
+        std::vector<size_t> n(L * E, 0);
+        for (int l = 0; l < L; ++l) { for (int e = 0; e < E; ++e) { n[l * E + e] = 1179648 + 4096 * (l % 3); } }   // OLMoE Q4 expert bytes, three units
+        const auto d = pv2_heat_dist(heat, n);
+        bool packs = d[o[0]] == 0;
+        for (size_t i = 1; i < o.size(); ++i) { packs = packs && d[o[i]] == d[o[i - 1]] + n[o[i - 1]]; }
+        check("boot order: the heap packs down from the top along it", packs);
+    }
     {   // the switch to decode: the hottest of residents and missing experts that fill the area stay or come in, cold leftovers leave
         pv2_heap h = pv2_make(0, 1000);
         pv2_add(h, 0,   { 1, 200, 5, false });

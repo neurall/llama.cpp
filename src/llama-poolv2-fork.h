@@ -13,6 +13,7 @@
 #include "llama-poolalloc-fork.h"   // poolx_block_class: the slice offsets and the read past a row, one rule for both pools
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -314,11 +315,24 @@ static inline bool pv2_commit(pv2_heap & h, const pv2_pick & p, const pv2_res & 
     return pv2_add(h, p.s, r);
 }
 
-// each expert's distance from the hot end of a heap that held every expert packed in heat order (ties: the lower id first)
-static inline std::vector<size_t> pv2_heat_dist(const std::vector<int64_t> & heat, const std::vector<size_t> & n) {
+// every id, hottest first (ties: the lower id first)
+static inline std::vector<int32_t> pv2_heat_order(const std::vector<int64_t> & heat) {
     std::vector<int32_t> o(heat.size());
     std::iota(o.begin(), o.end(), 0);
     std::sort(o.begin(), o.end(), [&](int32_t a, int32_t b) { return heat[a] != heat[b] ? heat[a] > heat[b] : a < b; });
+    return o;
+}
+// c1 boot fill: one heat scale over all layers, a lifetime count's share of its layer's picks x 1e9
+static inline int64_t pv2_share_heat(uint64_t count, uint64_t total) { return std::llround(1e9 * (double) count / (double) std::max<uint64_t>(1, total)); }
+// c1 boot fill: the picked experts (heat >= 0) hottest first, ties to the lower id: the order pv2_heat_dist packs them down from the heap's top
+static inline std::vector<int32_t> pv2_boot_order(const std::vector<int64_t> & heat) {
+    std::vector<int32_t> o = pv2_heat_order(heat);
+    o.erase(std::find_if(o.begin(), o.end(), [&](int32_t i) { return heat[i] < 0; }), o.end());
+    return o;
+}
+// each expert's distance from the hot end of a heap that held every expert packed in heat order (ties: the lower id first)
+static inline std::vector<size_t> pv2_heat_dist(const std::vector<int64_t> & heat, const std::vector<size_t> & n) {
+    const std::vector<int32_t> o = pv2_heat_order(heat);
     std::vector<size_t> d(heat.size());
     size_t acc = 0;
     for (int32_t i : o) { d[i] = acc; acc += n[i]; }
