@@ -2715,6 +2715,7 @@ static void pv2_zone_sort(moe_cache * mc, size_t a, size_t b) {
     for (auto & [x, r] : hp.res) {
         if (r.id < 0) { continue; }
         const layer_state & lq = mc->layers[(size_t) (r.id / v.E)];
+        r.u = std::max<size_t>(1, lq.v2u);   // the residents carry no unit in the engine's heap: a move must land on a multiple of its layer's unit (the table holds start / unit)
         if (lq.slot_in_flight[(size_t) (r.id % v.E)] || lq.queued[(size_t) (r.id % v.E)]) { r.pin = true; }
     }
     const pv2_zone zp = pv2_sort_range(hp, b, (size_t) 4 << 30, 0);
