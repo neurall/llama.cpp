@@ -2242,8 +2242,13 @@ def stock_cell_sql(gen):
 
 
 def stock_gen_sql(gen):
-    """the answer-length filter of a stock row: within half and double of gen, or a row measured by the clock (note "boxed: ..."), whose answer ran for our answer time, not to the cell's length"""
-    return " and (n_gen between %d and %d or coalesce(note,'') like 'boxed:%%')" % (gen // 2, gen * 2) if gen else ""
+    """the answer-length filter of a stock row: within half and double of gen; a row measured by the clock (note "boxed: ...") whatever its length, its answer ran
+    for our answer time; a clipped one (-scl, note "bp2=b<prompt>-o<answer>") within half and double of the answer it asked for (user 2026-11-21: "accepting or
+    not shall measure just discrepancy of output after clipping")"""
+    if not gen: return ""
+    want = "(case when json_valid(env) then cast(json_extract(env, '$.tokens') as integer) end)"
+    return (" and (n_gen between %d and %d or coalesce(note,'') like 'boxed:%%' or (coalesce(note,'') glob 'bp2=b[0-9]*-o[0-9]*' and n_gen between %s / 2 and %s * 2))"
+            % (gen // 2, gen * 2, want, want))
 
 
 def stock_moe_args(spec):
@@ -8593,6 +8598,7 @@ def run_list(name, argv):
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
     ap.add_argument("-sa", "--stock-args", metavar="ARGS", help="server arguments for the stock cells only (-s, -sc, -nrt stock gap), both stock arms: -sa '-fitt 20000' leaves 20000 MiB free on every card, a restricted-VRAM stock (the rows keep them in their args column)")
     ap.add_argument("-rh", "--real-hold", action="store_true", help="-sim holds the VRAM for real (vramhog.py) for every cell, ours and stock alike, instead of our server faking the free memory: all arms of a comparison see the same cards")
+    ap.add_argument("-scl", "--stock-clip", dest="stock_clip", action="store_true", help="stock cells as one shortened request instead of the clock box (the default): the prompt cut to what stock reads in our prompt time, the answer to what it writes in our answer time (rates from the model's newest stock row, 5 and 0.5 t/s when it has none), so the answer follows its own prompt as ours does; the row counts when its answer is within half and double of what it asked for")
     ap.add_argument("-so", "--stock-opt", action="store_true", help="stock optimized: stock cells get -c = prompt + answer rounded up to 1024 (what a user would set), rows <stock build>-so-<cell>")
     ap.add_argument("-som", "--stock-opt-moe", nargs="?", const="16000,0.95", metavar="MIB[,SHARE]", help="stock optimized + upstream's expert cache (default 16000,0.95): -so and -sm together, rows <stock build>-moe-so-<cell>")
     ap.add_argument("-sm", "--stock-moe", metavar="MIB[,SHARE]", help="stock cells (-s, -sc, and the stock cells -nrt adds) use upstream's expert cache: --cpu-moe --moe-cache-mib MIB --moe-cache-cpu-share SHARE (default 0.5); their rows are named <stock build>-moe-<cell> so they never mix with plain stock rows")
@@ -8756,6 +8762,14 @@ def run_list(name, argv):
             ref = ours_reference(r["model"], r["test"]); pn0, og0, _x = run_tokens(ref["id"]) if ref and ref.get("id") else (None, None, "")
             ot = ((pn0 or 64) / ref["p"], out0 / ref["t"]) if ref and ref.get("p") and ref.get("t") else None
         if not ot: continue
+        if o.stock_clip:   # -scl: one shortened request instead (stock_scaled_request: what stock reads in our prompt time, what it writes in our answer time), so its answer follows its own prompt as ours does; the note marks it bp2=b<prompt>-o<answer>
+            ptok = int(mt[1]) if mt else (pn0 or 0)
+            if ptok:
+                n, m = stock_scaled_request(ptok, out0, ot[0], ot[1], *(stock_rates(r["model"]) or (5.0, 0.5)))   # no stock row of the model yet: 5 / 0.5 t/s (Kimi K3.1), its first row corrects it
+                ex = re.sub(r"--tokens \d+", "", re.sub(r"--env PERF_PNAME=\S+", "", r.get("extra") or ""))
+                ex = re.sub(r"PERF_PTOK=\d+", f"PERF_PTOK={n}", ex) if mt else ex + (f" --clamp {n}" if n < ptok else "")
+                r["extra"] = " ".join((ex + f" --env PERF_PMARK=b{n}-o{m} --tokens {m}").split()); r["tokens"] = str(m)
+                continue
         r["extra"] = (r.get("extra") or "") + f" --env PERF_BOX={ot[0]:.1f},{ot[1]:.1f}"   # no line per cell (user 2026-11-21: "remove these unasked for rows")
     if o.hog_gpu and not o.dry and o.nrts is None and rows and (o.real_hold or all(str(r["_b"]).startswith("stock") for r in rows)):   # -sim on a list of stock cells: stock cannot fake free memory (no --moe sim-vram), so the VRAM is really held, on every card, until the list ends
         v = str(o.hog_gpu).lower().rstrip("ib").rstrip("b"); free_mib = int(float(v[:-1]) if v.endswith("m") else float(v[:-1] if v.endswith("g") else v) * (1 if v.endswith("m") else 1024))
@@ -11849,6 +11863,10 @@ def _tool_selftest():
         check([r["n"] for r in _g["stock_slow_last"](_rw, lambda r: _sz[r["n"]], 256)] == ["o", "m", "k2", "k"], "stock_slow_last: only stock cells above 80% of RAM move to the end, ours and small stock keep their order")
         _st = {}; _g["live_rate_step"](_st, 0.0, 0, 0); _g["live_rate_step"](_st, 3.0, 3000, 0); _g["live_rate_step"](_st, 6.0, 4500, 0); _g["live_rate_step"](_st, 9.0, 4500, 1); _g["live_rate_step"](_st, 12.0, 4500, 31)
         check(_st["max"] == {"pp": 1000.0, "t": 10.0} and _g["live_rate_text"](_st).startswith("t 10.0 t/s 100.0 ms/token (max 10.0)") and "pp max 1000.0" in _g["live_rate_text"](_st), "live_rate_step: pp and t rates per 3 s sample, the maximum kept per phase")
+        import sqlite3 as _sq; _db = _sq.connect(":memory:"); _db.execute("create table runs(n_gen, note, env)")
+        _db.executemany("insert into runs values (?, ?, ?)", [(1000, "", '{"tokens":"1024"}'), (200, "boxed: pp 512 tok", "{}"), (357, "bp2=b1168-o357 prompt_n=1168", '{"tokens":"357"}'), (50, "bp2=b512-o357", '{"tokens":"357"}'),
+                                                               (300, "", '{"tokens":"300"}'), (300, "bp2=b13k1k-k31 prompt_n=12562", '{"tokens":"1024"}'), (300, "bp2=b512-o300", "not json")])
+        check([x for (x,) in _db.execute("select n_gen from runs where 1" + _g["stock_gen_sql"](1024))] == [1000, 200, 357] and _g["stock_gen_sql"](0) == "", "stock_gen_sql: full-length, boxed and clipped rows with the answer they asked for count; a clip far off its own answer, a short unclipped row, a prompt name and a row without its answer length do not")
         check(_g["stock_scaled_request"](12562, 1024, 40.0, 25.0, 0.5, 0.5) == (512, 32) and _g["stock_scaled_request"](12562, 1024, 40.0, 25.0, 300.0, 40.0) == (12288, 1000) and _g["stock_scaled_request"](12562, 1024, 0, 25.0, 1.0, 1.0) == (12562, 1024), "stock_scaled_request: each phase takes as long as ours, floors 512/32, unknown rates = the full request")
         check(_g["best_prompt_cell_label"]({"extra": "--env PERF_PTOK=12438", "tokens": "1024"}) == "b12k/1k 12438" and _g["best_prompt_cell_label"]({"extra": ""}) == "", "best_prompt_cell_label: name and exact tokens in the prompt column")
         _fk = {"/apply-template": lambda b: {"prompt": "<s>" + b["messages"][-1]["content"] + "<a>"}, "/tokenize": lambda b: {"tokens": list(range(len(b["content"]) // 3 + len(b["content"]) // 17))}}
