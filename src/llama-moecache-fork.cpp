@@ -379,6 +379,8 @@ struct moe_cache {
         pv2_heap main, land;
         size_t   M = 0, H = 0, cur = 0;            // cur: the landing area's cursor
         size_t   reach = (size_t) 256 << 20;       // a placement looks this far either way of its target (test-poolv2-fork --sim)
+        std::vector<int64_t> hv;                   // per id, while a prompt stream runs (tiered): the keep rank (decode-hot set above, the rest by global hotness)
+        bool     tiered = false;
         std::vector<size_t> dist;                  // per id: its distance from the hot end in the heat in force (pv2_heat_dist): a main placement's target
         uint64_t heat_step = UINT64_MAX;           // the decode step the decode heat was last set at
         size_t   done_seen = 0;                    // the stream's positions below it are unpinned (cs_done)
@@ -2561,7 +2563,7 @@ void pv2_heat_now(moe_cache * mc) {
     }
 }
 // the heat in force: every resident's and the main heap's targets (pv2_heat_dist). prompt: the placement heat, and the landing area's residents become leftovers (-1)
-void pv2_refresh(moe_cache * mc, bool prompt) {
+void pv2_refresh(moe_cache * mc, bool prompt, bool tiered) {
     auto & v = mc->v2;
     const size_t N = mc->layers.size() * (size_t) v.E;
     std::vector<int64_t> heat(N, -1);
@@ -2574,6 +2576,28 @@ void pv2_refresh(moe_cache * mc, bool prompt) {
             heat[(size_t) pv2_id(mc, li, e)] = pv2_heat(mc, ls, e, prompt, lsum);
             nb[(size_t) pv2_id(mc, li, e)]   = ls.v2n;
         }
+    }
+    v.tiered = false;
+    if (tiered && !prompt) {   // user 2026-11-21: the experts decode needs (its hot set, as many as the main heap holds) are kept; every other expert is cold and goes by its global hotness
+        std::vector<int64_t> glob(N, -1);
+        for (size_t li = 0; li < mc->layers.size(); ++li) {
+            const layer_state & ls = mc->layers[li];
+            double lsum = 0.0;
+            for (uint64_t c : ls.glob_count) { lsum += (double) c; }
+            for (int32_t e = 0; e < (int32_t) ls.expert_slot.size(); ++e) { glob[(size_t) pv2_id(mc, li, e)] = pv2_heat(mc, ls, e, true, lsum); }
+        }
+        std::vector<size_t> ord;
+        for (size_t i = 0; i < N; ++i) { if (nb[i]) { ord.push_back(i); } }
+        std::stable_sort(ord.begin(), ord.end(), [&](size_t a, size_t b) { return heat[a] > heat[b]; });
+        const size_t cap = (v.main.hi - v.main.lo) - (v.H - v.M);
+        size_t used = 0;
+        v.hv.assign(N, -1);
+        for (size_t i : ord) {
+            if (used + nb[i] <= cap && heat[i] > 0) { v.hv[i] = (int64_t) 1e15 + heat[i]; used += nb[i]; }
+            else { v.hv[i] = glob[i]; }
+        }
+        heat = v.hv;
+        v.tiered = true;
     }
     v.dist = pv2_heat_dist(heat, nb);
     for (auto & [s, r] : v.main.res) { if (r.id >= 0) { r.heat = heat[(size_t) r.id]; } }
@@ -2819,7 +2843,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
     }
     mc->profile_ready.store(ok, std::memory_order_release);
     if (mc->v2.on) {   // pool-v2: every expert by the map's heat, packed down from the heap's top (pv2_heat_dist), free windows only, until the heap is full
-        pv2_refresh(mc, true);
+        pv2_refresh(mc, true, false);
         std::vector<std::pair<size_t, int32_t>> all;   // (main target distance, id)
         for (size_t il = 0; il < mc->layers.size(); ++il) {
             if (!mc->layers[il].v2u) { continue; }
@@ -13826,7 +13850,7 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
     std::vector<int32_t> placed;
     size_t n_heat = 0, b_heat = 0, n_land = 0, n_ev = 0;
     for (int32_t e : want) {
-        const int64_t hx = pv2_heat(mc, ls, e, false, lsum);
+        const int64_t hx = v.tiered ? v.hv[(size_t) pv2_id(mc, li, e)] : pv2_heat(mc, ls, e, false, lsum);
         pv2_pick pk = pv2_pick_main(mc, li, e, hx, v.reach);
         if (pk.s != PV2_NONE) {
             victim(v.main, pk);
@@ -14295,7 +14319,7 @@ static bool pv2_pass_begin(moe_cache * mc, bool first) {
     auto & v = mc->v2;
     bool any = false;
     if (first) {
-        pv2_refresh(mc, false);   // victims by DECODE heat (user 2026-11-21: evict cold pp-hot experts, never cold-by-prompt decode-hot ones)
+        pv2_refresh(mc, false, true);   // keep rank: the decode-hot set, then global hotness (user 2026-11-21)
         v.n_heat = v.b_heat = v.n_land = v.b_land = v.n_used = v.n_evict = 0;
         std::vector<int32_t> out;
         for (const auto & [x, r] : v.land.res) { if (r.id >= 0 && mc->cs_pos[(size_t) (r.id / v.E)] < 0 && !mc->layers[(size_t) (r.id / v.E)].slot_in_flight[r.id % v.E]) { out.push_back(r.id); } }
@@ -16789,7 +16813,7 @@ void llama_moe_cache_step_fork() {
                 continue;
             }
             if (ls.v2u) {   // pool-v2: a window of the heap near its heat target, free first, else over residents colder than it by the pay-back margin
-                if (pv2_dist_due(mc->n_steps, mc->v2.heat_step)) { pv2_refresh(mc, false); mc->v2.heat_step = mc->n_steps; }   // the targets and every resident's heat: the first step and every 64 (a per-step pass over every resident cost decode time)
+                if (pv2_dist_due(mc->n_steps, mc->v2.heat_step)) { pv2_refresh(mc, false, false); mc->v2.heat_step = mc->n_steps; }   // the targets and every resident's heat: the first step and every 64 (a per-step pass over every resident cost decode time)
                 const int64_t hx = pv2_heat(mc, ls, id, false, 0.0);
                 const pv2_pick pk = pv2_pick_main(mc, li, id, std::llround(1e6 * (xscore(mc, ls, id) - pay_back(link_margin[ls.link]))), mc->v2.reach);
                 if (pk.s == PV2_NONE) {
@@ -17137,7 +17161,7 @@ static void pv2_switch(moe_cache * mc) {
     for (pv2_heap * h : { &v.main, &v.land }) {
         for (auto & [x, r] : h->res) { if (r.id >= 0) { r.pin = mc->layers[(size_t) (r.id / v.E)].slot_in_flight[r.id % v.E]; } }
     }
-    pv2_refresh(mc, false);
+    pv2_refresh(mc, false, false);
     v.heat_step = UINT64_MAX;
     const bool wait = fixed_on() || !reheat_bg();
     std::vector<pv2_miss> ms = pv2_missing(mc, false);
