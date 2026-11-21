@@ -2238,7 +2238,12 @@ def stock_arm_sql():
 def stock_cell_sql(gen):
     """the query of `run LIST -nrt` for a stock row of a cell (model, test) on this machine's current hardware (HWF[0]: the date scope, one request at a time) whose answer length is within half and double of gen"""
     return ("select 1 from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'"
-            + stock_arm_sql() + HWF[0] + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " limit 1")
+            + stock_arm_sql() + HWF[0] + stock_gen_sql(gen) + " limit 1")
+
+
+def stock_gen_sql(gen):
+    """the answer-length filter of a stock row: within half and double of gen, or a row measured by the clock (note "boxed: ..."), whose answer ran for our answer time, not to the cell's length"""
+    return " and (n_gen between %d and %d or coalesce(note,'') like 'boxed:%%')" % (gen // 2, gen * 2) if gen else ""
 
 
 def stock_moe_args(spec):
@@ -7552,7 +7557,7 @@ def known_gain(model, test):
     ours = c.execute("select build, max(ts) from runs where model=? and test=? and build not like 'stock%' and build not like 'strata%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " group by build order by max(ts) desc limit 1", (mo, t)).fetchone()
     if not ours: return 0
     v = c.execute("select tps, pp from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + "" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), (mo, t, ours[0])).fetchall() or c.execute("select tps, pp from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + "", (mo, t, ours[0])).fetchall()
-    st = c.execute("select tps, pp from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + stock_arm_sql() + HWF[0] + "" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " order by ts desc limit 1", (mo, t)).fetchone()
+    st = c.execute("select tps, pp from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + stock_arm_sql() + HWF[0] + stock_gen_sql(gen) + " order by ts desc limit 1", (mo, t)).fetchone()
     if not v or not st or not st[0]: return 0
     ti = TEST_IN.get(test) or TEST_IN.get(t) or ""
     gs = [statistics.median(x[0] for x in v) / st[0]] + ([statistics.median(x[1] for x in v if x[1]) / st[1]] if st[1] and any(x[1] for x in v) else [])
@@ -7842,9 +7847,9 @@ def stock_row(peek, res, build=None):
         q = "select tps, pp, build, bno, start_ts, rowid from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'{G} order by start_ts desc limit 12"
         qa = (os.path.basename(peek[0]), tst)
         hwf_x = re.sub(r" and ts >= '[^']*'", "", HWF[0]) if RELAX_ERA[0] else HWF[0]   # the relaxed lookups below: before the machine change too, unless each state counts alone
-        rs = c.execute(q.replace("{G}", " and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), qa).fetchall()
+        rs = c.execute(q.replace("{G}", stock_gen_sql(gen)), qa).fetchall()
         if not rs and RELAX_STOCK[0] and RELAX_ERA[0] and " and ts >= " in HWF[0]:   # no stock run since the machine changed (HW_SINCE): the newest one before it, its build and date show in the table (user 2026-11-21)
-            rs = c.execute(q.replace(HWF[0], re.sub(r" and ts >= '[^']*'", "", HWF[0])).replace("{G}", " and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), qa).fetchall()
+            rs = c.execute(q.replace(HWF[0], re.sub(r" and ts >= '[^']*'", "", HWF[0])).replace("{G}", stock_gen_sql(gen)), qa).fetchall()
         if not rs and RELAX_STOCK[0] and RELAX_LVL[0] >= 1 and gen:   # no stock run of about this answer length: a shorter one, stopped by the clock (stock K3.1: 357 tokens at 0.31 t/s; its decode rate stands, user 2026-11-21)
             rs = c.execute(q.replace(HWF[0], hwf_x).replace("{G}", ""), qa).fetchall()
         if not rs and RELAX_STOCK[0] and RELAX_LVL[0] >= 2:   # shortcut: no stock run on this test at all (K3.1 edit4c, tetrisc): the model's newest stock decode rate on another test, of about this answer length when there is one; no stock prompt rate (another prompt). A stock run of this test replaces it (user 2026-11-21: k31 rows with values, sorted)
@@ -8743,11 +8748,8 @@ def run_list(name, argv):
             return not c.execute(q, a).fetchone()
         except sqlite3.Error: return False
     rows = [dict(r, _b=b) for r in rows for b in ((sb, o.build) if sb and (o.stock_first or stock_missing(r)) and not (r.get("args") or "").strip() else (o.build,))]   # a cell with forced server args (dense-split=0/1) is a test of our own settings: stock has none of them, no stock partner   # -sc: the stock cell, then ours; -nrt: the stock cell only where its comparison is missing
-    for r in rows:   # a stock cell of a model that thrashes the SSD is measured by the clock (PERF_BOX): the same request as ours, stopped when our prompt time and our answer time have passed
+    for r in rows:   # every stock cell is measured by the clock (PERF_BOX; user 2026-11-21: the default for any stock run, -s, -sc or the -nrt gap, was models bigger than 80% of RAM): the same request as ours, stopped when our prompt time and our answer time have passed
         if not str(r["_b"]).startswith("stock") or "PERF_BOX" in (r.get("extra") or ""): continue
-        _sz = sum(os.path.getsize(q) for q in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
-        _rm = int(next((l.split()[1] for l in open("/proc/meminfo") if l.startswith("MemTotal")), "0")) * 1024
-        if _sz <= 0.8 * _rm: continue
         out0 = int(r.get("tokens") or 1024); mt = re.search(r"PERF_PTOK=(\d+)", r.get("extra") or "")
         if mt: ot = our_best_times(r["model"], out0)
         else:
