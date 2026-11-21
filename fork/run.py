@@ -5731,7 +5731,7 @@ def _hot_seeds(dst):
     weighted the same, each layer's counts scaled to 1e5 (about one 12k prompt's picks, so the user's own use takes over within a request or two), read by the engine when a start has no learned profile of the model (shipped_hot_path in
     llama-moecache-fork.cpp). Strata ships an expert profile per model; our first start without one ran 75.6-79.0 t/s against 81.1-81.4 from a map
     (Qwen3.8 IQ3_S one card, 2026-11-20). Returns the files written."""
-    src = os.environ.get("RUN_HOT_DIR", "/p/bw/data/hot-global")
+    src = os.environ.get("RUN_HOT_DIR", "/p/bw/data/hot")
     out = os.path.join(dst, "hotmaps"); n = 0
     for mdir in sorted(glob.glob(os.path.join(src, "*"))):
         maps = []
@@ -5859,7 +5859,7 @@ def cmd_publish(a):
         p = os.path.join(REL_OUT, f)
         names = subprocess.run(["unzip", "-Z1", p] if f.endswith(".zip") else ["tar", "tzf", p], capture_output=True, text=True).stdout
         if "hotmaps/" not in names:
-            sys.exit(f"publish: {f} has no hotmaps/ (the release build packs them from {os.environ.get('RUN_HOT_DIR', '/p/bw/data/hot-global')})")
+            sys.exit(f"publish: {f} has no hotmaps/ (the release build packs them from {os.environ.get('RUN_HOT_DIR', '/p/bw/data/hot')})")
     arch += [f for f in os.listdir(REL_OUT) if f.startswith("cudart-llama-bin-win-") and any("-bin-win-cuda-" in x for x in arch)]   # the shared Windows CUDA runtime has no hash in its name: without it every Windows release ran on the CPU (b14965 and before)
     b = re.search(r"llama-release-b(\d+)-", arch[0]).group(1); tag = f"release-b{b}-{h}-{a.name}"
     gh = ["gh", "-R", "neurall/llama.cpp"]
