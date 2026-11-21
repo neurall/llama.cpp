@@ -16243,6 +16243,12 @@ static void resdump_step(moe_cache * mc) {
     if (g_resdump_arm.exchange(0)) { cnt = 0; g_resdump_call++; }
     if (g_resdump_call == 0) { return; }
     ++cnt;
+    if (cnt <= 80 && (cnt % 4 == 1)) {   // the uploads still on their way in the first steps: marked placed (heap) or in the tables, not yet landed
+        size_t inf = 0, q = 0;
+        for (const auto & ls : mc->layers) { for (size_t e = 0; e < ls.slot_in_flight.size(); ++e) { inf += ls.slot_in_flight[e] ? 1 : 0; } }
+        { std::lock_guard<std::mutex> wl(mc->wmtx); q = mc->todo.size(); }
+        LLAMA_LOG_WARN("resdump: call %d step %d: %zu experts in flight, %zu jobs queued\n", g_resdump_call, cnt, inf, q);
+    }
     if (cnt != 2 && cnt != 40) { return; }
     FILE * f = fopen((std::string(path) + "." + std::to_string(g_resdump_call) + "." + std::to_string(cnt) + ".txt").c_str(), "w");
     if (!f) { return; }
