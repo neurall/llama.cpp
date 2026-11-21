@@ -1,0 +1,541 @@
+// test-poolv2-fork: pool v2's placement rules (src/llama-poolv2-fork.h): one byte heap in heat order, no size classes. No GPU, no model.
+//   build: g++ -std=c++17 -O2 -I src tests/test-poolv2-fork.cpp -o test-poolv2-fork
+//   run:   ./test-poolv2-fork                                  the rules against a brute-force search, plus a negative control
+//          ./test-poolv2-fork --sim [HOTDIR] [SERVERLOG] [SEED]  the rules replayed on recorded decode heat (Qwen3.8 IQ3_S, the pool of one RTX 3090)
+#include "../src/llama-poolv2-fork.h"
+#include "../src/llama-poolalloc-fork.h"   // poolx_block_class: today's block bytes, to name the types behind the log's size classes
+
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <random>
+#include <sstream>
+#include <string>
+
+static int g_fail = 0;
+static void check(const char * what, bool ok) {
+    if (!ok) { printf("FAIL: %s\n", what); g_fail++; }
+}
+
+// residents and free extents tile [lo, hi) exactly (no overlap, nothing lost), two free extents never touch, every start is a multiple of its unit
+static bool heap_ok(const pv2_heap & h, const std::map<int32_t, size_t> & unit_of) {
+    size_t at = h.lo;
+    auto r = h.res.begin();
+    auto g = h.gaps.begin();
+    bool gap_last = false;
+    while (at < h.hi) {
+        if (g != h.gaps.end() && g->first == at) {
+            if (g->second == 0 || gap_last) { return false; }
+            at += g->second; ++g; gap_last = true;
+        } else if (r != h.res.end() && r->first == at) {
+            const auto u = unit_of.find(r->second.id);
+            if (u == unit_of.end() || r->first % u->second != 0 || r->second.n == 0) { return false; }
+            at += r->second.n; ++r; gap_last = false;
+        } else {
+            return false;
+        }
+    }
+    return at == h.hi && r == h.res.end() && g == h.gaps.end();
+}
+
+// the windows in reach, by brute force, nearest distance of each kind: free at an edge of its free extent (fe), free anywhere (fa), over colder residents
+// not in flight at an edge of their run or of a resident in it (re), anywhere (ra); and the best one-victim replacement: (victim heat, bytes left over,
+// distance) of a window at an edge of a victim's hole (one)
+struct vkey_t { int64_t heat; size_t left, d; bool operator<(const vkey_t & o) const { return heat != o.heat ? heat < o.heat : left != o.left ? left < o.left : d < o.d; } };
+struct want_t { size_t fe = PV2_NONE, fa = PV2_NONE, re = PV2_NONE, ra = PV2_NONE; bool has_one = false; vkey_t one{}; };
+// the hole a resident leaves: from the end of the one before it (or lo) to the start of the one after it (or hi)
+static std::pair<size_t, size_t> hole_of(const pv2_heap & h, size_t s) {
+    auto it = h.res.find(s);
+    return { it == h.res.begin() ? h.lo : std::prev(it)->first + std::prev(it)->second.n, std::next(it) == h.res.end() ? h.hi : std::next(it)->first };
+}
+static want_t brute(const pv2_heap & h, size_t t, size_t n, size_t u, int64_t heat, size_t reach) {
+    want_t w;
+    auto blocks = [&](const pv2_res & r) { return r.pin || r.heat >= heat; };
+    auto near = [&](size_t & d, size_t A, size_t B, size_t s) { if (s >= A && s + n <= B && pv2_dist(s, t) <= reach) { d = std::min(d, pv2_dist(s, t)); } };
+    auto edge = [&](size_t & d, size_t A, size_t B, size_t x) { near(d, A, B, (x + u - 1) / u * u); if (x >= n) { near(d, A, B, (x - n) / u * u); } };
+    for (const auto & [rs, r] : h.res) {
+        if (blocks(r)) { continue; }
+        const auto [A, B] = hole_of(h, rs);
+        for (size_t s : { (A + u - 1) / u * u, B >= n ? (B - n) / u * u : PV2_NONE }) {
+            if (s == PV2_NONE || s < A || s + n > B || pv2_dist(s, t) > reach) { continue; }
+            const vkey_t k{ r.heat, B - A - n, pv2_dist(s, t) };
+            if (!w.has_one || k < w.one) { w.one = k; w.has_one = true; }
+        }
+    }
+    for (size_t s = (h.lo + u - 1) / u * u; s + n <= h.hi; s += u) {
+        bool any = false, blocked = false;
+        for (const auto & [rs, r] : h.res) {
+            if (rs < s + n && rs + r.n > s) { any = true; blocked = blocked || blocks(r); }
+        }
+        if (!blocked) { near(any ? w.ra : w.fa, h.lo, h.hi, s); }
+    }
+    for (const auto & [a, len] : h.gaps) { edge(w.fe, a, a + len, a); edge(w.fe, a, a + len, a + len); }
+    std::vector<std::pair<size_t, size_t>> runs;   // [A, B) between blockers
+    size_t A = h.lo;
+    for (const auto & [rs, r] : h.res) { if (blocks(r)) { runs.push_back({ A, rs }); A = rs + r.n; } }
+    runs.push_back({ A, h.hi });
+    for (const auto & [ra, rb] : runs) {
+        edge(w.re, ra, rb, ra); edge(w.re, ra, rb, rb);
+        for (const auto & [rs, r] : h.res) { if (!blocks(r) && rs >= ra && rs < rb) { edge(w.re, ra, rb, rs); edge(w.re, ra, rb, rs + r.n); } }
+    }
+    return w;
+}
+// a pick is right when it is the brute-force answer: a free window (edge first) if one is in reach, else (one) the best one-victim replacement, else a
+// window over colder residents (edge first), exactly those evicted, else none (the expert lands: nothing in reach fits)
+static bool pick_ok(const pv2_heap & h, const pv2_pick & p, size_t t, size_t n, size_t u, int64_t heat, size_t reach, bool one) {
+    const want_t w = brute(h, t, n, u, heat, reach);
+    const bool   fr = w.fe != PV2_NONE || w.fa != PV2_NONE;
+    const size_t d  = w.fe != PV2_NONE ? w.fe : w.fa != PV2_NONE ? w.fa : w.re != PV2_NONE ? w.re : w.ra;
+    if (d == PV2_NONE && !(one && w.has_one)) { return p.s == PV2_NONE; }
+    if (p.s == PV2_NONE || p.s % u != 0 || p.s < h.lo || p.s + n > h.hi) { return false; }
+    size_t k = 0;
+    for (const auto & [rs, r] : h.res) {
+        if (rs < p.s + n && rs + r.n > p.s) {
+            if (k >= p.evict.size() || p.evict[k] != rs || r.pin || r.heat >= heat) { return false; }
+            ++k;
+        }
+    }
+    if (k != p.evict.size() || (k == 0) != fr) { return false; }
+    if (!fr && one && w.has_one) {
+        if (k != 1) { return false; }
+        const auto [A, B] = hole_of(h, p.evict[0]);
+        const vkey_t got{ h.res.at(p.evict[0]).heat, B - A - n, pv2_dist(p.s, t) };
+        return p.s >= A && p.s + n <= B && !(w.one < got) && !(got < w.one);
+    }
+    return pv2_dist(p.s, t) == d;
+}
+
+// random newcomers, drops and pins on a small heap; with `oracle` every pick is held against the brute force and the heap against its invariants
+static uint64_t stress(uint64_t seed, int ops, bool oracle) {
+    static const size_t units[] = { 8, 24, 40, 64 };
+    std::mt19937_64 rng(seed);
+    pv2_heap h = pv2_make(1000, 7000);   // lo on no unit: alignment is to the address, not to the heap's start
+    std::map<int32_t, size_t> unit_of;
+    int32_t next = 0;
+    int seen[3] = { 0, 0, 0 };   // picks into a free window, over evicted residents, none
+    for (int op = 0; op < ops; ++op) {
+        const int k = (int) (rng() % 10);
+        if (k < 7) {
+            const size_t  u     = units[rng() % 4];
+            const size_t  n     = 40 + rng() % 400;
+            const size_t  t     = h.lo + rng() % (h.hi - h.lo);
+            const int64_t heat  = (int64_t) (rng() % 13) - 1;   // -1: a landing leftover's heat
+            const size_t  reach = rng() % 2 ? h.hi - h.lo : rng() % 1500;
+            const bool    one   = rng() % 4 != 0;   // false: the landing ring's rule
+            const pv2_pick p = pv2_place(h, t, n, u, heat, reach, one);
+            seen[p.s == PV2_NONE ? 2 : p.evict.empty() ? 0 : 1]++;
+            if (oracle) { check("place: the brute-force answer (free window, else one victim, else several, else lands)", pick_ok(h, p, t, n, u, heat, reach, one)); }
+            if (p.s != PV2_NONE) {
+                std::vector<pv2_res> out;
+                check("commit: the pick's window takes the newcomer", pv2_commit(h, p, { next, n, heat, false }, &out));
+                for (const auto & v : out) { check("evict: never a hotter, equally hot or in-flight resident", !v.pin && v.heat < heat); }
+                unit_of[next++] = u;
+            }
+        } else if (!h.res.empty()) {
+            auto it = h.res.begin();
+            std::advance(it, rng() % h.res.size());
+            if (k < 9) { pv2_drop(h, it->first); } else { it->second.pin = !it->second.pin; }
+        }
+        if (oracle) { check("heap: no overlap, free map exact and merged, starts aligned", heap_ok(h, unit_of)); }
+    }
+    if (oracle) {
+        printf("stress: %d picks into free windows, %d over evicted residents, %d with no place\n", seen[0], seen[1], seen[2]);
+        check("stress: every outcome is exercised", seen[0] > 100 && seen[1] > 100 && seen[2] > 100);
+    }
+    uint64_t x = 1469598103934665603ull;
+    for (const auto & [s, r] : h.res) { x = (x ^ s) * 1099511628211ull; x = (x ^ (uint64_t) r.id) * 1099511628211ull; }
+    return x;
+}
+
+static int unit_tests() {
+    {   // the free map: take splits an extent, give merges with both neighbours
+        pv2_heap h = pv2_make(0, 1000);
+        check("take: inside one free extent", pv2_take(h, 100, 100) && pv2_take(h, 200, 100));
+        check("take: not twice", !pv2_take(h, 150, 10));
+        check("take: split", h.gaps.size() == 2 && h.gaps.at(0) == 100 && h.gaps.at(300) == 700);
+        pv2_give(h, 100, 100);
+        check("give: merged left", h.gaps.size() == 2 && h.gaps.at(0) == 200);
+        pv2_give(h, 200, 100);
+        check("give: merged both sides", h.gaps.size() == 1 && h.gaps.at(0) == 1000);
+    }
+    {   // fit: the aligned start nearest the target inside an extent
+        check("fit: target inside", pv2_fit(100, 1000, 100, 64, 500) == 512);
+        check("fit: round down when nearer", pv2_fit(100, 1000, 100, 64, 520) == 512);
+        check("fit: clamped to the last start", pv2_fit(100, 1000, 100, 64, 990) == 896);
+        check("fit: clamped to the first start", pv2_fit(100, 1000, 100, 64, 0) == 128);
+        check("fit: too small after alignment", pv2_fit(100, 200, 100, 64, 0) == PV2_NONE);
+    }
+    {   // the real expert bytes (Qwen3.8 IQ3_S up/gate, IQ4_NL down): slices, the down slice's alignment worst case, the 216 bytes read past the last row
+        const size_t len[3] = { 704000, 704000, 921600 }, ts[3] = { 110, 110, 18 };
+        size_t u = 0;
+        const size_t b = pv2_expert_bytes(len, ts, 216, &u);
+        check("expert bytes: unit lcm(256, 110)", u == 14080);
+        check("expert bytes: 2 x 704000 + 2048 + 921600 + 216", b == 2331864);
+    }
+    {   // free first: a colder resident at the target, a free window farther: the free one, nothing evicted
+        pv2_heap h = pv2_make(0, 1000);
+        pv2_add(h, 400, { 1, 100, 3, false });
+        pv2_add(h, 500, { 2, 100, 9, false });
+        pv2_add(h, 600, { 3, 300, 9, false });
+        pv2_add(h, 0,   { 4, 400, 9, false });
+        const pv2_pick p = pv2_place(h, 400, 100, 1, 5, 1000, true);
+        check("place: a free window before an eviction", p.s == 900 && p.evict.empty());
+        pv2_add(h, 900, { 5, 100, 9, false });
+        const pv2_pick q = pv2_place(h, 450, 100, 1, 5, 1000, true);
+        check("place: no free window: the colder resident's", q.s == 400 && q.evict.size() == 1 && q.evict[0] == 400);
+        check("place: never an equally hot one", pv2_place(h, 450, 100, 1, 3, 1000, true).s == PV2_NONE);
+        h.res.at(400).pin = true;
+        check("place: never one in flight", pv2_place(h, 450, 100, 1, 5, 1000, true).s == PV2_NONE);
+        h.res.at(400).pin = false;
+        check("place: out of reach is no place", pv2_place(h, 950, 100, 1, 5, 400, true).s == PV2_NONE);
+        check("place: two colder residents make one window", pv2_place(h, 0, 450, 1, 10, 1000, true).evict.size() == 2);
+        h.res.at(500).heat = 1;   // a second victim, colder than resident 1 and farther from the target
+        const pv2_pick c = pv2_place(h, 450, 100, 1, 5, 1000, true);
+        check("place: the coldest victim, not the nearest", c.s == 500 && c.evict.size() == 1 && c.evict[0] == 500);
+        const pv2_pick r = pv2_place(h, 450, 100, 1, 5, 1000, false);
+        check("place: the ring takes the nearest victim", r.s == 400 && r.evict.size() == 1 && r.evict[0] == 400);
+    }
+    {   // heat order: distances from the hot end, ties by id; past the heap the target is its cold end
+        const std::vector<int64_t> heat = { 5, 9, 5, 0 };
+        const std::vector<size_t>  n    = { 10, 20, 30, 40 };
+        const auto d = pv2_heat_dist(heat, n);
+        check("heat order: hottest at 0, ties by id", d[1] == 0 && d[0] == 20 && d[2] == 30 && d[3] == 60);
+        check("target: below the hotter ones", pv2_target(0, 100, 20, 10) == 70);
+        check("target: past the heap: its cold end", pv2_target(0, 100, 95, 10) == 0);
+    }
+    {   // the switch to decode: the hottest of residents and missing experts that fill the area stay or come in, cold leftovers leave
+        pv2_heap h = pv2_make(0, 1000);
+        pv2_add(h, 0,   { 1, 200, 5, false });
+        pv2_add(h, 300, { 2, 200, 1, false });
+        const std::vector<pv2_cand> miss = { { 3, 300, 1, 9 }, { 4, 300, 1, 3 }, { 5, 300, 1, 2 } };
+        const auto up = pv2_refill(h, miss);
+        check("refill: the hottest that fit come in", up.size() == 2 && up[0].id == 3 && up[1].id == 4);
+        check("refill: a hot resident stays in place, a cold one leaves", h.res.count(0) && h.res.at(0).id == 1 && h.res.size() == 3);
+        std::map<int32_t, size_t> u1 = { { 1, 1 }, { 3, 1 }, { 4, 1 } };
+        check("refill: heap invariants", heap_ok(h, u1));
+    }
+    stress(1, 4000, true);
+    check("deterministic: one seed, one result", stress(7, 3000, false) == stress(7, 3000, false));
+    check("deterministic: another seed, another result", stress(7, 3000, false) != stress(8, 3000, false));
+    {   // negative control: the checks must fail on a broken heap and a broken pick, or they prove nothing
+        pv2_heap h = pv2_make(0, 1000);
+        std::map<int32_t, size_t> u1 = { { 1, 1 }, { 2, 1 }, { 3, 64 } };
+        pv2_add(h, 100, { 1, 200, 9, false });
+        pv2_add(h, 300, { 2, 100, 1, false });
+        const bool good = heap_ok(h, u1);
+        pv2_heap bad = h;
+        bad.res[250] = { 3, 100, 9, false };                 // overlaps resident 1 and is not taken from the free map
+        pv2_heap misaligned = h;
+        pv2_add(misaligned, 500, { 3, 10, 9, false });       // 500 is no multiple of its unit 64
+        pv2_pick wrong;                                      // evicts the hotter resident 1 for a newcomer of heat 5
+        wrong.s = 100; wrong.evict = { 100 };
+        const pv2_pick right = pv2_place(h, 100, 200, 1, 5, 1000, true);
+        const bool caught = !heap_ok(bad, u1) && !heap_ok(misaligned, u1) && !pick_ok(h, wrong, 100, 200, 1, 5, 1000, true);
+        check("negative control: the checks pass a sound heap and pick", good && pick_ok(h, right, 100, 200, 1, 5, 1000, true));
+        check("negative control: the checks catch an overlap, a misaligned start and a hotter victim", caught);
+        printf("negative control: overlap %s, misaligned start %s, hotter victim %s\n", heap_ok(bad, u1) ? "MISSED" : "caught",
+               heap_ok(misaligned, u1) ? "MISSED" : "caught", pick_ok(h, wrong, 100, 200, 1, 5, 1000, true) ? "MISSED" : "caught");
+    }
+    printf("%s: %d failure(s)\n", g_fail ? "FAIL" : "OK", g_fail);
+    return g_fail ? 1 : 0;
+}
+
+// ---- the simulator --------------------------------------------------------------------------------------------------------------------------------------
+static const int    NL = 48, NE = 512;
+static const size_t MiB = 1048576;
+
+static bool read_heat(const std::string & path, std::vector<int64_t> & h) {
+    std::ifstream f(path);
+    std::string line;
+    int got = 0;
+    h.assign((size_t) NL * NE, 0);
+    while (std::getline(f, line)) {
+        if (line.rfind("hot.", 0) != 0) { continue; }
+        const int l = atoi(line.c_str() + 4);
+        const size_t eq = line.find('=');
+        if (l < 0 || l >= NL || eq == std::string::npos) { return false; }
+        std::istringstream is(line.substr(eq + 1));
+        for (int e = 0; e < NE; ++e) { if (!(is >> h[(size_t) l * NE + e])) { return false; } }
+        ++got;
+    }
+    return got == NL;
+}
+
+struct cls_t { int blocks, layers; double mib; };
+// "moe-cache: block pool on CUDA0: 48 layers, 20244.7 MiB, size classes: 2982 x 2.10 MiB (14 layers, grid of 5733), ..."
+static bool read_pool(const std::string & path, std::vector<cls_t> & cls, double & pool_mib) {
+    std::ifstream f(path);
+    std::string line;
+    const char * key = "moe-cache: block pool on CUDA0: ";
+    while (std::getline(f, line)) {
+        const size_t at = line.find(key);
+        int nl = 0;
+        if (at == std::string::npos || sscanf(line.c_str() + at + strlen(key), "%d layers, %lf MiB", &nl, &pool_mib) != 2) { continue; }
+        const char * q = strstr(line.c_str(), "size classes: ");
+        if (!q) { return false; }
+        for (q += strlen("size classes: "); ; q += 3) {
+            cls_t c;
+            if (sscanf(q, "%d x %lf MiB (%d layers", &c.blocks, &c.mib, &c.layers) != 3) { break; }
+            cls.push_back(c);
+            q = strchr(q, ')');
+            if (!q || strncmp(q, "), ", 3) != 0) { break; }
+        }
+        return !cls.empty();
+    }
+    return false;
+}
+
+struct lay_t { size_t n, u, today; const char * ug, * dn; };   // v2 bytes of an expert, its start unit, today's block bytes, its types
+
+struct sim_t {
+    std::vector<lay_t>  L;
+    size_t H = 0, M = 0;                   // pool bytes; the main heap is [0, M), the landing area [M, H)
+    size_t reach = 256 * MiB;              // a probe walks this far each way: ~120 experts, the heat order holds within ~1.3% of the heap
+    int    ahead = 1;                      // layers the stream runs ahead of the one computing
+    pv2_heap main, land;
+    std::vector<int8_t> where;             // 0 nowhere, 1 main heap, 2 landing area
+    std::vector<size_t> at;
+    std::mt19937_64 rng;
+    size_t n_of(int32_t id) const { return L[id / NE].n; }
+    size_t u_of(int32_t id) const { return L[id / NE].u; }
+};
+
+struct row_t {
+    size_t streamed[2] = {}, sbytes[2] = {}, inplace[2] = {};
+    size_t s0 = 0, survive = 0, overflow = 0, peak_land = 0, refill = 0, rbytes = 0, free_b = 0, largest = 0, unusable = 0;
+    double cov_before = 0, cov_after = 0, cov_ideal = 0;
+};
+
+static double coverage(const sim_t & S, const std::vector<int64_t> & h) {
+    double in = 0, all = 0;
+    for (size_t i = 0; i < h.size(); ++i) { all += (double) h[i]; if (S.where[i]) { in += (double) h[i]; } }
+    return all > 0 ? in / all : 0;
+}
+static std::vector<pv2_cand> missing(const sim_t & S, const std::vector<int64_t> & h) {
+    std::vector<pv2_cand> m;
+    for (int32_t i = 0; i < (int32_t) h.size(); ++i) { if (!S.where[i] && h[i] > 0) { m.push_back({ i, S.n_of(i), S.u_of(i), h[i] }); } }
+    std::sort(m.begin(), m.end(), [](const pv2_cand & a, const pv2_cand & b) { return a.heat != b.heat ? a.heat > b.heat : a.id < b.id; });
+    return m;
+}
+// the landing area after a refill: where its residents are
+static void land_index(sim_t & S) {
+    for (auto & w : S.where) { if (w == 2) { w = 0; } }
+    for (const auto & [s, r] : S.land.res) { S.where[r.id] = 2; S.at[r.id] = s; }
+}
+static std::vector<size_t> sizes(const sim_t & S) {
+    std::vector<size_t> n((size_t) NL * NE);
+    for (size_t i = 0; i < n.size(); ++i) { n[i] = S.n_of((int32_t) i); }
+    return n;
+}
+
+// the decode state before the first prompt: the main heap packed in heat order, then the landing area refilled as at every switch to decode
+static void fill(sim_t & S, const std::vector<int64_t> & h) {
+    S.main = pv2_make(0, S.M);
+    S.land = pv2_make(S.M, S.H);
+    S.where.assign((size_t) NL * NE, 0);
+    S.at.assign((size_t) NL * NE, 0);
+    const auto dist = pv2_heat_dist(h, sizes(S));
+    for (const auto & c : missing(S, h)) {
+        const pv2_pick p = pv2_place(S.main, pv2_target(0, S.M, dist[c.id], c.n), c.n, c.u, c.heat, S.reach, true);
+        if (p.s != PV2_NONE && pv2_commit(S.main, p, { c.id, c.n, c.heat, false }, nullptr)) { S.where[c.id] = 1; S.at[c.id] = p.s; }
+    }
+    pv2_refill(S.land, missing(S, h));
+    land_index(S);
+}
+
+// one prompt of `passes` passes over all layers, every layer routing all but `skip` of its experts, then the switch to decode
+static row_t prompt(sim_t & S, const std::vector<int64_t> & h, int passes = 2, int skip = 24) {
+    row_t row;
+    const auto dist = pv2_heat_dist(h, sizes(S));
+    for (auto & [s, r] : S.main.res) { r.heat = h[r.id]; }
+    for (auto & [s, r] : S.land.res) { r.heat = -1; r.pin = false; }   // the landing area stays free for the stream: what it holds is a leftover
+    std::vector<char> was(S.where.size());
+    for (size_t i = 0; i < was.size(); ++i) { was[i] = S.where[i] != 0; row.s0 += was[i]; }
+    for (size_t i = 0; i < h.size(); ++i) { if (h[i] > 0 && dist[i] + S.n_of((int32_t) i) <= S.H) { row.cov_ideal += (double) h[i]; } }
+    double all = 0;
+    for (int64_t v : h) { all += (double) v; }
+    row.cov_ideal /= all;
+    size_t cur = S.land.lo, land_live = 0;
+    auto res_of = [&](int32_t id) -> pv2_res & { return (S.where[id] == 1 ? S.main : S.land).res.at(S.at[id]); };
+    auto gone = [&](const std::vector<pv2_res> & out) { for (const auto & v : out) { S.where[v.id] = 0; } };
+    for (int pass = 0; pass < passes; ++pass) {
+        std::vector<std::vector<int32_t>> flight(NL);
+        auto unpin = [&](int l) {
+            for (int32_t id : flight[l]) {
+                pv2_res & r = res_of(id);
+                r.pin = false;
+                if (S.where[id] == 2) { land_live -= r.n; }
+            }
+            flight[l].clear();
+        };
+        for (int l = 0; l < NL; ++l) {
+            std::vector<int> ids(NE);
+            std::iota(ids.begin(), ids.end(), 0);
+            std::shuffle(ids.begin(), ids.end(), S.rng);
+            std::vector<char> routed(NE, 1);
+            for (int k = 0; k < skip; ++k) { routed[ids[k]] = 0; }
+            for (int e = 0; e < NE; ++e) {   // residents first: used in place, held for the layer's flight
+                const int32_t id = l * NE + e;
+                if (!routed[e] || !S.where[id]) { continue; }
+                pv2_res & r = res_of(id);
+                r.pin = true;
+                if (S.where[id] == 2) { land_live += r.n; }
+                flight[l].push_back(id);
+                row.inplace[pass]++;
+            }
+            for (int e = 0; e < NE; ++e) {
+                const int32_t id = l * NE + e;
+                if (!routed[e] || S.where[id]) { continue; }
+                const size_t n = S.n_of(id), u = S.u_of(id);
+                row.streamed[pass]++;
+                row.sbytes[pass] += n;
+                std::vector<pv2_res> out;
+                pv2_pick p = pv2_place(S.main, pv2_target(0, S.M, dist[id], n), n, u, h[id], S.reach, true);
+                if (p.s != PV2_NONE) {
+                    pv2_commit(S.main, p, { id, n, h[id], true }, &out);
+                    gone(out);
+                    S.where[id] = 1; S.at[id] = p.s;
+                } else {
+                    p = pv2_place(S.land, cur, n, u, h[id], S.H - S.M, false);   // the ring: nearest its cursor
+                    if (p.s == PV2_NONE) { row.overflow++; continue; }   // the stream would wait for the layer computing
+                    pv2_commit(S.land, p, { id, n, -1, true }, &out);
+                    gone(out);
+                    S.where[id] = 2; S.at[id] = p.s;
+                    land_live += n;
+                    cur = p.s + n < S.H ? p.s + n : S.land.lo;
+                }
+                flight[l].push_back(id);
+            }
+            row.peak_land = std::max(row.peak_land, land_live);
+            if (l >= S.ahead) { unpin(l - S.ahead); }   // the layer computing finishes as the next one is placed
+        }
+        for (int l = 0; l < NL; ++l) { unpin(l); }
+    }
+    for (size_t i = 0; i < was.size(); ++i) { row.survive += was[i] && S.where[i]; }
+    row.cov_before = coverage(S, h);
+    for (auto & [s, r] : S.land.res) { r.heat = h[r.id]; }
+    for (const auto & c : pv2_refill(S.land, missing(S, h))) { row.refill++; row.rbytes += c.n; }
+    land_index(S);
+    row.cov_after = coverage(S, h);
+    for (const auto & [s, g] : S.main.gaps) {
+        row.free_b += g;
+        row.largest = std::max(row.largest, g);
+        bool fits = false;
+        for (const auto & ly : S.L) { fits = fits || pv2_fit(s, s + g, ly.n, ly.u, s) != PV2_NONE; }
+        if (!fits) { row.unusable += g; }
+    }
+    std::map<int32_t, size_t> unit_of;
+    for (int32_t i = 0; i < NL * NE; ++i) { unit_of[i] = S.u_of(i); }
+    check("sim: main heap invariants", heap_ok(S.main, unit_of));
+    check("sim: landing area invariants", heap_ok(S.land, unit_of));
+    return row;
+}
+
+static void print_head() {
+    printf("%-3s %-5s %6s %7s %6s %7s %6s %6s %6s %5s %7s %6s %7s %7s %7s %6s %6s %6s %7s %7s %7s\n", "#", "heat", "p1_exp", "p1_GB", "p2_exp", "p2_GB",
+           "pre_exp", "kept", "lost", "ovfl", "land_GB", "refill", "ref_GB", "ms@7", "ms@15", "cov0_%", "cov1_%", "ideal%", "free_MiB", "big_MiB", "unus_MiB");
+}
+static void print_row(int i, const char * name, const row_t & r) {
+    printf("%-3d %-5s %6zu %7.2f %6zu %7.2f %7zu %6zu %6zu %5zu %7.2f %6zu %6.2f %7.0f %7.0f %6.1f %6.1f %6.1f %8.0f %7.1f %8.1f\n", i, name,
+           r.streamed[0], r.sbytes[0] / 1e9, r.streamed[1], r.sbytes[1] / 1e9, r.s0, r.survive, r.s0 - r.survive, r.overflow, r.peak_land / 1e9,
+           r.refill, r.rbytes / 1e9, r.rbytes / 7e9 * 1e3, r.rbytes / 15e9 * 1e3, 100 * r.cov_before, 100 * r.cov_after, 100 * r.cov_ideal,
+           r.free_b / (double) MiB, r.largest / (double) MiB, r.unusable / (double) MiB);
+}
+
+static int run_sim(const std::string & dir, const std::string & log, uint64_t seed) {
+    const char * names[4] = { "pf1k", "pf4k", "pf12k", "pf14k" };
+    std::vector<int64_t> heat[4];
+    for (int k = 0; k < 4; ++k) {
+        if (!read_heat(dir + "/" + names[k] + ".ini", heat[k])) { fprintf(stderr, "sim: cannot read %s/%s.ini\n", dir.c_str(), names[k]); return 1; }
+    }
+    std::vector<cls_t> cls;
+    double pool_mib = 0;
+    if (!read_pool(log, cls, pool_mib)) { fprintf(stderr, "sim: no block pool line in %s\n", log.c_str()); return 1; }
+    // a class's block (MiB in the log) names its types: the model's types (the log's bell-pool lines: iq2_s, iq3_xxs, iq3_s, iq4_xs rows of 2560 for up and
+    // gate, iq4_nl and q2_0 rows of 640 for down) through today's block rule; exactly one pair must make each class
+    struct qt { const char * name; size_t ts, blck; };
+    static const qt ug[] = { { "iq2_s", 82, 256 }, { "iq3_xxs", 98, 256 }, { "iq3_s", 110, 256 }, { "iq4_xs", 136, 256 } };
+    static const qt dn[] = { { "iq4_nl", 18, 32 }, { "q2_0", 18, 64 } };
+    const size_t n_embd = 2560, n_ff = 640;
+    std::vector<lay_t> per_cls;
+    size_t today_pool = 0;
+    for (const auto & c : cls) {
+        int hits = 0;
+        lay_t ly{};
+        for (const auto & a : ug) {
+            for (const auto & d : dn) {
+                const size_t ugb = n_ff * (n_embd / a.blck) * a.ts, dnb = n_embd * (n_ff / d.blck) * d.ts;
+                const poolx_slice sl[3] = { { ugb, a.ts, a.blck, n_embd }, { ugb, a.ts, a.blck, n_embd }, { dnb, d.ts, d.blck, n_ff } };
+                const poolx_block pb = poolx_block_class(sl);
+                if (std::llround(pb.B / (double) MiB * 100) != std::llround(c.mib * 100)) { continue; }
+                const size_t len[3] = { ugb, ugb, dnb }, ts[3] = { a.ts, a.ts, d.ts };
+                ly.n = pv2_expert_bytes(len, ts, std::max({ pb.past[0], pb.past[1], pb.past[2] }), &ly.u);
+                ly.today = pb.B; ly.ug = a.name; ly.dn = d.name;
+                hits++;
+            }
+        }
+        if (hits != 1) { fprintf(stderr, "sim: class of %.2f MiB matches %d type pairs\n", c.mib, hits); return 1; }
+        per_cls.push_back(ly);
+        today_pool += (size_t) c.blocks * ly.today;
+    }
+    // layer -> class: the pairs the q5h logs of this pool name ("cstream: pass 1 entry 1 (layer 1, card 0): no run of 512 blocks in class 1"); the other
+    // layers, ascending, take the classes' remaining layer counts in class order (a stated guess: the line counts layers per class, not which ones)
+    static const int seen[][2] = { { 0, 0 }, { 1, 1 }, { 2, 2 }, { 4, 2 }, { 5, 2 }, { 6, 2 }, { 8, 1 }, { 9, 2 }, { 11, 2 } };
+    std::vector<int> lc(NL, -1), left(cls.size());
+    for (size_t c = 0; c < cls.size(); ++c) { left[c] = cls[c].layers; }
+    for (const auto & s : seen) { lc[s[0]] = s[1]; left[s[1]]--; }
+    for (int l = 0, c = 0; l < NL; ++l) {
+        if (lc[l] >= 0) { continue; }
+        while (c < (int) cls.size() && left[c] == 0) { ++c; }
+        if (c == (int) cls.size()) { fprintf(stderr, "sim: the classes count fewer than %d layers\n", NL); return 1; }
+        lc[l] = c; left[c]--;
+    }
+    sim_t S;
+    for (int l = 0; l < NL; ++l) { S.L.push_back(per_cls[lc[l]]); }
+    S.H = today_pool;
+    printf("pool: %.1f MiB in the log, %.1f MiB from the classes' types; %zu classes:\n", pool_mib, today_pool / (double) MiB, cls.size());
+    for (size_t c = 0; c < cls.size(); ++c) {
+        std::string ls;
+        for (int l = 0; l < NL; ++l) { if (lc[l] == (int) c) { ls += (ls.empty() ? "" : ",") + std::to_string(l); } }
+        printf("  %4d x %.2f MiB  %-7s/%-6s today %8zu B, v2 %8zu B (%+.2f%%), unit %6zu B, layers %s\n", cls[c].blocks, cls[c].mib, per_cls[c].ug, per_cls[c].dn,
+               per_cls[c].today, per_cls[c].n, 100.0 * ((double) per_cls[c].n / per_cls[c].today - 1), per_cls[c].u, ls.c_str());
+    }
+    printf("today (same prompt, class pool): 23421 experts streamed a pass, ~6300 experts (~9 GB) refilled after the prompt\n");
+    for (int ahead = 1; ahead <= 2; ++ahead) {
+        // the landing area: what the first prompt has in flight there when the main heap leaves room for (ahead + 1) whole layers, plus one expert
+        size_t full = 0, big = 0;
+        for (const auto & ly : S.L) { full = std::max(full, NE * ly.n + ly.u); big = std::max(big, ly.n + ly.u); }
+        S.ahead = ahead;
+        S.M = (S.H - (ahead + 1) * full) / MiB * MiB;
+        S.rng.seed(seed);
+        fill(S, heat[3]);
+        const size_t need = prompt(S, heat[3]).peak_land;
+        S.M = (S.H - need - big) / MiB * MiB;
+        printf("\nstream %d layer(s) ahead: landing area %.0f MiB (in flight at most %.0f MiB with %.0f MiB for it), main heap %.0f MiB\n", ahead,
+               (S.H - S.M) / (double) MiB, need / (double) MiB, (ahead + 1) * full / (double) MiB, S.M / (double) MiB);
+        S.rng.seed(seed);
+        fill(S, heat[3]);
+        printf("decode state before the prompt: %zu experts resident, coverage of pf14k %.1f%%\n", (size_t) std::count_if(S.where.begin(), S.where.end(),
+               [](int8_t w) { return w != 0; }), 100 * coverage(S, heat[3]));
+        print_head();
+        print_row(0, "pf14k", prompt(S, heat[3]));
+        printf("50 prompts, each with the next request's decode heat (pf1k, pf4k, pf12k, pf14k in turn), from the pf14k state:\n");
+        S.rng.seed(seed);
+        fill(S, heat[3]);
+        print_head();
+        for (int i = 0; i < 50; ++i) { print_row(i + 1, names[i % 4], prompt(S, heat[i % 4])); }
+    }
+    printf("%s: %d failure(s)\n", g_fail ? "FAIL" : "OK", g_fail);
+    return g_fail ? 1 : 0;
+}
+
+int main(int argc, char ** argv) {
+    if (argc > 1 && strcmp(argv[1], "--sim") == 0) {
+        const std::string dir = argc > 2 ? argv[2] : "/p/bw/data/hot/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf";
+        const std::string log = argc > 3 ? argv[3] : "/p/bw/data/q5h/ring_early_switch-q1-p14k-re0.server.log";
+        return run_sim(dir, log, argc > 4 ? strtoull(argv[4], nullptr, 10) : 1);
+    }
+    return unit_tests();
+}
