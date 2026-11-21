@@ -3029,7 +3029,6 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     void *        mc_bell     = nullptr;   // --moe bell=1: this layer's bell (decode)
     ggml_backend_t mc_bell_b  = nullptr;   // the card that holds the layer's cache: the bell's two ops run there
     ggml_tensor * mc_bell_ids = nullptr;   // the picks as the bell op read them
-    ggml_tensor * mc_bell_pub = nullptr;   // the bell op's own output (each pick's block): moe_rows reads it
     ggml_tensor *  mc_cpu_ids     = nullptr;   // --moe pp-off: the CPU's misses (the device's are -1)
     ggml_tensor *  mc_miss_ids    = nullptr;   // --moe miss-dev: the misses' ids (the rest -1), computed on the device holding up_m
     ggml_tensor *  mc_pred        = nullptr;
@@ -3353,21 +3352,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         }
         if (mc_bell) {
             mc_bell_ids = ggml_reshape_2d(ctx0, ggml_cont(ctx0, sel_dev), n_expert_used, 1);
-            mc_bell_pub = ggml_moe_bell(ctx0, mc_bell_ids, mcache->dev_table, mc_inp, mc_bell);   // [n_expert_used, 1]: each pick's block, published to the host
-            ggml_backend_sched_set_tensor_backend(sched, mc_bell_pub, mc_bell_b);
-            cb(mc_bell_pub, "ffn_moe_bell", il);
-            mc_slot_ids = mc_bell_pub;
-            // --moe bell-split=1: the card's matvecs take each pick's block from a get_rows of the table, so the publish (host writes, a system fence:
-            // 6-7.6 us a layer, nsys Qwen3.8 IQ3_S 2026-11-21) feeds only moe_rows and the CUDA stream plan may run it beside the main chain (op_params[2]).
-            // Both read the same table: a decode graph's table changes only between graphs (flush_tables after step_graph_join).
-            static const bool bell_split = [] { const char * e = moe_opt("bell-split"); return e && atoi(e) != 0; }();
-            if (bell_split) {
-                mc_bell_pub->op_params[2] = 1;
-                mc_slot_ids = ggml_get_rows(ctx0, mcache->dev_table, ggml_reshape_1d(ctx0, mc_bell_ids, n_expert_used));   // [1, n_expert_used]
-                ggml_backend_sched_set_tensor_backend(sched, mc_slot_ids, mc_bell_b);
-                mc_slot_ids = ggml_reshape_2d(ctx0, mc_slot_ids, n_expert_used, 1);
-                cb(mc_slot_ids, "ffn_moe_cache_slots", il);
-            }
+            mc_slot_ids = ggml_moe_bell(ctx0, mc_bell_ids, mcache->dev_table, mc_inp, mc_bell);   // [n_expert_used, 1]: each pick's block, published to the host
+            ggml_backend_sched_set_tensor_backend(sched, mc_slot_ids, mc_bell_b);
+            cb(mc_slot_ids, "ffn_moe_bell", il);
         } else {
             ggml_tensor * ids_flat = ggml_reshape_1d(ctx0, ggml_cont(ctx0, sel_dev), n_expert_used*n_tokens);
             mc_slot_ids = ggml_get_rows(ctx0, mcache->dev_table, ids_flat); // [1, n_expert_used*n_tokens]
@@ -3440,7 +3427,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // card's chain, a layer with misses holds the card for them. Gained: one launch and one gap with no kernel a layer (nsys, Qwen3.8 IQ3_S decode: about 96
         // gaps of 20-100 us a token, two a layer).
         if (mc_bell) {
-            down_g = ggml_moe_rows(ctx0, down_g, mc_bell_ids, mc_bell_pub, mc_bell);   // in place on the chain's rows
+            down_g = ggml_moe_rows(ctx0, down_g, mc_bell_ids, mc_slot_ids, mc_bell);   // in place on the chain's rows
             ggml_backend_sched_set_tensor_backend(sched, down_g, mc_bell_b);
             cb(down_g, "ffn_moe_bell_rows", il);
         }

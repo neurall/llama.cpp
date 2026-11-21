@@ -5623,9 +5623,6 @@ static bool ggml_cuda_stream_movable_fork(const ggml_tensor * t) {
     if (routed && t->op == GGML_OP_MOE_ROWS) {
         return true;   // writes the rows of its own `down` in place (a view of it): the unit's write range is that tensor, the plan orders it
     }
-    if (t->op == GGML_OP_MOE_BELL && t->op_params[2] == 1) {
-        return true;   // --moe bell-split: the matvecs read their blocks through a get_rows of their own, only moe_rows waits for this publish
-    }
     if (t->view_src != nullptr) {
         return false;
     }
