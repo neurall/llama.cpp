@@ -8077,10 +8077,12 @@ static struct {
 // 3 map: the prompt's own expert map (every MoE layer's picks over its tokens), each layer cut to its k most picked (user 2026-11-13: "key was that prefill
 // or decode moe counts themselves ... way more expressive"; "skip the noisy half ... take just top n per layer"); its hottest cells make the path
 // 4 emb: the prompt's tokens' embedding rows pooled (tree_emb_key), known before the prompt runs: the nearest leaf's prompts' map fills the RAM pool then
+// 5 last: the final hidden state (result_norm, what the logits come from) at the prompt's last token (user 2026-11-21: "store under prefill last token last
+// layer activation. that would allow loading storing per req"; Qwen3.6 10-28: the final state alone 0.81 correlation with the answer-expert overlap, pooled 0.91)
 static int tree_kind() {
     static const int k = [] {
         const char * v = moe_opt("tree-key");
-        return v == nullptr ? 0 : strcmp(v, "pool") == 0 ? 1 : strcmp(v, "ids") == 0 ? 2 : strcmp(v, "map") == 0 ? 3 : strcmp(v, "emb") == 0 ? 4 : 0;
+        return v == nullptr ? 0 : strcmp(v, "pool") == 0 ? 1 : strcmp(v, "ids") == 0 ? 2 : strcmp(v, "map") == 0 ? 3 : strcmp(v, "emb") == 0 ? 4 : strcmp(v, "last") == 0 ? 5 : 0;
     }();
     return k;
 }
@@ -9783,11 +9785,12 @@ void llama_moe_topic_pp_ids_fork(int il, const int32_t * ids, int64_t k, int64_t
 
 // how many MoE layers' rows the key copies (0: all, and the final hidden state): the tree keys by the first MoE layer's only, unless it pools
 int llama_moe_topic_key_rows_fork(void) {
-    return g_topic.mode == topic_t::TREE && tree_kind() != 1 ? 1 : 0;   // ids: the row only marks the prompt's end
+    return g_topic.mode == topic_t::TREE && tree_kind() != 1 && tree_kind() != 5 ? 1 : 0;   // ids: the row only marks the prompt's end; pool and last: every row
 }
 
 // the tree's key from the rows that came (the MoE layers' in layer order, then the final state's)
 static std::vector<float> tree_key(const float * const * rows, int n_rows, int64_t n) {
+    if (tree_kind() == 5) { return n_rows >= 1 && rows[n_rows - 1] ? std::vector<float>(rows[n_rows - 1], rows[n_rows - 1] + n) : std::vector<float>(); }   // last: the final state
     if (!tree_key_pool()) { return rows[0] ? std::vector<float>(rows[0], rows[0] + n) : std::vector<float>(); }
     std::vector<float> k((size_t) n, 0.0f);
     int used = 0;
@@ -9856,7 +9859,7 @@ static void tree_read(moe_cache * mc, const std::vector<float> & key, const char
     const size_t n_ahead = g_topic.steer ? tree_fill(mc, *src) : 0;   // the RAM pool fills with what the leaf rates
     LLAMA_LOG_WARN("moe-cache: hottree: %s read, key: %s (%zu values): %s%s (%zu leaves, %.1f ms)\n", phase,
             tree_kind() == 2 ? "the prompt's most picked experts of the first MoE layer" : tree_kind() == 3 ? "the prompt's expert map (top k a layer)" :
-            tree_kind() == 4 ? "the prompt's token embeddings pooled" : tree_key_pool() ? "all MoE layers' inputs pooled at the prompt's last token" :
+            tree_kind() == 4 ? "the prompt's token embeddings pooled" : tree_kind() == 5 ? "the final hidden state at the prompt's last token" : tree_key_pool() ? "all MoE layers' inputs pooled at the prompt's last token" :
             "the first MoE layer's input at the prompt's last token", key.size(),
             src ? tr_fmt("leaf %s (%s; %s), %u %s maps, %s: its %s map rates %zu experts", tree_short(at).c_str(),
                     at == tree_path(key) ? "the key's own" : "the nearest", tree_shares(ov).c_str(), lf->n, phase, tree_best_str(*lf).c_str(),
