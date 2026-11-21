@@ -6400,10 +6400,9 @@ static void poison_free_blocks(moe_cache * mc, const moe_cache::alias_pool & ap)
     if (mc->v2.on) {   // pool-v2: the heap's free extents (a block of a class is no expert's)
         if (&ap != &mc->alias[mc->v2.ap_idx]) { return; }
         std::vector<std::pair<size_t, size_t>> gaps;
-        {
-            std::lock_guard<std::mutex> lk(mc->mtx);
-            for (const pv2_heap * h : { &mc->v2.main, &mc->v2.land }) { for (const auto & [g, n] : h->gaps) { gaps.push_back({ g, g + n }); } }
-        }
+        if (!mc->mtx.try_lock()) { return; }   // the step's caller holds the cache lock (a plain lock here deadlocked the first decode step): this round's poison is skipped
+        for (const pv2_heap * h : { &mc->v2.main, &mc->v2.land }) { for (const auto & [g, n] : h->gaps) { gaps.push_back({ g, g + n }); } }
+        mc->mtx.unlock();
         for (const auto & [lo, hi] : gaps) {
             pool_enter(ap, lo, hi, true);
             if (mc->mtx.try_lock()) {
