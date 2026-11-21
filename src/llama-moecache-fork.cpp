@@ -13826,7 +13826,7 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
     std::vector<int32_t> placed;
     size_t n_heat = 0, b_heat = 0, n_land = 0, n_ev = 0;
     for (int32_t e : want) {
-        const int64_t hx = pv2_heat(mc, ls, e, true, lsum);
+        const int64_t hx = pv2_heat(mc, ls, e, false, lsum);
         pv2_pick pk = pv2_pick_main(mc, li, e, hx, v.reach);
         if (pk.s != PV2_NONE) {
             victim(v.main, pk);
@@ -14295,7 +14295,7 @@ static bool pv2_pass_begin(moe_cache * mc, bool first) {
     auto & v = mc->v2;
     bool any = false;
     if (first) {
-        pv2_refresh(mc, true);
+        pv2_refresh(mc, false);   // victims by DECODE heat (user 2026-11-21: evict cold pp-hot experts, never cold-by-prompt decode-hot ones)
         v.n_heat = v.b_heat = v.n_land = v.b_land = v.n_used = v.n_evict = 0;
         std::vector<int32_t> out;
         for (const auto & [x, r] : v.land.res) { if (r.id >= 0 && mc->cs_pos[(size_t) (r.id / v.E)] < 0 && !mc->layers[(size_t) (r.id / v.E)].slot_in_flight[r.id % v.E]) { out.push_back(r.id); } }
