@@ -2640,6 +2640,21 @@ bool pv2_take_range(moe_cache * mc, size_t a, size_t b, size_t * n_evict = nullp
                 }
             }
             if (!busy) {
+                static int logged = 0;
+                if (!ids.empty() && logged++ < 24) {   // dev: what a lend / KV zone / room takes out of the heap: how many, how hot (decode score) against the heap's residents
+                    std::vector<int64_t> all;
+                    for (const auto & [x, r] : v.main.res) { if (r.id >= 0) { all.push_back(std::llround(1e6 * xscore(mc, mc->layers[(size_t) (r.id / v.E)], r.id % v.E))); } }
+                    std::sort(all.begin(), all.end());
+                    const int64_t med = all.empty() ? 0 : all[all.size() / 2], p90 = all.empty() ? 0 : all[all.size() * 9 / 10];
+                    size_t above_med = 0, above_p90 = 0; double bytes = 0.0;
+                    for (int32_t id : ids) {
+                        const layer_state & lo = mc->layers[(size_t) (id / v.E)];
+                        const int64_t h = std::llround(1e6 * xscore(mc, lo, id % v.E));
+                        above_med += h > med; above_p90 += h > p90; bytes += lo.v2n;
+                    }
+                    LLAMA_LOG_WARN("moe-cache: pool-v2: stretch [%.0f, %.0f) MiB taken: %zu residents out (%.2f GB), %zu above the heap's median decode score, %zu above its 90th percentile\n",
+                            a / 1048576.0, b / 1048576.0, ids.size(), bytes / 1e9, above_med, above_p90);
+                }
                 for (int32_t id : ids) {
                     layer_state & lo = mc->layers[(size_t) (id / v.E)];
                     evict_slot(mc, lo, id % v.E);
