@@ -13,6 +13,7 @@
 #include "llama-poolalloc-fork.h"   // poolx_block_class: the slice offsets and the read past a row, one rule for both pools
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -51,6 +52,7 @@ struct pv2_res {
     size_t  n    = 0;       // bytes held
     int64_t heat = 0;       // decode use count; -1: a landing leftover any newcomer may replace
     bool    pin  = false;   // in flight (its layer computes or waits to): never replaced
+    size_t  u    = 1;       // its unit: the start is a multiple of it (a move keeps that)
 };
 struct pv2_heap {
     size_t lo = 0, hi = 0;
@@ -361,6 +363,146 @@ static inline pv2_pick pv2_pick_main(const pv2_heap & h, size_t t, size_t n, siz
     const pv2_pick p = pv2_place(h, t, n, u, std::numeric_limits<int64_t>::min(), h.hi - h.lo, true);
     if (p.s != PV2_NONE || heat == std::numeric_limits<int64_t>::min()) { return p; }
     return pv2_place(h, t, n, u, heat, reach, true);
+}
+
+// c2: a move plan (user 2026-11-21: "move, don't evict": only the coldest resident ever leaves; a chain of experts shifts toward the cold end by device copies
+// and the newcomer goes last). The steps run in this order, each destination free when its step runs (a step may overlap its own source: the copy runs toward
+// the destination); the evicted residents (starts, before any step) leave first.
+struct pv2_step { int32_t id; size_t from, to; };
+struct pv2_move { bool ok = false; std::vector<pv2_step> steps; std::vector<size_t> evict; size_t s = PV2_NONE, bytes = 0; };
+static constexpr size_t PV2_MOVE_EVICT = 8;     // at most this many of the coldest are tried as victims
+static constexpr size_t PV2_MOVE_CHAIN = 256;   // residents in the window the chain search covers (shortcut: a longer heap is searched around the target)
+// the plan taken on the heap: evictions, steps in order, the newcomer; false when a step's destination is not free (a plan of another heap state)
+static inline bool pv2_apply_move(pv2_heap & h, const pv2_move & m, const pv2_res & r) {
+    for (size_t s : m.evict) { pv2_drop(h, s); }
+    for (const pv2_step & st : m.steps) { const pv2_res v = pv2_drop(h, st.from); if (!pv2_add(h, st.to, v)) { return false; } }
+    return pv2_add(h, m.s, r);
+}
+// 1. a free window anywhere: the nearest to t (ties: the lower start), nothing moves. 2. else for k = 0, 1, .. of the coldest eligible residents (heat below the
+// newcomer's, not in flight, not held; ties: the lower id) evicted, the cheapest order-preserving layout of the rest and the newcomer: pinned ones stay, the
+// newcomer sits where the fewest heat inversions are, every mover is packed against a stayer or the other movers (an expert's start is a multiple of its unit
+// pv2_res::u); cost = bytes moved, then the newcomer's distance to t, then its start. The first k whose cost is within `budget` bytes wins; !ok when none.
+static inline pv2_move pv2_plan_move(const pv2_heap & h, size_t t, size_t n, size_t u, int64_t heat, size_t budget = SIZE_MAX) {
+    pv2_move mv;
+    for (const auto & [a, len] : h.gaps) {
+        const size_t s = pv2_fit(a, a + len, n, u, t);
+        if (s != PV2_NONE && (mv.s == PV2_NONE || pv2_dist(s, t) < pv2_dist(mv.s, t))) { mv.s = s; mv.ok = true; }
+    }
+    if (mv.ok) { return mv; }
+    std::vector<size_t> vic;
+    for (const auto & [s, r] : h.res) { if (!r.pin && r.id != PV2_HOLD && r.heat < heat) { vic.push_back(s); } }
+    std::sort(vic.begin(), vic.end(), [&](size_t a, size_t b) {
+        const pv2_res & x = h.res.at(a), & y = h.res.at(b);
+        return x.heat != y.heat ? x.heat < y.heat : x.id != y.id ? x.id < y.id : a < b; });
+    using i64 = int64_t;
+    const i64 INF = INT64_MAX / 4;
+    struct el { size_t s, n, u; bool pin; i64 heat; int32_t id; };
+    typedef std::array<i64, 3> key_t;   // cost, newcomer's distance to t, its start: lexicographic; the last two INF while the newcomer is not placed
+    for (size_t k = 0; k <= std::min(vic.size(), PV2_MOVE_EVICT); ++k) {
+        std::vector<size_t> gone(vic.begin(), vic.begin() + k);
+        std::sort(gone.begin(), gone.end());
+        std::vector<el> all;
+        for (const auto & [s, r] : h.res) { if (!std::binary_search(gone.begin(), gone.end(), s)) { all.push_back({ s, r.n, r.u, r.pin, r.heat, r.id }); } }
+        size_t w0 = 0, w1 = all.size();
+        if (all.size() > PV2_MOVE_CHAIN) {
+            size_t c = 0;
+            while (c < all.size() && all[c].s < t) { ++c; }
+            w0 = c > PV2_MOVE_CHAIN / 2 ? c - PV2_MOVE_CHAIN / 2 : 0;
+            w1 = std::min(all.size(), w0 + PV2_MOVE_CHAIN);
+        }
+        const i64 LB = w0 ? (i64) (all[w0 - 1].s + all[w0 - 1].n) : (i64) h.lo, RB = w1 < all.size() ? (i64) all[w1].s : (i64) h.hi;
+        const std::vector<el> E(all.begin() + w0, all.begin() + w1);
+        const int m = (int) E.size();
+        auto au = [](i64 x, size_t un) { return (x + (i64) un - 1) / (i64) un * (i64) un; };
+        auto ad = [](i64 x, size_t un) { return x / (i64) un * (i64) un; };
+        std::vector<int> allowed(m + 1, 0), pc(m + 1, 0);   // slots with the fewest heat inversions; pinned count
+        {
+            int mi = INT32_MAX;
+            std::vector<int> inv(m + 1, 0);
+            for (int j = 0; j <= m; ++j) {
+                for (int i = 0; i < m; ++i) { inv[j] += i < j ? E[i].heat > heat : E[i].heat < heat; }
+                mi = std::min(mi, inv[j]);
+            }
+            for (int j = 0; j <= m; ++j) { allowed[j] = inv[j] == mi; }
+            for (int i = 0; i < m; ++i) { pc[i + 1] = pc[i] + E[i].pin; }
+        }
+        // left packing from the stayer a (-1: the left bound): Le[a+1][j] end after j movers, Lp position of mover a + j, Lc cost so far; right packing to the
+        // stayer b (m: the right bound): Rs[b][j] start after j movers, the mover b - j at Rs[b][j]
+        std::vector<std::vector<i64>> Le(m + 1), Lp(m + 1), Lc(m + 1), Rs(m + 1), Rc(m + 1);
+        for (int a = -1; a < m; ++a) {
+            auto & e = Le[a + 1]; auto & p = Lp[a + 1]; auto & c = Lc[a + 1];
+            e.push_back(a < 0 ? LB : (i64) (E[a].s + E[a].n)); p.push_back(0); c.push_back(0);
+            for (int i = a + 1; i < m && !E[i].pin; ++i) {
+                const i64 pos = au(e.back(), E[i].u);
+                p.push_back(pos); e.push_back(pos + (i64) E[i].n); c.push_back(c.back() + (pos != (i64) E[i].s ? (i64) E[i].n : 0));
+            }
+        }
+        for (int b = 0; b <= m; ++b) {
+            auto & r = Rs[b]; auto & c = Rc[b];
+            r.push_back(b == m ? RB : (i64) E[b].s); c.push_back(0);
+            for (int i = b - 1; i >= 0 && !E[i].pin; --i) {
+                const i64 x = r.back() - (i64) E[i].n;
+                if (x < 0) { break; }
+                const i64 pos = ad(x, E[i].u);
+                r.push_back(pos); c.push_back(c.back() + (pos != (i64) E[i].s ? (i64) E[i].n : 0));
+            }
+        }
+        struct par { int a = -2, f = 0, p = 0; bool inc = false; };
+        std::vector<std::array<key_t, 2>> dp(m + 2, { key_t { INF, INF, INF }, key_t { INF, INF, INF } });   // index b + 1
+        std::vector<std::array<par, 2>> pr(m + 2);
+        dp[0][0] = { 0, INF, INF };
+        auto better = [](const key_t & x, const key_t & y) { return x < y; };
+        for (int a = -1; a < m; ++a) {
+            for (int b = a + 1; b <= m; ++b) {
+                const int q = b - a - 1;
+                if (q > 0 && pc[b] - pc[a + 1] > 0) { break; }
+                if (q >= (int) Le[a + 1].size() || q >= (int) Rs[b].size()) { if (q >= (int) Le[a + 1].size()) { break; } continue; }
+                for (int f = 0; f < 2; ++f) {
+                    const key_t base = dp[a + 1][f];
+                    if (base[0] >= INF) { continue; }
+                    for (int p = 0; p <= q; ++p) {
+                        const i64 le = Le[a + 1][p], rs = Rs[b][q - p], cost = base[0] + Lc[a + 1][p] + Rc[b][q - p];
+                        if (le > rs) { continue; }
+                        key_t k1 = { cost, base[1], base[2] };
+                        if (better(k1, dp[b + 1][f])) { dp[b + 1][f] = k1; pr[b + 1][f] = { a, f, p, false }; }
+                        if (f == 0 && allowed[a + 1 + p]) {
+                            const size_t fs = pv2_fit((size_t) le, (size_t) rs, n, u, t);
+                            if (fs != PV2_NONE) {
+                                const key_t k2 = { cost, (i64) pv2_dist(fs, t), (i64) fs };
+                                if (better(k2, dp[b + 1][1])) { dp[b + 1][1] = k2; pr[b + 1][1] = { a, 0, p, true }; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        const key_t best = dp[m + 1][1];
+        if (best[0] >= INF || (size_t) best[0] > budget) { continue; }
+        std::vector<pv2_step> steps;
+        for (int b = m, f = 1; b >= 0 && pr[b + 1][f].a != -2;) {
+            const par x = pr[b + 1][f];
+            const int q = b - x.a - 1;
+            for (int j = 1; j <= x.p; ++j) { const el & e = E[x.a + j]; if ((i64) e.s != Lp[x.a + 1][j]) { steps.push_back({ e.id, e.s, (size_t) Lp[x.a + 1][j] }); } }
+            for (int j = 1; j <= q - x.p; ++j) { const el & e = E[b - j]; if ((i64) e.s != Rs[b][j]) { steps.push_back({ e.id, e.s, (size_t) Rs[b][j] }); } }
+            f = x.f; b = x.a;
+            if (b < 0) { break; }
+        }
+        // dependency order: a step runs when its destination is free but for its own source
+        pv2_heap sim = h;
+        for (size_t s : gone) { pv2_drop(sim, s); }
+        std::vector<pv2_step> done, todo = steps;
+        for (bool prog = true; prog && !todo.empty(); ) {
+            prog = false;
+            for (size_t i = 0; i < todo.size(); ) {
+                const pv2_res v = pv2_drop(sim, todo[i].from);
+                if (pv2_add(sim, todo[i].to, v)) { done.push_back(todo[i]); todo.erase(todo.begin() + i); prog = true; } else { pv2_add(sim, todo[i].from, v); ++i; }
+            }
+        }
+        if (!todo.empty() || !pv2_take(sim, (size_t) best[2], n)) { continue; }
+        mv.ok = true; mv.steps = done; mv.evict = gone; mv.s = (size_t) best[2]; mv.bytes = (size_t) best[0];
+        return mv;
+    }
+    return mv;
 }
 
 struct pv2_cand { int32_t id; size_t n, u; int64_t heat; };

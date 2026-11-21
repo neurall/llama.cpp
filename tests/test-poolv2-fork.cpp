@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <random>
 #include <set>
 #include <sstream>
@@ -151,6 +152,205 @@ static uint64_t stress(uint64_t seed, int ops, bool oracle) {
     uint64_t x = 1469598103934665603ull;
     for (const auto & [s, r] : h.res) { x = (x ^ s) * 1099511628211ull; x = (x ^ (uint64_t) r.id) * 1099511628211ull; }
     return x;
+}
+
+// ---- pv2_plan_move: the brute-force oracle. Every order-preserving layout of the residents left after the k coldest eligible ones go, plus the newcomer at
+// a slot with the fewest heat inversions, in a small heap; pinned ones stay; the cost is the bytes of the residents whose start changes. ----
+struct mv_key { int64_t cost = INT64_MAX, d = INT64_MAX, s = INT64_MAX; bool ok = false; size_t k = 0; };
+static mv_key brute_move(const pv2_heap & h, size_t t, size_t n, size_t u, int64_t heat, size_t budget) {
+    mv_key best;
+    // a free window anywhere: no eviction, no move
+    for (size_t s = (h.lo + u - 1) / u * u; s + n <= h.hi; s += u) {
+        bool free = true;
+        for (const auto & [rs, r] : h.res) { if (rs < s + n && s < rs + r.n) { free = false; } }
+        if (free && (!best.ok || (int64_t) pv2_dist(s, t) < best.d)) { best.ok = true; best.d = pv2_dist(s, t); best.s = s; best.cost = 0; }
+    }
+    if (best.ok) { return best; }
+    std::vector<std::pair<size_t, pv2_res>> vic;
+    for (const auto & [s, r] : h.res) { if (!r.pin && r.id != PV2_HOLD && r.heat < heat) { vic.push_back({ s, r }); } }
+    std::sort(vic.begin(), vic.end(), [](const auto & a, const auto & b) {
+        return a.second.heat != b.second.heat ? a.second.heat < b.second.heat : a.second.id != b.second.id ? a.second.id < b.second.id : a.first < b.first; });
+    for (size_t k = 0; k <= std::min<size_t>(vic.size(), PV2_MOVE_EVICT); ++k) {
+        std::vector<std::pair<size_t, pv2_res>> L;
+        for (const auto & [s, r] : h.res) {
+            bool gone = false;
+            for (size_t i = 0; i < k; ++i) { gone = gone || vic[i].first == s; }
+            if (!gone) { L.push_back({ s, r }); }
+        }
+        const size_t m = L.size();
+        std::vector<int> inv(m + 1, 0);
+        int mi = INT32_MAX;
+        for (size_t j = 0; j <= m; ++j) {
+            for (size_t i = 0; i < m; ++i) { inv[j] += i < j ? L[i].second.heat > heat : L[i].second.heat < heat; }
+            mi = std::min(mi, inv[j]);
+        }
+        mv_key kb;
+        for (size_t j = 0; j <= m; ++j) {
+            if (inv[j] != mi) { continue; }
+            // elements in order: L[0..j), the newcomer, L[j..m)
+            std::vector<int> seq;
+            for (size_t i = 0; i < j; ++i) { seq.push_back((int) i); }
+            seq.push_back(-1);
+            for (size_t i = j; i < m; ++i) { seq.push_back((int) i); }
+            std::function<void(size_t, size_t, int64_t, int64_t, int64_t)> go = [&](size_t q, size_t at, int64_t cost, int64_t ds, int64_t sn) {
+                if (q == seq.size()) {
+                    if (!kb.ok || cost < kb.cost || (cost == kb.cost && (ds < kb.d || (ds == kb.d && sn < kb.s)))) { kb.ok = true; kb.cost = cost; kb.d = ds; kb.s = sn; }
+                    return;
+                }
+                const int e = seq[q];
+                const size_t en = e < 0 ? n : L[e].second.n, eu = e < 0 ? u : L[e].second.u;
+                for (size_t s = (at + eu - 1) / eu * eu; s + en <= h.hi; s += eu) {
+                    if (e >= 0 && L[e].second.pin && s != L[e].first) { continue; }
+                    go(q + 1, s + en, cost + (e >= 0 && s != L[e].first ? en : 0), e < 0 ? (int64_t) pv2_dist(s, t) : ds, e < 0 ? (int64_t) s : sn);
+                }
+            };
+            go(0, h.lo, 0, 0, 0);
+        }
+        if (kb.ok && (size_t) kb.cost <= budget) { kb.k = k; return kb; }
+    }
+    return best;
+}
+
+static pv2_heap rand_move_heap(std::mt19937 & g, std::map<int32_t, size_t> & uo) {
+    const size_t H = 12 + g() % 14;
+    pv2_heap h = pv2_make(0, H);
+    static const size_t us[3] = { 1, 2, 4 };
+    size_t at = 0;
+    int32_t id = 0;
+    for (int i = 0; i < 5; ++i) {
+        at += g() % 4 == 0 ? g() % 3 : 0;
+        const size_t u = us[g() % 3], n = 1 + g() % 5;
+        at = (at + u - 1) / u * u;
+        if (at + n > H) { break; }
+        pv2_res r; r.id = id; r.n = n; r.u = u; r.heat = g() % 10; r.pin = g() % 7 == 0;
+        pv2_add(h, at, r);
+        uo[id++] = u;
+        at += n;
+    }
+    return h;
+}
+
+static void move_tests() {
+    const auto ids_at = [](const pv2_heap & h) { std::vector<int32_t> v; for (const auto & [s, r] : h.res) { v.push_back(r.id); } return v; };
+    {   // a free window anywhere: the one nearest the heat target, nothing moves, nothing leaves
+        pv2_heap h = pv2_make(0, 100);
+        pv2_add(h, 10, { 1, 20, 5, false, 1 }); pv2_add(h, 40, { 2, 20, 5, false, 1 }); pv2_add(h, 70, { 3, 10, 5, false, 1 });
+        // free: [0,10) [30,40) [60,70) [80,100)
+        pv2_move m = pv2_plan_move(h, 85, 15, 1, 7);
+        check("move: a free window takes the newcomer nearest its target, no step, no eviction", m.ok && m.s == 85 && m.steps.empty() && m.evict.empty() && m.bytes == 0);
+        m = pv2_plan_move(h, 0, 9, 1, 7);
+        check("move: a window at the cold end when the target is there", m.ok && m.s == 0 && m.steps.empty());
+        m = pv2_plan_move(h, 50, 10, 1, 7);
+        check("move: the target is inside a resident: the nearest window that fits, ties to the lower start", m.ok && (m.s == 30 || m.s == 60) && m.steps.empty() && m.evict.empty());
+    }
+    {   // a full heap in heat order: the coldest leaves, the chain below the newcomer's place shifts one step to the cold end, the newcomer goes last
+        pv2_heap h = pv2_make(0, 100);
+        for (int i = 0; i < 10; ++i) { pv2_add(h, 10 * i, { i, 10, 10 * (i + 1), false, 1 }); }
+        pv2_move m = pv2_plan_move(h, 40, 10, 1, 55);
+        check("move: full heap: the coldest resident (id 0) is the one evicted", m.ok && m.evict.size() == 1 && m.evict[0] == 0);
+        check("move: full heap: ids 1..4 each step 10 toward the cold end, in dependency order", m.steps.size() == 4 && m.steps[0].id == 1 && m.steps[0].from == 10 && m.steps[0].to == 0 &&
+              m.steps[3].id == 4 && m.steps[3].from == 40 && m.steps[3].to == 30 && m.s == 40 && m.bytes == 40);
+        pv2_heap g = h;
+        check("move: the plan applies step by step (every destination free when its step runs)", pv2_apply_move(g, m, { 100, 10, 55, false, 1 }));
+        std::vector<int32_t> want = { 1, 2, 3, 4, 100, 5, 6, 7, 8, 9 };
+        check("move: heat order kept after the insert", ids_at(g) == want && g.gaps.empty());
+        // the newcomer is the hottest: it goes to the top, the coldest still the only one to leave
+        m = pv2_plan_move(h, 90, 10, 1, 999);
+        check("move: hottest newcomer: coldest leaves, everything shifts down, newcomer on top", m.ok && m.evict.size() == 1 && m.evict[0] == 0 && m.steps.size() == 9 && m.s == 90 && m.bytes == 90);
+        // colder than everything: nothing may be evicted
+        m = pv2_plan_move(h, 0, 10, 1, 5);
+        check("move: a newcomer colder than every resident finds nothing to replace", !m.ok);
+        m = pv2_plan_move(h, 0, 10, 1, 10);
+        check("move: equal heat never replaces", !m.ok);
+        // budget: the chain costs 40 bytes
+        m = pv2_plan_move(h, 40, 10, 1, 55, 30);
+        check("move: a budget under the chain's bytes takes more of the coldest instead (two leave, 30 bytes move)", m.ok && m.evict.size() == 2 && m.bytes == 30 && pv2_plan_move(h, 40, 10, 1, 55, 40).evict.size() == 1);
+        check("move: no budget for any chain but evicting the coldest five: they leave and the newcomer lands free", pv2_plan_move(h, 40, 10, 1, 55, 0).ok && pv2_plan_move(h, 40, 10, 1, 55, 0).bytes == 0);
+        // pinned coldest: the next coldest goes, the pinned one stays where it is
+        pv2_heap p = h;
+        p.res.at(0).pin = true;
+        m = pv2_plan_move(p, 40, 10, 1, 55);
+        check("move: a pinned coldest is neither evicted nor moved; the next coldest leaves", m.ok && m.evict.size() == 1 && m.evict[0] == 10 && m.steps.size() == 3 && m.steps[0].id == 2 && m.s == 40);
+        // a pinned resident in the chain's way: only the stretch above it is shifted
+        p = h;
+        p.res.at(20).pin = true;   // id 2 at 20
+        m = pv2_plan_move(p, 40, 10, 1, 55);
+        pv2_heap g2 = p;
+        check("move: a pinned resident in the way blocks the chain: the plan is sound, never moves it, evicts only a colder one",
+              !m.ok || (pv2_apply_move(g2, m, { 100, 10, 55, false, 1 }) && g2.res.at(20).id == 2 && g2.res.count(40) + g2.res.count(m.s) > 0));
+    }
+    {   // seven byte sizes: the chain steps must fit the gap with the unit; two victims when one hole is too small
+        pv2_heap h = pv2_make(0, 60);
+        pv2_add(h, 0,  { 1, 8, 1, false, 4 });    // coldest, small
+        pv2_add(h, 8,  { 2, 8, 2, false, 4 });
+        pv2_add(h, 16, { 3, 12, 8, false, 4 });
+        pv2_add(h, 28, { 4, 32, 9, false, 4 });
+        pv2_move m = pv2_plan_move(h, 50, 12, 4, 5);   // 12 bytes needed, the coldest holds 8: a second victim or a chain through the free gap
+        pv2_heap g = h;
+        check("move: sizes: the newcomer is bigger than the coldest, still a sound plan", m.ok && pv2_apply_move(g, m, { 100, 12, 5, false, 4 }));
+        check("move: sizes: never a victim hotter than the newcomer", [&] { for (size_t s : m.evict) { if (h.res.at(s).heat >= 5) { return false; } } return true; }());
+    }
+    {   // the property test against the oracle
+        std::mt19937 g(20261121);
+        size_t ok_n = 0, chain_n = 0, evict_n = 0;
+        bool all = true;
+        for (int it = 0; it < 400; ++it) {
+            std::map<int32_t, size_t> uo;
+            pv2_heap h = rand_move_heap(g, uo);
+            static const size_t us[3] = { 1, 2, 4 };
+            const size_t n = 1 + g() % 6, u = us[g() % 3], t = g() % (h.hi + 1);
+            const int64_t heat = g() % 11;
+            const size_t budget = g() % 3 == 0 ? g() % 10 : SIZE_MAX;
+            const mv_key bk = brute_move(h, t, n, u, heat, budget);
+            const pv2_move m = pv2_plan_move(h, t, n, u, heat, budget);
+            bool good = m.ok == bk.ok;
+            if (good && m.ok) {
+                pv2_heap a = h;
+                uo[1000] = u;
+                size_t moved = 0;
+                for (const auto & s : m.steps) { moved += h.res.at(s.from).n; }
+                bool evict_ok = m.evict.size() == bk.k;
+                int64_t eh = 0;
+                for (size_t s : m.evict) { evict_ok = evict_ok && !h.res.at(s).pin && h.res.at(s).heat < heat; eh += h.res.at(s).heat; }
+                for (const auto & s : m.steps) { evict_ok = evict_ok && !h.res.at(s.from).pin; }
+                good = evict_ok && pv2_apply_move(a, m, { 1000, n, heat, false, u }) && heap_ok(a, uo) && a.res.count(m.s) && a.res.at(m.s).id == 1000 &&
+                       (int64_t) moved == bk.cost && (int64_t) m.bytes == bk.cost && (int64_t) pv2_dist(m.s, t) == bk.d && (int64_t) m.s == bk.s;
+                ++ok_n; chain_n += !m.steps.empty(); evict_n += !m.evict.empty();
+                // the evicted ones are the k coldest eligible: no resident left that is colder and eligible than one that left
+                for (size_t s : m.evict) { for (const auto & [rs, r] : h.res) {
+                    if (!r.pin && r.id != PV2_HOLD && r.heat < heat && r.heat < h.res.at(s).heat && std::find(m.evict.begin(), m.evict.end(), rs) == m.evict.end()) { good = false; } } }
+            }
+            if (!good) { all = false; printf("  case %d: planner ok=%d brute ok=%d (k %zu cost %lld d %lld s %lld) planner steps %zu evict %zu s %zu bytes %zu\n", it, (int) m.ok, (int) bk.ok, bk.k, (long long) bk.cost, (long long) bk.d, (long long) bk.s, m.steps.size(), m.evict.size(), m.s, m.bytes); }
+        }
+        check("move: 400 random heaps agree with the brute-force oracle (ok, k, moved bytes, place; every plan applies and keeps the heap sound)", all);
+        check("move: the random heaps exercise chains and evictions", ok_n > 100 && chain_n > 20 && evict_n > 20);
+        printf("move oracle: %zu plans, %zu with a chain, %zu with an eviction\n", ok_n, chain_n, evict_n);
+    }
+    {   // a stream far longer than the heap: nothing hotter than the newcomer is ever lost; a full sorted heap stays sorted
+        std::mt19937 g(77);
+        pv2_heap h = pv2_make(0, 100);
+        for (int i = 0; i < 10; ++i) { pv2_add(h, 10 * i, { i, 10, 1000 * (i + 1), false, 1 }); }
+        bool good = true;
+        int32_t next = 100;
+        size_t kept = 0, refused = 0;
+        for (int i = 0; i < 400; ++i) {
+            const int64_t heat = g() % 11000;
+            size_t colder = 0;
+            for (const auto & [s, r] : h.res) { colder += r.heat < heat || (r.heat == heat); }
+            int64_t lo = INT64_MAX;
+            for (const auto & [s, r] : h.res) { lo = std::min(lo, r.heat); }
+            const pv2_move m = pv2_plan_move(h, 10 * (colder > 9 ? 9 : colder), 10, 1, heat);
+            if (!m.ok) { good = good && heat <= lo; ++refused; continue; }
+            good = good && m.evict.size() == 1 && h.res.at(m.evict[0]).heat == lo && lo < heat;
+            good = good && pv2_apply_move(h, m, { next++, 10, heat, false, 1 });
+            int64_t prev = -1;
+            for (const auto & [s, r] : h.res) { good = good && r.heat >= prev; prev = r.heat; }
+            good = good && h.gaps.empty() && h.res.size() == 10;
+            ++kept;
+        }
+        printf("stream: kept %zu refused %zu good %d\n", kept, refused, (int) good);
+        check("move: a 400-expert stream through a 10-expert heap: only the coldest ever leaves, the heap stays full and heat-sorted", good && kept > 30 && refused > 5);   // the heap warms as the stream runs: most late newcomers are colder than all it holds and are refused
+    }
 }
 
 static int unit_tests() {
@@ -562,6 +762,7 @@ static int unit_tests() {
         printf("negative control: overlap %s, misaligned start %s, hotter victim %s\n", heap_ok(bad, u1) ? "MISSED" : "caught",
                heap_ok(misaligned, u1) ? "MISSED" : "caught", pick_ok(h, wrong, 100, 200, 1, 5, 1000, true) ? "MISSED" : "caught");
     }
+    move_tests();
     printf("%s: %d failure(s)\n", g_fail ? "FAIL" : "OK", g_fail);
     return g_fail ? 1 : 0;
 }
