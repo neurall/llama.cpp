@@ -382,6 +382,8 @@ struct moe_cache {
         std::vector<int64_t> hv;                   // per id, while a prompt stream runs (tiered): the keep rank (decode-hot set above, the rest by global hotness)
         bool     tiered = false;
         std::vector<size_t> dist;                  // per id: its distance from the hot end in the heat in force (pv2_heat_dist): a main placement's target
+        size_t   max_gap = 0;                      // the largest free extent of the main heap, taken once a decode step that places (a candidate that fits none skips the scan of every gap)
+        uint64_t gap_step = UINT64_MAX;
         uint64_t heat_step = UINT64_MAX;           // the decode step the decode heat was last set at
         size_t   done_seen = 0;                    // the stream's positions below it are unpinned (cs_done)
         std::vector<std::pair<size_t, size_t>> held;   // the byte ranges the lend, the KV zone and the room hold, as last synced (pv2_sync)
@@ -16813,9 +16815,10 @@ void llama_moe_cache_step_fork() {
                 continue;
             }
             if (ls.v2u) {   // pool-v2: a window of the heap near its heat target, free first, else over residents colder than it by the pay-back margin
+                if (mc->v2.gap_step != mc->n_steps) { size_t mg = 0; for (const auto & g : mc->v2.main.gaps) { mg = std::max(mg, g.second); } mc->v2.max_gap = mg; mc->v2.gap_step = mc->n_steps; }
                 if (pv2_dist_due(mc->n_steps, mc->v2.heat_step)) { pv2_refresh(mc, false, false); mc->v2.heat_step = mc->n_steps; }   // the targets and every resident's heat: the first step and every 64 (a per-step pass over every resident cost decode time)
                 const int64_t hx = pv2_heat(mc, ls, id, false, 0.0);
-                const pv2_pick pk = pv2_pick_main(mc, li, id, std::llround(1e6 * (xscore(mc, ls, id) - pay_back(link_margin[ls.link]))), mc->v2.reach, 2 * mc->v2.reach);   // decode: free windows only near the target (a scan of every gap cost 40% of the main thread per token)
+                const pv2_pick pk = pv2_pick_main(mc, li, id, std::llround(1e6 * (xscore(mc, ls, id) - pay_back(link_margin[ls.link]))), mc->v2.reach, ls.v2n + ls.v2u <= mc->v2.max_gap ? SIZE_MAX : 2 * mc->v2.reach);   // decode: free windows only near the target (a scan of every gap cost 40% of the main thread per token)
                 if (pk.s == PV2_NONE) {
                     mc->pr[7] += ls.pending.end() - it;
                     break;   // candidates are sorted: nothing colder in reach for a colder one either
