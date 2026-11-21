@@ -2739,6 +2739,40 @@ def timeboxed_request(path, body, pp_s, tg_s, port):
     return {"timings": {"prompt_n": pp_done, "prompt_per_second": pp_rate, "prompt_ms": pp_el * 1000, "predicted_n": n_dec, "predicted_per_second": t_rate, "predicted_ms": (n_dec / t_rate * 1000) if t_rate else 0}, "content": "", "choices": [{"message": {"content": ""}, "finish_reason": "box"}]}
 
 
+def timed_answer_request(path, body, tg_s, port):
+    """-ps ...Ns: one request with its whole prompt; its answer runs until tg_s seconds after its first token, then the client disconnects. A request that ends sooner
+    is an ordinary one (its own timings and answer). Rates from the server's slot counters, polled every 0.5 s, as the clock box does (box_rate)"""
+    import http.client
+    def slots():
+        try: return json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/slots", timeout=10))
+        except Exception: return None
+    box = {}
+    def fire():
+        try:
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=None); box["c"] = c
+            c.request("POST", path, json.dumps(body), {"Content-Type": "application/json"}); box["r"] = c.getresponse().read()
+        except BaseException as e: box["e"] = e
+    threading.Thread(target=fire, daemon=True).start(); t0 = time.time(); pp, tt = [], []; tstart = None
+    while "r" not in box and "e" not in box:
+        time.sleep(0.5); sl = slots(); now = time.time()
+        if not sl: continue
+        x = next((y for y in sl if y.get("is_processing")), sl[0])
+        npp = int(x.get("n_prompt_tokens_processed", 0) or 0) + int(x.get("n_prompt_tokens_cache", 0) or 0); nd = int(((x.get("next_token") or [{}])[0]).get("n_decoded", 0) or 0)
+        if nd >= 1: tt.append((now, nd)); tstart = tstart or now
+        else: pp.append((now, npp))
+        if tstart and now - tstart >= tg_s: break
+    if "r" in box:
+        try: return json.loads(box["r"])
+        except ValueError: pass
+    try: box["c"].sock.shutdown(2); box["c"].close()
+    except Exception: pass
+    pp_done = pp[-1][1] if pp else 0; pp_rate = box_rate(pp); t_rate = box_rate(tt); n_dec = tt[-1][1] if tt else 0
+    pp_ms = ((tstart or time.time()) - t0) * 1000
+    if pp_rate == 0.0 and pp_done: pp_rate = pp_done / max(pp_ms / 1000, 1e-3)   # the prompt ended inside one poll: its tokens over the time to the first answer token
+    PROCSTAT["boxed"] = f"pp {pp_done} tok whole; t {n_dec} tok, {tg_s:.1f} s from the first token"
+    return {"timings": {"prompt_n": pp_done, "prompt_per_second": pp_rate, "prompt_ms": pp_ms, "predicted_n": n_dec, "predicted_per_second": t_rate, "predicted_ms": (n_dec / t_rate * 1000) if t_rate else 0}, "content": "", "choices": [{"message": {"content": ""}}]}
+
+
 def server_run(build, env, args, path, body, render=None):
     PROCSTAT.clear()
     LAST_ASK["v"] = body.get("prompt") if isinstance(body.get("prompt"), str) else str((body.get("messages") or [{}])[-1].get("content") or "")
@@ -2841,6 +2875,9 @@ def server_run(build, env, args, path, body, render=None):
             PROCSTAT["par_req_tps_mean"] = round(sum(t.get("predicted_per_second", 0) for t in tm) / len(tm), 2)
             res = dict(ok[0]); res["timings"] = {**tm[0], "predicted_n": gen, "prompt_n": pn,
                       "predicted_per_second": gen / max(wall - pms, 1e-3), "prompt_per_second": pn / max(pms, 1e-3), "prompt_ms": pms * 1000}
+            return res, logf
+        if os.environ.get("PERF_TBOX") and not os.environ.get("PERF_BOX"):   # PERF_TBOX=<s>: the whole prompt, the answer stopped s seconds after its first token (-ps 2p10s)
+            res = timed_answer_request(path, body, float(os.environ["PERF_TBOX"]), PORT); t_req[1] = time.time()
             return res, logf
         if os.environ.get("PERF_BOX"):   # PERF_BOX=<our prompt s>,<our answer s>: a stock cell measured by the clock (see timeboxed_request)
             _pb, _tb = (float(x) for x in os.environ["PERF_BOX"].split(","))
@@ -8721,6 +8758,8 @@ def run_list(name, argv):
         def _ps(p, r):   # 100k4k = prompt of 100k tokens + 4000 answer tokens; 100k = prompt only (the list's answer length); tetrisc4k = that test, 4000 answer tokens
             r = dict(r, extra=" ".join(re.sub(r"--env PERF_P(?:TOK|NAME)=\S+", "", r.get("extra") or "").split()))   # a best-prompt row's cut (PERF_PTOK) would run its own prompt size, not this one
             if (m := re.fullmatch(r"(\d+)m((?:\d+k)?)", p)): p = f"{int(m[1]) * 1024}k{m[2]}"   # 1m1k = 1024k1k
+            if (m := re.fullmatch(r"(.+?)(\d+)s", p)):   # 2p10s: the answer runs 10 s from its first token (8192 tokens at most), the prompt whole; stock's answer the same 10 s (user 2026-11-21)
+                p = m[1]; r = dict(r, extra=f"{r.get('extra') or ''} --env PERF_TBOX={int(m[2])}".strip(), tokens="8192")
             if (m := re.fullmatch(r"(\d+)p(?:(\d+)(k?))?", p)):   # 1p10: a prompt that fills N passes of the model's newest measured pass maximum here (latest_pass_cap), 10 answer tokens (user 2026-11-21)
                 cap = latest_pass_cap(r["model"], o.machine)
                 if not cap: sys.exit(f"-ps {p}: {model_alias(r['model'])} has no measured pass maximum on this machine yet (run.py calib --ceil)")
@@ -8774,6 +8813,7 @@ def run_list(name, argv):
         if not ot and (mk := re.fullmatch(r"pf(\d+)k", r["test"])) and (ra := ours_rates_any(r["model"])):   # a size we never ran (-ps 3k512, stock first): our newest rates on any test of the model, its prompt about N*1024 tokens
             ot = ((int(mt[1]) if mt else int(mk[1]) * 1024) / ra[0], out0 / ra[1])
         if not ot: continue
+        if (mtb := re.search(r"PERF_TBOX=(\d+)", r.get("extra") or "")): ot = (ot[0], float(mtb[1]))   # -ps ...Ns: stock's answer runs the same N seconds
         if o.stock_clip:   # -scl: one shortened request instead (stock_scaled_request: what stock reads in our prompt time, what it writes in our answer time), so its answer follows its own prompt as ours does; the note marks it bp2=b<prompt>-o<answer>
             ptok = int(mt[1]) if mt else (pn0 or 0)
             if ptok:
