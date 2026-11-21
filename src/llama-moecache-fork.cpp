@@ -17224,6 +17224,7 @@ static void pv2_switch(moe_cache * mc) {
         ls.n_own++;
         v.land.res.at(x).pin = true;   // until its upload is published
         jobs.push_back(pv2_job(mc, li, e, wait, part[c.id]));
+        jobs.back().bg = false;   // the switch refill at normal priority (the classes refilled ungated at link rate)
         b_up += c.n;
     }
     pv2_queue(mc, jobs);
