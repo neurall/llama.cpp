@@ -811,7 +811,7 @@ The engine's end-of-run line `moe-summary: ...` (when the binary prints it) fill
             r["note"] = guard.reason
         if p.returncode not in (0, None) and not r.get("tps") and not r.get("ppl"):
             r.setdefault("note", f"exit {p.returncode}" + (", out of memory" if r.get("oom") else ""))
-        print(f"{label}: " + (f"{r['tps']:.2f} t/s" if r.get("tps") else "no t/s") + (f", pp {r['pp']:.1f}" if r.get("pp") else "") + (f", PPL {r['ppl']}" if r.get("ppl") else "")
+        print(f"{label}: " + (f"{r['tps']:.2f} o/s" if r.get("tps") else "no o/s") + (f", {r['pp']:.1f} i/s" if r.get("pp") else "") + (f", PPL {r['ppl']}" if r.get("ppl") else "")
               + (f", ready {r['ready_s']:.1f}s" if r.get("ready_s") else "") + f", wall {wall:.0f}s" + (f" [{r['note']}]" if r.get("note") else "")
               + (f" [{r['rungs']}]" if r.get("rungs") else ""), flush=True)
         return r
@@ -1926,7 +1926,7 @@ def cmd_cells(a):
     import csv as _csv
     rows = list(_csv.reader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "run-history.csv"), newline="")))
     hd = rows[0]; ix = {k: i for i, k in enumerate(hd)}
-    print("| cell | decode t/s | prompt t/s | hit rate % | n_ctx_slot | pool card 0 (MiB) |\n|---|---|---|---|---|---|")
+    print("| cell | decode o/s | prompt i/s | hit rate % | n_ctx_slot | pool card 0 (MiB) |\n|---|---|---|---|---|---|")
     for x in rows[1:]:
         c = x[ix["campaign"]]
         if not c.startswith(a.prefix) or c.endswith("probe") or x[ix["ok"]] != "1":
@@ -1967,7 +1967,7 @@ def cmd_misfires(a):
                             f"{pp:.0f}", bm, f"{bp:.0f}", f"{100 * (bp / pp - 1):.0f}%", r.get("pf_by", "")[:60]))
     print(f"misfires since {since}: {len(out)} of {len(rows)} runs with a prefill decision")
     if out:
-        print("| time | build | model | test | pass | chosen | prompt t/s | faster mode | its t/s | lost | why chosen |\n|" + "---|" * 11)
+        print("| time | build | model | test | pass | chosen | prompt i/s | faster mode | its i/s | lost | why chosen |\n|" + "---|" * 11)
         for o in sorted(out):
             print("| " + " | ".join(o) + " |")
     st = [r for r in csv_load("run-history.csv") if "re-measure" in r.get("placement", "") and r.get("ts", "") >= since]
@@ -4168,7 +4168,7 @@ def save_output_file(ts, build, test, model, rid=None):
         if text is None: return None
         os.makedirs(OUT_DIR, exist_ok=True)
         f = os.path.join(OUT_DIR, f"{r[0]}{'s' if (r[2] or '').startswith('stock') else ''}.txt")   # stock runs: <id>s, sorts next to the id
-        hdr = f"run {r[0]} | {r[2]} | {r[3]} | {os.path.basename(r[4] or '')} | decode {r[5] and round(r[5], 2)} t/s | prompt {r[6] and round(r[6], 1)} t/s | {r[7] and int(r[7])} tokens | args: {r[8] or ''} | power {r[9] or '?'} W | {r[10] or r[1]}\n\n"
+        hdr = f"run {r[0]} | {r[2]} | {r[3]} | {os.path.basename(r[4] or '')} | decode {r[5] and round(r[5], 2)} o/s | prompt {r[6] and round(r[6], 1)} i/s | {r[7] and int(r[7])} tokens | args: {r[8] or ''} | power {r[9] or '?'} W | {r[10] or r[1]}\n\n"
         open(f, "w").write(hdr + text)
         return f
     except Exception as ex:
@@ -4178,10 +4178,10 @@ def save_output_file(ts, build, test, model, rid=None):
 
 def show_row(row, build, test):
     print(f"{row['ts']} {build:16s} {test:6s} {row.get('env')} "
-          + (f"{row['tps']:6.2f} t/s" if row.get("tps") else "FAIL")
+          + (f"{row['tps']:6.2f} o/s" if row.get("tps") else "FAIL")
           + (f" {row['s_per_pass']:.2f} s/pass" if row.get("s_per_pass") else "")
           + (f" hit {row['hit_rate']}%" if row.get("hit_rate") is not None else "")
-          + (f" pp {row['pp_tps']:.1f} t/s" if row.get("pp_tps") else "")
+          + (f"  {row['pp_tps']:.1f} i/s" if row.get("pp_tps") else "")
           + (f" in {_pn[1]}" if (_pn := re.search(r"prompt_n=(\d+)", str(row.get("note") or ""))) else "") + (f" out {int(row['n_gen'])}" if row.get("n_gen") else "")   # the real tokens (user 2026-11-21)
           + (f" md5={row['md5']}" if row.get("md5") else "") + (f" [{row['note']}]" if row.get("note") and (test == "agent" or "draft" in row["note"] or "pageable" in row["note"]) else "")
           + (f" PPL {row['ppl']}" if row.get("ppl") else ""), flush=True)
@@ -4433,7 +4433,7 @@ def cmd_show(a):
     for r in rows:
         if num(r, "tps") is not None:
             groups.setdefault(((r["model"] or "?")[:12], r["test"], r["build"], r["args"]), []).append(r)
-    print(f"{'model':12s} {'test':11s} {'build':21s} {'args':24s} {'n':>2s} {'t/s mean':>8s} {'sd':>5s} {'s/pass':>7s} {'hit%':>6s} {'pp t/s':>7s}  md5s")
+    print(f"{'model':12s} {'test':11s} {'build':21s} {'args':24s} {'n':>2s} {'o/s mean':>8s} {'sd':>5s} {'s/pass':>7s} {'hit%':>6s} {'i/s':>7s}  md5s")
     for (m, t, b, e), g in sorted(groups.items()):
         tps = [num(x, "tps") for x in g]
         mean = lambda k: (lambda v: statistics.mean(v) if v else 0)([num(x, k) for x in g if num(x, k) is not None])
@@ -5095,7 +5095,7 @@ kill $SRV $DMON $SYSM; sleep 2; echo "script done" >> run.log; touch done
         if ts("server ready") and ts("start") and not os.path.exists(LOAD_FILE):   # once: its mtime is the end of the load (the prompt phase is timed from it); rewriting it every poll kept "now" as the load end, so the estimate blew up (1691 min) and the progress ran backwards
             open(LOAD_FILE, "w").write(str(float(ts("server ready")) - float(ts("start"))))
         for mm in list(re.finditer(r"request (\d+) done [\d.]+: .*?\"prompt_per_second\":([\d.]+).*?\"predicted_per_second\":([\d.]+)", log))[done_r:]:
-            open(a.results, "a").write(f"{time.strftime('%F %T')} {build} {a.test} {{}} {mm.group(3)} t/s hit 0.0% pp {mm.group(2)} t/s\n"); done_r += 1
+            open(a.results, "a").write(f"{time.strftime('%F %T')} {build} {a.test} {{}} {mm.group(3)} o/s hit 0.0% {mm.group(2)} i/s\n"); done_r += 1
     try:
         if quiet:
             n = 0
@@ -6174,7 +6174,7 @@ def cmd_quick(a):
     print(f"GPUs: {gpus or 'none found'}")
     print(f"CPU: {cpu}, RAM: {mem} GiB")
     print()
-    print("| test | stock t/s | fork t/s | gain | stock pp t/s | fork pp t/s | pp gain |")
+    print("| test | stock o/s | fork o/s | gain | stock i/s | fork i/s | i/s gain |")
     print("|---|---|---|---|---|---|---|")
     for label, test, _ in tests:
         st_t, fk_t = med("stock-ref", test, "tps"), med("fork", test, "tps")
@@ -6421,8 +6421,8 @@ def speed_txt(t, p=None, stock=False, width=0):
     bright shade of its colour (decode light blue, prompt bright green), its label in the plain shade; stock's own numbers one shade down"""
     nb, lb = (94, 36) if stock else ("1;94", 96)   # bright and readable on a dark terminal: decode number blue, its label cyan; prompt number green, its label yellow
     nb2, lb2 = (92, 33) if stock else ("1;92", 93)
-    out = col(lb, "decode") + " " + col(nb, f"{t:{width}.2f}") + " " + col(lb, "t/s")
-    if p is not None: out += "  " + col(lb2, "prompt") + " " + col(nb2, f"{p:{(width + 1) if width else 0}.1f}") + " " + col(lb2, "t/s")
+    out = col(lb, "decode") + " " + col(nb, f"{t:{width}.2f}") + " " + col(lb, "o/s")
+    if p is not None: out = col(lb2, "prompt") + " " + col(nb2, f"{p:{(width + 1) if width else 0}.1f}") + " " + col(lb2, "i/s") + "  " + out   # input before output (user 2026-11-21)
     return out
 
 
@@ -6731,8 +6731,8 @@ def cell_status(t0, expect, label, total=None):
             if ht and lv and ht.get("prompt_recent", -1) >= 0: parts.append(level(1 - ht["prompt_recent"] / 100, 0.15, 0.4, f"prompt hit {ht['prompt_recent']:.1f}%") + col(90, f" (call so far {ht.get('prompt_all', 0):.1f}%)"))   # the experts of the running prompt pass found in the cache
             elif ht: parts.append(level(1 - ht.get("all", 0) / 100, 0.15, 0.4, f"hit {ht.get('all', 0):.1f}%") + col(90, f" (now {ht.get('recent', 0):.1f}%)"))
             if tk.get("tokens"): parts.append(col(94, f"{tk['last64']:.1f} ms/tok") + col(90, f" (last {tk['last']:.1f}, all {tk['all']:.1f})"))
-            if lv.get("done") and lv.get("s"): parts.append(col(32, f"pp {lv['done'] / lv['s']:.0f} t/s") + col(90, f" running: {lv['done']}/{lv['tokens']} tok in {lv['s']:.0f} s"))   # the running prompt call, live
-            elif pr.get("last_tps"): parts.append(col(32, f"pp {pr['last_tps']:.0f} t/s") + (col(90, " by size " + " ".join(f"{k}:{v:.0f}" for k, v in (pr.get("tps_by_ubatch") or {}).items())) if pr.get("tps_by_ubatch") else ""))
+            if lv.get("done") and lv.get("s"): parts.append(col(32, f"{lv['done'] / lv['s']:.0f} i/s") + col(90, f" running: {lv['done']}/{lv['tokens']} tok in {lv['s']:.0f} s"))   # the running prompt call, live
+            elif pr.get("last_tps"): parts.append(col(32, f"{pr['last_tps']:.0f} i/s") + (col(90, " by size " + " ".join(f"{k}:{v:.0f}" for k, v in (pr.get("tps_by_ubatch") or {}).items())) if pr.get("tps_by_ubatch") else ""))
             if rx and lv: io.append(col(37, "pcie rx ") + " ".join(f"g{i} {v:.1f} GB/s" for i, v in enumerate(rx)))
             if bw:   # RAM read rate (CPU experts + uploads) and each PCIe link, in GB/s against the probed maximum, and as a share of it
                 pc = lambda v, mx: 100 * v / mx if mx else 0
@@ -6950,11 +6950,12 @@ def cell_results(path, since):
     out = []
     try:
         for l in open(path, errors="replace"):
-            m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \S+ +(\S+) +\{.*?\} +([\d.]+) t/s(?:.*?pp ([\d.]+) t/s)?(?:.*?PPL ([\d.]+))?", l)
+            m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \S+ +(\S+) +\{.*?\} +([\d.]+) [to]/s(?:.*?(?:pp ([\d.]+) t/s|([\d.]+) i/s))?(?:.*?PPL ([\d.]+))?", l)   # o/s and i/s (user 2026-11-21), t/s and "pp N t/s" in older files
             if not m or time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) < since - 2: continue
-            if m.group(4) is None and m.group(2) != "ppl": continue   # every test but ppl (one token per call: no prompt phase) reports a prompt rate; a line without it is no result
-            io = re.search(r" t/s\S*(?: \S+)*? in (\d+)(?: out (\d+))?", l.split("}", 1)[-1])   # after the args
-            out.append((float(m.group(3)), float(m.group(4)) if m.group(4) else None, float(m.group(5)) if m.group(5) else None, (int(io[1]), int(io[2] or 0)) if io else None))   # ppl: no prompt rate, its PPL third; the real in/out tokens
+            pp = m.group(4) or m.group(5)   # "pp N t/s" (older files) or "N i/s"
+            if pp is None and m.group(2) != "ppl": continue   # every test but ppl (one token per call: no prompt phase) reports a prompt rate; a line without it is no result
+            io = re.search(r" [to]/s\S*(?: +\S+)*? +in (\d+)(?: out (\d+))?", l.split("}", 1)[-1])   # after the args
+            out.append((float(m.group(3)), float(pp) if pp else None, float(m.group(6)) if m.group(6) else None, (int(io[1]), int(io[2] or 0)) if io else None))   # ppl: no prompt rate, its PPL third; the real in/out tokens
     except OSError: pass
     return out
 
@@ -7173,8 +7174,9 @@ def live_rate_text(st):
     """`pp 812 t/s 1.2 ms/token (max 903)  ` for the phase running, the phase before it as its maximum only; '' before the first two samples"""
     ph = st.get("phase"); r = (st.get("rate") or {}).get(ph); mx = st.get("max") or {}
     if r is None: return ""
-    out = f"{ph} {r:.1f} t/s {1000 / r:.1f} ms/token (max {mx.get(ph, r):.1f})  " if r > 0 else f"{ph} 0 t/s (max {mx.get(ph, 0):.1f})  "
-    if ph == "t" and mx.get("pp"): out += f"pp max {mx['pp']:.1f} t/s  "
+    u = "i/s" if ph == "pp" else "o/s"   # prompt tokens in, answer tokens out (user 2026-11-21: a prompt rate in t/s read as a decode rate)
+    out = f"{r:.1f} {u} {1000 / r:.1f} ms/token (max {mx.get(ph, r):.1f})  " if r > 0 else f"0 {u} (max {mx.get(ph, 0):.1f})  "
+    if ph == "t" and mx.get("pp"): out += f"max {mx['pp']:.1f} i/s  "
     return out
 
 
@@ -7234,7 +7236,7 @@ def trace_lines(width=40):
 def result_lines(res):
     # a perplexity cell has no prompt or decode phase (user 2026-11-17: "why i see just decode?"): its PPL and the rate of the evaluation pass
     ppl_txt = lambda r: col(96, "PPL") + " " + col("1;94", f"{r[2]:.4f}") + "  " + col(96, "eval") + " " + col("1;94", f"{r[0]:7.2f}") + " " + col(96, "t/s")
-    ms = lambda r: col(90, f"  {1000 / r[1]:.0f} / {1000 / r[0]:.0f} ms a token pp / t") if r[0] and len(r) > 1 and r[1] else ""   # from the run's mean rates (user 2026-11-21)
+    ms = lambda r: col(90, f"  {1000 / r[1]:.0f} / {1000 / r[0]:.0f} ms a token in / out") if r[0] and len(r) > 1 and r[1] else ""   # from the run's mean rates (user 2026-11-21)
     io = lambda r: col(36, f"  in {r[3][0]} out {r[3][1]}") if len(r) > 3 and r[3] else ""
     return "\n".join(f"    run {i}: " + (ppl_txt(r) if len(r) > 2 and r[2] is not None else speed_txt(r[0], r[1], width=7)) + (col(36, "  " + CELL_PROMPT[0]) if CELL_PROMPT[0] else "") + io(r) + ms(r)
                      for i, r in enumerate(res, 1))   # prompt in/out of the cell after each run
@@ -7822,14 +7824,14 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
     for x in allrows: x.setdefault("xfer", ""); x.setdefault("vt", ""); x.setdefault("vp", ""); x.setdefault("vtv", None); x.setdefault("vpv", None)
     show_x = any(x["xfer"] not in ("", "f32", "f16") for x in body)   # the hand-off column only when a cell of ours ran with other than the f32 default
     wd = lambda k, h: max([len(h)] + [len(x.get(k, "")) for x in allrows])
-    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("g", "gpus"), ("hw", "hw"), ("st", "st t/s"), ("sp", "st pp"), ("gt", "x t/s"), ("gp", "x pp"), ("vt", "vs best"), ("vp", "best runp"), ("ppl", "ppl us/stock"), ("bt", "builds"), ("id", "id"), ("sid", "st id"))}
+    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "o/s"), ("p", "i/s"), ("g", "gpus"), ("hw", "hw"), ("st", "st o/s"), ("sp", "st i/s"), ("gt", "x o/s"), ("gp", "x i/s"), ("vt", "vs best"), ("vp", "best runp"), ("ppl", "ppl us/stock"), ("bt", "builds"), ("id", "id"), ("sid", "st id"))}
     if live:   # one finished cell as it happens: fixed minimum widths so the rows of successive cells line up
         W["name"] = NAMEW[0] - 1   # the longest name of the list, whatever this cell is called
         for k, mw in (("prompt", 7), ("out", 7), ("xfer", 4), ("time", 5), ("load", 6), ("t", 7), ("p", 8), ("g", 4), ("st", 9), ("sp", 8), ("gt", 7), ("gp", 7), ("vt", 7), ("vp", 60), ("ppl", 13), ("bt", 16), ("id", 5), ("sid", 8)): W[k] = max(W[k], mw)
         for x in allrows: x["bt"] = x.get("bts", x["bt"])   # short builds, so every row decides the same columns
         W["bt"] = max([16, len("builds")] + [len(x["bt"]) for x in allrows])
     def width(keys): return sum(W[k] + 2 for k in keys)
-    ours = ["name", "prompt", "out"] + (["xfer"] if show_x else []) + ["time", "load", "t", "p", "g"] + (["hw"] if any(x.get("hw") for x in body) else []); stk = ["st", "sp", "gt", "gp", "vt"] + (["vp"] if BEST_RUN_COL[0] else []) + ["ppl", "bt", "id", "sid"]   # the best run column on -br only (user 2026-11-21)
+    ours = ["name", "prompt", "out"] + (["xfer"] if show_x else []) + ["time", "load", "p", "t", "g"] + (["hw"] if any(x.get("hw") for x in body) else []); stk = ["sp", "st", "gp", "gt", "vt"] + (["vp"] if BEST_RUN_COL[0] else []) + ["ppl", "bt", "id", "sid"]   # the best run column on -br only (user 2026-11-21)
     if not live:   # a column empty on every row takes no room (user 2026-11-21: "compactify")
         ours = [k for k in ours if k in ("name", "prompt", "t", "p") or any(x.get(k) for x in allrows)]; stk = [k for k in stk if any(x.get(k) for x in allrows)]
     while width(ours + stk) > cols and len(ours) > 3 and ("load" in ours or "time" in ours): ours.remove("load" if "load" in ours else "time")
@@ -7837,7 +7839,7 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         for x in allrows: x["bt"] = x["bts"]
         W["bt"] = max([len("builds")] + [len(x["bt"]) for x in allrows] + ([16] if live else []))
     wrap = False   # never a row in two lines (user 2026-10-24: the stock part on a second line under the name was unreadable); columns are dropped above instead
-    H = {"prompt": "prompt", "out": "out", "xfer": "xfer", "time": "time", "load": "load", "t": "t/s", "p": "pp", "g": "gpus", "hw": "hw", "st": "st t/s", "sp": "st pp", "gt": "x t/s", "gp": "x pp", "vt": "vs best", "vp": "best run", "ppl": "ppl us/stock", "bt": "builds", "id": "id", "sid": "st id"}   # st = stock: short heads, so the builds, perplexity and ids fit (user 2026-11-21)
+    H = {"prompt": "prompt", "out": "out", "xfer": "xfer", "time": "time", "load": "load", "t": "o/s", "p": "i/s", "g": "gpus", "hw": "hw", "st": "st o/s", "sp": "st i/s", "gt": "x o/s", "gp": "x i/s", "vt": "vs best", "vp": "best run", "ppl": "ppl us/stock", "bt": "builds", "id": "id", "sid": "st id"}   # st = stock: short heads, so the builds, perplexity and ids fit (user 2026-11-21)
     HC = {"prompt": 36, "out": 36, "xfer": 35, "t": 96, "g": 35, "hw": 35, "st": 96, "gt": 96, "p": 93, "sp": 93, "gp": 93, "vt": 96, "vp": 93, "ppl": 36, "time": 37, "load": 33, "bt": 90, "id": 37, "sid": 36}
     hl = lambda keys: "".join("  " + col(HC[k], f"{H[k]:<{W[k]}}" if k in ("bt", "vp") else f"{H[k]:>{W[k]}}") for k in keys)
     out = [" " * W["name"] + hl(ours[1:]) + ("" if wrap else hl(stk))]
