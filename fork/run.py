@@ -7975,17 +7975,17 @@ def stock_latest(dry=False):
         name = os.path.basename(os.path.realpath(link)) if os.path.exists(os.path.join(link, "llama-server")) else os.path.basename(max(have, key=lambda p: int(re.search(r"stock-b(\d+)", p).group(1))))
         if not dry and not os.path.islink(link): os.symlink(name, link)
         return name
-    today = [p for p in glob.glob(os.path.join(DEVBUILDS, "stock-b*-official")) if os.path.exists(os.path.join(p, "llama-server")) and time.strftime("%F", time.localtime(os.path.getmtime(p))) >= time.strftime("%F", time.localtime(time.time() - 86400 * (getattr(stock_latest, "days", 1) - 1)))]
-    if today:   # a stock pulled today stays the day's stock: no new pull, no rerun of the cells that already have its numbers (a new release is taken tomorrow)
-        name = os.path.basename(max(today, key=lambda p: int(re.search(r"stock-b(\d+)", p).group(1))))
-        if not dry:
-            link = os.path.join(DEVBUILDS, "stock-latest"); tl = link + ".new"
-            try: os.remove(tl)
-            except OSError: pass
-            os.symlink(name, tl); os.replace(tl, link)
-        return name
-    tag = subprocess.run(["gh", "release", "list", "-R", "ggml-org/llama.cpp", "-L", "1", "--json", "tagName", "-q", ".[0].tagName"], capture_output=True, text=True).stdout.strip()
-    if not re.fullmatch(r"b\d+", tag): sys.exit(f"stock: cannot read the newest ggml-org release (gh said {tag!r})")
+    # the newest release whose Linux CUDA 13 binaries are uploaded (a fresh tag may have only some of its files), every list (user 2026-11-21: b12602 was out, the
+    # day's b12600 stayed: "for stock" the newest); gh unreachable: the newest stock on disk
+    tag = ""
+    for t_ in subprocess.run(["gh", "release", "list", "-R", "ggml-org/llama.cpp", "-L", "8", "--json", "tagName", "-q", ".[].tagName"], capture_output=True, text=True).stdout.split():
+        if os.path.isdir(os.path.join(DEVBUILDS, f"stock-{t_}-official")) or any(re.fullmatch(rf"llama-{t_}-bin-ubuntu-cuda-13\.\d+-x64\.tar\.gz", x) for x in subprocess.run(["gh", "release", "view", t_, "-R", "ggml-org/llama.cpp", "--json", "assets", "-q", ".assets[].name"], capture_output=True, text=True).stdout.split()):
+            tag = t_; break
+    if not re.fullmatch(r"b\d+", tag):
+        have = [p for p in glob.glob(os.path.join(DEVBUILDS, "stock-b*-official")) if os.path.exists(os.path.join(p, "llama-server"))]
+        if not have: sys.exit("stock: cannot read the newest ggml-org release and no stock on disk")
+        tag = re.search(r"stock-(b\d+)", max(have, key=lambda p: int(re.search(r"stock-b(\d+)", p).group(1)))).group(1)
+        print(f"stock: no release list from gh, the newest on disk: {tag}", flush=True)
     name = f"stock-{tag}-official"; d = os.path.join(DEVBUILDS, name)
     if not os.path.isdir(d) and not dry:
         import tempfile
@@ -8675,7 +8675,7 @@ def run_list(name, argv):
         if o.machine.split("-")[0] == "pc1": os.environ["PERF_POWER"] = o.power   # the cell processes inherit it; wait_vram_free applies it before every cell   # the cell processes inherit it; wait_vram_free applies it before every cell
     HW_TEXT[0] = o.hw
     HW = o.machine.split("-")[0]; HWF[0] = hw_filter(HW)   # rows of this machine (and its current hardware) only count for -nrt and for the stock check (pc1-cli is pc1)
-    stock_latest.remote = o.machine.split("-")[0] != "pc1"; stock_latest.skip = o.nodl; stock_latest.days = max(o.not_today, 1)
+    stock_latest.remote = o.machine.split("-")[0] != "pc1"; stock_latest.skip = o.nodl
     if o.stock: o.build = stock_latest(o.dry)
     o.build = resolve_build(o.build)   # -b b13563: a build number
     rows = list(csv.DictReader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", name + ".csv"), newline="")))
