@@ -693,3 +693,19 @@ template <class F> static inline pv2_range_t pv2_range_plan(const pv2_heap & h, 
     }
     return r;
 }
+
+// Coalesced upload (user design 2026-11-22): the experts a layer streams are packed back to back into chunks of at most `chunk` bytes (the landing area is a
+// double buffer of two chunks), each chunk goes up as ONE copy, then a scatter moves every expert from its chunk offset to its heat-placed heap start.
+struct pv2_up_t    { int32_t id; size_t bytes, dst; };            // an expert to stream: its bytes and its final heap byte offset
+struct pv2_upmove  { int32_t id; size_t src, dst, bytes; };       // src = byte offset inside the chunk
+struct pv2_upchunk { size_t bytes = 0; std::vector<pv2_upmove> mv; };
+static inline std::vector<pv2_upchunk> pv2_upchunks(const std::vector<pv2_up_t> & ex, size_t chunk) {
+    std::vector<pv2_upchunk> r;
+    for (const auto & x : ex) {
+        if (x.bytes == 0 || x.bytes > chunk) { continue; }
+        if (r.empty() || r.back().bytes + x.bytes > chunk) { r.emplace_back(); }
+        r.back().mv.push_back({ x.id, r.back().bytes, x.dst, x.bytes });
+        r.back().bytes += x.bytes;
+    }
+    return r;
+}

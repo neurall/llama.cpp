@@ -1234,7 +1234,22 @@ static int run_sim(const std::string & dir, const std::string & log, uint64_t se
     return g_fail ? 1 : 0;
 }
 
+static void test_upchunks() {
+    std::vector<pv2_up_t> ex; for (int i = 0; i < 50; ++i) { ex.push_back({ i, (size_t) (3 + i % 4) * 100, (size_t) (50 - i) * 1000 }); }
+    auto ch = pv2_upchunks(ex, 2000);
+    size_t n = 0, tot = 0, want = 0; bool ok = true;
+    for (const auto & x : ex) { want += x.bytes; }
+    for (const auto & c : ch) {
+        ok = ok && c.bytes <= 2000 && !c.mv.empty(); size_t o = 0;
+        for (const auto & m : c.mv) { ok = ok && m.src == o && m.dst == (size_t) (50 - m.id) * 1000; o += m.bytes; ++n; tot += m.bytes; }
+        ok = ok && o == c.bytes;
+    }
+    check("upchunks: every expert once, packed, within chunk", ok && n == ex.size() && tot == want);
+    check("upchunks: chunks are full (next expert did not fit)", ch.size() > 1 && ch[0].bytes + ex[ch[0].mv.size()].bytes > 2000);
+    check("upchunks: empty and oversize skipped", pv2_upchunks({ {1, 0, 0}, {2, 5000, 0} }, 2000).empty());
+}
 int main(int argc, char ** argv) {
+    test_upchunks();
     if (argc > 1 && strcmp(argv[1], "--sim") == 0) {
         std::vector<std::string> pos;
         std::string mode = "own";
