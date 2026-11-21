@@ -8535,7 +8535,7 @@ def run_list(name, argv):
             o.cell_args = (o.cell_args + f" {key}={int(mib)}").strip()
     if o.dense_split: o.cell_args = (o.cell_args + " dense-split=" + {"on": "1", "off": "0"}.get(o.dense_split, o.dense_split)).strip()
     if o.status: o.not_today = o.not_today or 1; o.nodl = True
-    if o.nrts is not None: o.not_today = o.nrts or 1; STATUS_FMT[0] = True
+    if o.nrts is not None: o.not_today = o.nrts or 1; STATUS_FMT[0] = True; o.nodl = True
     RELAX_STOCK[0] = bool(o.status)   # -nrts: -nrt, the skipped cells in the status format
     if o.day and not o.power: o.power = "220/280"
     if o.no_pool is not None: os.environ["RUN_KEEP_POOL"] = "1"   # -nm: the cells never unmount the pool either (pool_sanity); a model bigger than the pool loads without it, the pool stays for the next ones
@@ -8576,7 +8576,7 @@ def run_list(name, argv):
     for r in rows: r["test"] = test_name(r["test"])   # the test column may say 8k / 60k1k
     _picked = set()
     _sel = lambda r: (not o.only or any(r["name"] == x[:-1] if x.endswith("$") else x in r["name"] for x in o.only.split(","))) and (not o.skip or not any(x in r["name"] for x in o.skip.split(",")))   # the -onl and -skp filters below, applied early: a model nobody asked for (or one skipped) is not looked at
-    if o.machine.split("-")[0] == "pc1" and not o.status:   # a model whose rows ask for its best prompt (pfbest) and that has none stored: ask the engine once, here, in this window (calib --ceil), not "go and run calib"
+    if o.machine.split("-")[0] == "pc1" and not o.status and o.nrts is None:   # (-nrts and --status run nothing, not this probe either) a model whose rows ask for its best prompt (pfbest) and that has none stored: ask the engine once, here, in this window (calib --ceil), not "go and run calib"
         for _m in sorted({r["model"] for r in rows if _sel(r) and r["test"].startswith("pfbest")}):
             if prompt_known(_m): continue
             if o.dry: print(col(33, f"{model_alias(_m)}: no best prompt or pass ceiling stored for {hw_key()} of VRAM: a real run asks the engine first (calib --ceil); its rows are left out of this listing"), flush=True); rows = [r for r in rows if r["model"] != _m]; continue
@@ -8663,7 +8663,7 @@ def run_list(name, argv):
         if not ot: continue
         r["extra"] = (r.get("extra") or "") + f" --env PERF_BOX={ot[0]:.1f},{ot[1]:.1f}"
         print(col(90, f"{r['name']}: stock measured by the clock: prompt stopped after {ot[0]:.0f} s, answer after {ot[1]:.0f} s (ours)"), flush=True)
-    if o.hog_gpu and not o.dry and rows and (o.real_hold or all(str(r["_b"]).startswith("stock") for r in rows)):   # -sim on a list of stock cells: stock cannot fake free memory (no --moe sim-vram), so the VRAM is really held, on every card, until the list ends
+    if o.hog_gpu and not o.dry and o.nrts is None and rows and (o.real_hold or all(str(r["_b"]).startswith("stock") for r in rows)):   # -sim on a list of stock cells: stock cannot fake free memory (no --moe sim-vram), so the VRAM is really held, on every card, until the list ends
         v = str(o.hog_gpu).lower().rstrip("ib").rstrip("b"); free_mib = int(float(v[:-1]) if v.endswith("m") else float(v[:-1] if v.endswith("g") else v) * (1 if v.endswith("m") else 1024))
         import atexit   # (run_list imports it further down for simjoe: without this line the name is a local there and unbound here)
         hog = subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "vramhog.py"), str(free_mib), os.path.join(DEVBUILDS, rows[0]["_b"])], stdout=subprocess.PIPE, text=True, preexec_fn=_die_with_parent)   # ends with the list, even when the list is killed
@@ -8693,11 +8693,13 @@ def run_list(name, argv):
             if k in done or r['_b'].startswith("stock"): return only(k, done.get(k, []))
             return next((only(c, v) for c, v in done.items() if c.endswith(f"-{r['name']}-{r['test']}") and not c.startswith("stock")), [])
         keep = [r for r in rows if len(today(r)) < (1 if o.status else int(r["n"] or 1))]   # --status: a cell with any run today has its line
+        if o.nrts is not None: keep = []   # -nrts: nothing runs, every cell shows its best run (user 2026-11-21: "-nrts still started runs")
         RELAX_STOCK[0] = True
         for r in rows:   # the skipped cells keep their line, with the results of today's runs and the gain over stock, as if they had just run
             if r in keep: continue
             if r['_b'].startswith('stock') and any(q['name'] == r['name'] and q['test'] == r['test'] and not q['_b'].startswith('stock') for q in rows): continue   # our line shows the stock numbers
             res = today(r)[-int(r["n"] or 1):]   # the newest n
+            if not res and o.nrts is not None: res = (last_run_rec(r, HW).get("res") or [])[-int(r["n"] or 1):]   # -nrts, no run in the window: its newest earlier run, the table puts its best one on the line
             STOCK_REC[0] = None
             try: gain = stock_gain((r["model"], r["test"]), res, r["_b"])
             except Exception as e: gain = f"  | gain: {e}"
@@ -8708,8 +8710,10 @@ def run_list(name, argv):
             CELL_REC.append(dict(skipped=True, tag=f"{r['_b']}-{r['name']}", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=ours_reference(r["model"], r["test"]) if r["_b"].startswith("stock") else None, sbno=own_build_no(r["_b"]), xfer="" if r["_b"].startswith("stock") else xfer_of(own_build_no(r["_b"]), r.get("args") or ""), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, r["_b"], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, r["_b"], "llama-server")) else "", rid=_rid, build=r["_b"], prompt=best_prompt_cell_label(r) or prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"], name=stock_prefix(r) + r["name"], el=_el, lt=_lt, rc=0, res=res, st=STOCK_REC[0], stock_row=r["_b"].startswith("stock")))
             CELL_LINES.append(col(1, f"{stock_prefix(r) + r['name']:<{NAMEW[0]}}") + "  " + "  ".join(speed_txt(t, p) for t, p, *_ in res) + gain + (f"  [{col(36, CELL_TEST[0])}]" if CELL_TEST[0] else ""))
         RELAX_STOCK[0] = bool(o.status)
-        if len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run in the last {o.not_today} day(s) skipped (they are in the table at the end)", flush=True)
+        if o.nrts is not None: print(f"-nrts: nothing runs; {len(rows)} cells show their best run", flush=True)
+        elif len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run in the last {o.not_today} day(s) skipped (they are in the table at the end)", flush=True)
         rows = keep
+        if o.nrts is not None and rows: sys.exit("-nrts: a cell is left to run; nothing may run under -nrts")
     if o.status:   # one table in the -nrt columns: the cells done today, the one running now, the cells queued next (the rest of the list, then the queue daemon's waiting tasks); nothing else happens
         run_tag, run_since = running_cell()
         for rec in CELL_REC: rec["section"] = "running" if rec.get("tag") == run_tag else "done"
