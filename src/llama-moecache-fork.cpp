@@ -11548,10 +11548,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     mc->dcv.notify_all();
                     continue;
                 }
-                // --moe refill-nowait=1 (A/B, 2026-11-21): a refill job writes a free block, which no running graph reads; its wait for the graph was half the refill
-                // after a Qwen3.8 15.5k prompt (129 of 6368 jobs, 572 of 1167 ms, most of them at a token's start)
-                static const bool refill_nowait = [] { const char * v = moe_opt("refill-nowait"); return v && atoi(v) != 0; }();
-                if (mc->graph_wait.load(std::memory_order_acquire) && mc->graph_ev[ls.link] && !(refill_nowait && j.refill)) { ggml_backend_event_synchronize(mc->graph_ev[ls.link]); }   // a block the running graph may still read
+                if (mc->graph_wait.load(std::memory_order_acquire) && mc->graph_ev[ls.link]) { ggml_backend_event_synchronize(mc->graph_ev[ls.link]); }   // a block the running graph may still read
                 race_stress_sleep();   // --moe race-stress: an upload starts late (a lend or a zone change may happen meanwhile)
                 const int64_t t0 = ggml_time_us();
                 led_upload(mc, "up-start", j.layer_idx, j.expert, j.slot, j.bg);
