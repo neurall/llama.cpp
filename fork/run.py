@@ -2218,6 +2218,7 @@ HWF = [""]   # " and hw='pc2'" while a list runs: stock, earlier-build and refer
 # a host whose hardware changed keeps its name: rows before the change are another machine (2026-11-12 PC1: Ryzen 7 3700X with 2-channel RAM and x16 + x4 became a
 # Threadripper PRO 3975WX with 8-channel RAM and 2 x16; stock decode 13.99 -> 30.01 t/s on MiMo 12k, so an old stock row doubled our gains)
 HW_SINCE = {"pc1": "2026-11-12"}
+HW_TEXT = [None]   # -hw: text the hardware line must hold, in place of the machine and its current hardware
 def stock_prefix(r):
     """the label prefix of a cell in the tables: "" ours, "s" plain stock, "sm" stock with upstream's expert cache (-sm), "sr"/"smr" the same on restricted VRAM (-sa): the two stock arms never look alike"""
     return "" if not str(r["_b"]).startswith("stock") else ("s" + ("m" if os.environ.get("STOCK_MOE") else "") + ("r" if os.environ.get("STOCK_RES") else "") + (" " if os.environ.get("STOCK_MOE") or os.environ.get("STOCK_RES") else ""))
@@ -2247,6 +2248,8 @@ def stock_moe_args(spec):
 
 
 def hw_filter(hw):
+    if HW_TEXT[0]:   # -hw 3700,128g: rows whose machine name or hardware line has every term (any machine, any date; user 2026-11-21)
+        return "".join(" and lower(coalesce(hw,'') || ' ' || coalesce(hwline,'')) like '%" + t.strip().lower().replace("'", "''") + "%'" for t in HW_TEXT[0].split(",") if t.strip()) + ONE_REQ
     if hw == "pc1" and os.environ.get("RUN_SIMJOE") and os.environ.get("JOE_REF") == "joe":   # --joe-ref joe: stock and reference rows of simjoe's own machine (pc1joe..., the same link cap), measured here with -sc
         return f" and hw='{os.environ['PERF_HW']}'" + ONE_REQ
     if hw == "pc1" and os.environ.get("RUN_SIMJOE"):   # simjoe rows against the old desktop's (PC1 before its change) at the same power (user 2026-11-15: "why dont we see best old runs on same prompt and pl")
@@ -8132,9 +8135,9 @@ def last_run_rec(r, HW):
     try:
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
         top = None
-        for use_gen, use_hw in ((True, True), (False, True), (False, False)):
-            q = "select campaign, rowid, bno, start_ts from runs where model=? and test=? and build " + ("like 'stock-b%-official'" if stock else "not like 'stock%' and build not like 'strata%'") + " and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'" + (" and hw=?" if use_hw else "") + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen and use_gen else "") + " order by start_ts desc limit 1"
-            top = c.execute(q, (os.path.basename(r["model"]), ALIASES.get(r["test"], r["test"])) + ((HW,) if use_hw else ())).fetchone()
+        for use_gen, use_hw in ((True, True), (False, True)) + (() if HW_TEXT[0] else ((False, False),)):   # -hw: never another hardware line
+            q = "select campaign, rowid, bno, start_ts from runs where model=? and test=? and build " + ("like 'stock-b%-official'" if stock else "not like 'stock%' and build not like 'strata%'") + " and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'" + ((HWF[0] if HW_TEXT[0] else " and hw=?") if use_hw else "") + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen and use_gen else "") + " order by start_ts desc limit 1"
+            top = c.execute(q, (os.path.basename(r["model"]), ALIASES.get(r["test"], r["test"])) + ((HW,) if use_hw and not HW_TEXT[0] else ())).fetchone()
             if top: break
         if not top: return {}
         res = [(float(t), float(p or 0)) for t, p in c.execute("select tps, pp from runs where campaign=? and cast(ok as integer)=1 and tps is not null order by ts", (top[0],))]
@@ -8494,6 +8497,7 @@ def run_list(name, argv):
     ap.add_argument("-day", "--day", action="store_true", help="the day power limits (x4 card 220 W, x16 card 280 W) for the whole run, also at night (the schedule drops to 200/200 W from 23:50): same as -pl 220/280")
     ap.add_argument("--status", action="store_true", help="print the table of the cells run today (the -nrt table: t/s, pp, stock, gains) and the cells still to run; nothing is run, started or touched (the web view calls this)")
     ap.add_argument("-nrt", "--not-today", nargs="?", type=int, const=1, default=0, metavar="DAYS", help="skip cells (and so models) that already have their runs in runs.db from the last DAYS days (default 1 = today); a stock pulled within those days is not replaced by a newer release")
+    ap.add_argument("-hw", metavar="TEXT", help="rows of the machine whose hardware line holds TEXT (comma list, all must match), any date: -hw 3700 (the old 128 GiB desktop), -hw 3975 or -hw 256g (now); stock, best runs and gains all from those rows")
     ap.add_argument("-nrts", nargs="?", type=int, const=1, default=None, metavar="DAYS", help="-nrt (skip the cells that already ran in the last DAYS days, default 1; the others run) with the --status table: every skipped cell on one line, its best run on any build, stock gains, sorted from best")
     ap.add_argument("-pin", dest="force_pin", action="store_true", help="force pinned RAM for every cell (-lm pin) instead of the default auto; `-nm` is the mmap counterpart. In a row's args column: -pin")
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
@@ -8567,6 +8571,7 @@ def run_list(name, argv):
     if o.power:
         if not re.fullmatch(r"max|\d{2,3}(/\d{2,3}|(,\d{2,3})*)", o.power): sys.exit("-pl: no value = every card at its maximum; W for every card (285), or per card (285,285,300,285), or narrow-link cards/widest-link cards (220/280)")
         if o.machine.split("-")[0] == "pc1": os.environ["PERF_POWER"] = o.power   # the cell processes inherit it; wait_vram_free applies it before every cell   # the cell processes inherit it; wait_vram_free applies it before every cell
+    HW_TEXT[0] = o.hw
     HW = o.machine.split("-")[0]; HWF[0] = hw_filter(HW)   # rows of this machine (and its current hardware) only count for -nrt and for the stock check (pc1-cli is pc1)
     stock_latest.remote = o.machine.split("-")[0] != "pc1"; stock_latest.skip = o.nodl; stock_latest.days = max(o.not_today, 1)
     if o.stock: o.build = stock_latest(o.dry)
@@ -8682,7 +8687,7 @@ def run_list(name, argv):
         if cur is None and re.fullmatch(r"b\d+", os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, o.build)))): cur = int(os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, o.build)))[1:])   # --version failed: the directory is named by the build number
         try:
             for c, t, p, bn, nt in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
-                    "select campaign, tps, pp, bno, note from runs where cast(ok as integer)=1 and tps is not null and date(coalesce(start_ts, ts))>=date('now','localtime','-%d days') and coalesce(env,'') not like '%%warmpass%%' and hw='%s' order by ts" % (o.not_today - 1, row_hw() if os.environ.get("RUN_SIMJOE") else HW)):   # simjoe rows are stored under pc1joe...: -nrt must look there
+                    "select campaign, tps, pp, bno, note from runs where cast(ok as integer)=1 and tps is not null and date(coalesce(start_ts, ts))>=date('now','localtime','-%d days') and coalesce(env,'') not like '%%warmpass%%'" % (o.not_today - 1) + (HWF[0] if HW_TEXT[0] else " and hw='%s'" % (row_hw() if os.environ.get("RUN_SIMJOE") else HW)) + " order by ts"):   # -hw: the rows of that hardware line   # simjoe rows are stored under pc1joe...: -nrt must look there
                 if cur and not str(c).startswith("stock") and int(bn or 0) != cur: continue
                 done.setdefault(c, []).append((float(t), float(p or 0))); donepn.setdefault(c, []).append((re.search(r"bp2=(\S+)", nt or "") or [None, None])[1])
         except sqlite3.Error as e: print(f"-nrt: runs.db: {e}", flush=True)
