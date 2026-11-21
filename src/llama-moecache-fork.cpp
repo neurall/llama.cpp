@@ -13946,14 +13946,11 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
     };
     size_t max_gap = 0;
     for (const auto & g : v.main.gaps) { max_gap = std::max(max_gap, g.second); }
-    int64_t min_heat = std::numeric_limits<int64_t>::max();   // the coldest resident of the main heap that may be replaced: a newcomer no hotter than it, with no free window that fits, goes to the landing area without the search
-    for (const auto & [x, r] : v.main.res) { if (!r.pin && r.id >= 0) { min_heat = std::min(min_heat, r.heat); } }
     std::vector<int32_t> placed;
     size_t n_heat = 0, b_heat = 0, n_land = 0, n_ev = 0;
     for (int32_t e : want) {
         const int64_t hx = v.tiered ? v.hv[(size_t) pv2_id(mc, li, e)] : pv2_heat(mc, ls, e, false, lsum);
-        pv2_pick pk;
-        if (hx <= min_heat && ls.v2n + ls.v2u > max_gap) { pk.s = PV2_NONE; } else { pk = pv2_pick_main(mc, li, e, hx, v.reach, ls.v2n + ls.v2u <= max_gap ? SIZE_MAX : v.reach); }
+        pv2_pick pk = pv2_pick_main(mc, li, e, hx, v.reach, ls.v2n + ls.v2u <= max_gap ? SIZE_MAX : v.reach);   // no free extent can hold it: the scan of every gap is skipped (19k experts a prompt)
         if (pk.s != PV2_NONE) {
             victim(v.main, pk);
             pv2_take(mc, v.main, pk, li, e, hx, true, &n_ev);
