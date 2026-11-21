@@ -391,6 +391,40 @@ static int unit_tests() {
         check("boot fill: no expert left out would still fit a free window", fits);
         check("boot fill: per shape the placed experts are the hottest (a prefix of its heat order)", prefix);
     }
+    {   // c2/c4: a stretch is taken from the heap (a graph's lend, the KV zone, a retype's staging): what each resident that reaches into it needs first. A queued
+        // upload is dropped, a finished one not yet published is discarded, a published expert is evicted, a running one is awaited (one copy)
+        std::map<int32_t, size_t> uh = { { PV2_HOLD, 1 }, { 1, 1 }, { 2, 1 }, { 3, 1 }, { 4, 1 }, { 5, 1 }, { 6, 1 }, { 7, 1 }, { 8, 1 } };
+        std::map<int32_t, pv2_job_t> st = { { 1, PV2_CACHED }, { 2, PV2_CACHED }, { 3, PV2_QUEUED }, { 4, PV2_DONE }, { 5, PV2_RUNNING }, { 6, PV2_QUEUED }, { 7, PV2_CACHED }, { 8, PV2_CACHED } };
+        pv2_heap h = pv2_make(0, 1500);
+        pv2_add(h, 100, { 1, 100, 5, false });   // [100, 200) before the stretch [300, 800)
+        pv2_add(h, 200, { 7, 100, 5, false });   // [200, 300) ends exactly where the stretch starts
+        pv2_add(h, 300, { 2, 100, 5, false });   // [300, 400) from its first byte
+        pv2_add(h, 420, { 3, 60, 5, true });     // [420, 480) queued, inside
+        pv2_add(h, 500, { 4, 100, 5, true });    // [500, 600) finished, not published, inside
+        pv2_add(h, 750, { 5, 100, 5, true });    // [750, 850) running, over the stretch's end
+        pv2_add(h, 870, { 6, 30, 5, true });     // [870, 900) queued, after it
+        pv2_add(h, 900, { 8, 100, 5, false });   // [900, 1000) after it
+        const auto plan = [&](size_t a, size_t b) { return pv2_range_plan(h, a, b, [&](int32_t id) { return st.at(id); }); };
+        auto r = plan(300, 800);
+        check("range plan: a queued job is dropped", r.drop.size() == 1 && r.drop[0] == 3);
+        check("range plan: a finished job is discarded", r.discard.size() == 1 && r.discard[0] == 4);
+        check("range plan: a published expert is evicted", r.evict.size() == 1 && r.evict[0] == 2);
+        check("range plan: a running upload is awaited, so the stretch is not ready", r.wait.size() == 1 && r.wait[0] == 5 && !r.ready());
+        check("range plan: residents that only touch the stretch from outside are no part of it", plan(0, 300).wait.empty() && plan(0, 300).evict.size() == 2 && plan(800, 900).wait.size() == 1);
+        auto leave = [&](const std::vector<int32_t> & ids) { for (int32_t id : ids) { for (const auto & [s, v] : h.res) { if (v.id == id) { pv2_drop(h, s); break; } } } };
+        leave(r.drop); leave(r.discard); leave(r.evict);   // what the engine does before it waits
+        check("range plan: with one still running the stretch cannot be held, and nothing changes", !pv2_hold(h, 300, 800) && heap_ok(h, uh) && plan(300, 800).wait.size() == 1);
+        st[5] = PV2_CACHED;   // its copy landed and was published: an expert like the others
+        r = plan(300, 800);
+        check("range plan: after the copy only that expert is left to evict, nothing is awaited", r.ready() && r.evict.size() == 1 && r.evict[0] == 5 && r.drop.empty() && r.discard.empty());
+        leave(r.evict);
+        bool full = pv2_hold(h, 300, 800) && heap_ok(h, uh);
+        for (const auto & [g, n] : h.gaps) { full = full && (g + n <= 300 || g >= 800); }
+        check("range plan: the stretch is held whole: no resident and no free byte in it", full && pv2_overlap(h, 300, 800).empty());
+        r = plan(0, 1500);   // the held stand-ins are no resident of a plan (the state function is never asked for them: st has no entry for them)
+        check("range plan: the stand-ins of a held stretch are left alone", r.evict.size() == 3 && r.drop.size() == 1 && r.drop[0] == 6 && r.discard.empty() && r.ready());
+        check("range plan: an empty stretch needs nothing", plan(1000, 1000).ready() && plan(1000, 1000).evict.empty() && plan(1000, 1000).drop.empty());
+    }
     {   // the switch to decode: the hottest of residents and missing experts that fill the area stay or come in, cold leftovers leave
         pv2_heap h = pv2_make(0, 1000);
         pv2_add(h, 0,   { 1, 200, 5, false });

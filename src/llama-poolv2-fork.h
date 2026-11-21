@@ -412,3 +412,26 @@ static inline std::vector<pv2_put_t> pv2_boot_fill(pv2_heap & h, const std::vect
     }
     return put;
 }
+
+// c2/c4: what a stretch needs before it is held (a graph's lend, the KV zone, a retype's staging). Each resident reaching into it is in one state of its upload
+// (the caller's state function): a queued job is dropped, a finished one not yet published is discarded, a published expert is evicted, a running one is awaited
+// (one copy, never cancelled); the stretch is ready when nothing is awaited. Ids in start order; held stand-ins are no residents of a plan.
+enum pv2_job_t : int { PV2_CACHED = 0, PV2_QUEUED, PV2_DONE, PV2_RUNNING };
+struct pv2_range_t {
+    std::vector<int32_t> drop, discard, evict, wait;
+    bool ready() const { return wait.empty(); }
+};
+template <class F> static inline pv2_range_t pv2_range_plan(const pv2_heap & h, size_t a, size_t b, F state) {
+    pv2_range_t r;
+    if (a >= b) { return r; }
+    for (size_t s : pv2_overlap(h, a, b)) {
+        const int32_t id = h.res.at(s).id;
+        switch (state(id)) {
+            case PV2_QUEUED:  r.drop.push_back(id);    break;
+            case PV2_DONE:    r.discard.push_back(id); break;
+            case PV2_CACHED:  r.evict.push_back(id);   break;
+            case PV2_RUNNING: r.wait.push_back(id);    break;
+        }
+    }
+    return r;
+}
