@@ -4167,6 +4167,7 @@ def show_row(row, build, test):
           + (f" {row['s_per_pass']:.2f} s/pass" if row.get("s_per_pass") else "")
           + (f" hit {row['hit_rate']}%" if row.get("hit_rate") is not None else "")
           + (f" pp {row['pp_tps']:.1f} t/s" if row.get("pp_tps") else "")
+          + (f" in {_pn[1]}" if (_pn := re.search(r"prompt_n=(\d+)", str(row.get("note") or ""))) else "") + (f" out {int(row['n_gen'])}" if row.get("n_gen") else "")   # the real tokens (user 2026-11-21)
           + (f" md5={row['md5']}" if row.get("md5") else "") + (f" [{row['note']}]" if row.get("note") and (test == "agent" or "draft" in row["note"] or "pageable" in row["note"]) else "")
           + (f" PPL {row['ppl']}" if row.get("ppl") else ""), flush=True)
 
@@ -6937,7 +6938,8 @@ def cell_results(path, since):
             m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \S+ +(\S+) +\{.*?\} +([\d.]+) t/s(?:.*?pp ([\d.]+) t/s)?(?:.*?PPL ([\d.]+))?", l)
             if not m or time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) < since - 2: continue
             if m.group(4) is None and m.group(2) != "ppl": continue   # every test but ppl (one token per call: no prompt phase) reports a prompt rate; a line without it is no result
-            out.append((float(m.group(3)), float(m.group(4)) if m.group(4) else None, float(m.group(5)) if m.group(5) else None))   # ppl: no prompt rate, its PPL third
+            io = re.search(r" t/s\S*(?: \S+)*? in (\d+)(?: out (\d+))?", l.split("}", 1)[-1])   # after the args
+            out.append((float(m.group(3)), float(m.group(4)) if m.group(4) else None, float(m.group(5)) if m.group(5) else None, (int(io[1]), int(io[2] or 0)) if io else None))   # ppl: no prompt rate, its PPL third; the real in/out tokens
     except OSError: pass
     return out
 
@@ -7213,7 +7215,9 @@ def trace_lines(width=40):
 def result_lines(res):
     # a perplexity cell has no prompt or decode phase (user 2026-11-17: "why i see just decode?"): its PPL and the rate of the evaluation pass
     ppl_txt = lambda r: col(96, "PPL") + " " + col("1;94", f"{r[2]:.4f}") + "  " + col(96, "eval") + " " + col("1;94", f"{r[0]:7.2f}") + " " + col(96, "t/s")
-    return "\n".join(f"    run {i}: " + (ppl_txt(r) if len(r) > 2 and r[2] is not None else speed_txt(r[0], r[1], width=7)) + (col(36, "  " + CELL_PROMPT[0]) if CELL_PROMPT[0] else "")
+    ms = lambda r: col(90, f"  {1000 / r[1]:.0f} / {1000 / r[0]:.0f} ms a token pp / t") if r[0] and len(r) > 1 and r[1] else ""   # from the run's mean rates (user 2026-11-21)
+    io = lambda r: col(36, f"  in {r[3][0]} out {r[3][1]}") if len(r) > 3 and r[3] else ""
+    return "\n".join(f"    run {i}: " + (ppl_txt(r) if len(r) > 2 and r[2] is not None else speed_txt(r[0], r[1], width=7)) + (col(36, "  " + CELL_PROMPT[0]) if CELL_PROMPT[0] else "") + io(r) + ms(r)
                      for i, r in enumerate(res, 1))   # prompt in/out of the cell after each run
 
 
@@ -9249,7 +9253,8 @@ def best_prompt_cell_label(r):
     m = re.search(r"PERF_PTOK=(\d+)", r.get("extra") or "")
     if not m: return ""
     n, o = int(m[1]), int(r.get("tokens") or 1024)
-    return f"b{round(n / 1000)}k/{out_k(o)}"
+    tb = re.search(r"PERF_TBOX=(\d+)", r.get("extra") or "")
+    return f"b{round(n / 1000)}k/" + (f"{tb[1]}s" if tb else out_k(o))   # -ps 2p10s: b8k/10s
 
 
 def best_prompt_chat(post, text, n, name):
