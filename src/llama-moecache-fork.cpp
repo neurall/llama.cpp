@@ -1445,6 +1445,25 @@ static std::vector<uint8_t> g_cs_mix_graph, g_cs_mix_built;   // per entry of th
 static std::atomic<bool>   g_cs_live{false};           // a cstream pass may be on the GPU: flush_tables leaves the device tables to cs_layer (its copies are ordered on the upload stream) until cs_end
 static bool                g_cs_pred_built = false;    // the graph that runs carries the k arm's rankings (llama_moe_cache_cs_pred_fork when it was built)
 static double              g_cs_k_pass = 0.0;          // the running cstream pass's prediction multiplier (cs_begin): 0 = the stream, every expert of an entry's range
+// user 2026-11-21: keep operation timestamps so a run shows where the time goes and what it waits on. optime_add(op, us) from scoped timers; llama_moe_cache_prompt_call_fork
+// prints the prompt call's table (ms, % of its wall time) and the decode steps' table every 128 steps, then clears them.
+enum optime_op { OP_SYNC, OP_TAKE_WAIT, OP_SWITCH, OP_PLAN_V2, OP_FILL_FREE, OP_REHEAT, OP_SWAP, OP_ZONE_SORT, OP_N };
+static const char * const optime_name[OP_N] = { "heap sync (lend/zone)", "range take wait", "switch to decode", "stream plan", "free-window fill", "reheat refill", "decode swap pick", "zone sort" };
+static std::atomic<uint64_t> g_optime_us[OP_N];
+static std::atomic<uint64_t> g_optime_n[OP_N];
+struct optime_t { optime_op op; int64_t t0; explicit optime_t(optime_op o) : op(o), t0(ggml_time_us()) {} ~optime_t() { g_optime_us[op] += (uint64_t) (ggml_time_us() - t0); g_optime_n[op]++; } };
+static void optime_report(const char * what, int64_t wall_us) {
+    std::string line; bool any = false;
+    for (int k = 0; k < OP_N; ++k) {
+        const uint64_t us = g_optime_us[k].exchange(0), n = g_optime_n[k].exchange(0);
+        if (!n) { continue; }
+        any = true;
+        char b[160]; snprintf(b, sizeof b, " %s %.1f ms x%llu (%.1f%%);", optime_name[k], us / 1e3, (unsigned long long) n, wall_us > 0 ? 100.0 * (double) us / (double) wall_us : 0.0);
+        line += b;
+    }
+    if (any) { LLAMA_LOG_WARN("moe-cache: optime %s (wall %.1f ms):%s\n", what, wall_us / 1e3, line.c_str()); }
+}
+static int64_t g_optime_call_t0 = 0, g_optime_dec_t0 = 0;
 static void (*g_cs_hook_next)(ggml_backend_t, struct ggml_cgraph *, int, int, uint64_t) = nullptr;   // the ledger's or the guard's hook, behind cs_split_cb
 static bool              g_pp_mix_built = false; // the same for the graph that runs: the staging fill leaves out what such a layer's home card holds
 static std::atomic<double>  g_pp_up_us{0.0};     // upload time of the misses of the prompt chain's passes since the last report: the pass's time without it is its compute
@@ -2667,7 +2686,7 @@ bool pv2_take_range(moe_cache * mc, size_t a, size_t b, size_t * n_evict = nullp
                 return true;
             }
         }
-        std::this_thread::sleep_for(std::chrono::microseconds(50));
+        { optime_t _ow(OP_TAKE_WAIT); std::this_thread::sleep_for(std::chrono::microseconds(50)); }
     }
     return false;
 }
@@ -2683,6 +2702,7 @@ void pv2_give_range(moe_cache * mc, size_t a, size_t b) {
 // zone's bookkeeping): residents in a newly held stretch leave first (their uploads dropped or awaited, pv2_take_range), bytes no longer held come back free.
 // locked (cache lock held): only gives back. false: an upload into a new stretch did not finish in 10 s. *n_ev: the residents that left
 static bool pv2_sync(moe_cache * mc, bool locked, size_t * n_ev = nullptr) {
+    optime_t _ot(OP_SYNC);
     auto & v = mc->v2;
     if (!v.on || v.ap_idx >= mc->alias.size()) { return true; }
     const auto & ap = mc->alias[v.ap_idx];
@@ -8386,6 +8406,7 @@ static void pv2_queue(moe_cache * mc, const std::vector<upload_job> & jobs) {
 }
 // pool-v2: the main heap's free windows to the missing experts, hottest first, each into the free window nearest its heat target (cache lock held)
 static size_t pv2_fill_free(moe_cache * mc, bool wait, bool ini_only) {
+    optime_t _ot(OP_FILL_FREE);
     auto & v = mc->v2;
     size_t gmax = 0;
     for (const auto & [g, n] : v.main.gaps) { gmax = std::max(gmax, n); }
@@ -8413,7 +8434,8 @@ static size_t pv2_fill_free(moe_cache * mc, bool wait, bool ini_only) {
     return jobs.size();
 }
 
-static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = false) {   // ini_only: by the lifetime counts alone (the state ini's hot map and this run's use), no recent window
+static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = false) {
+    optime_t _ot(OP_REHEAT);   // ini_only: by the lifetime counts alone (the state ini's hot map and this run's use), no recent window
     static const bool on = [] { const char * e = moe_opt("reheat"); return !e || atoi(e) != 0; }();
     if (!on) {
         return 0;
@@ -13827,7 +13849,8 @@ static void pv2_pin_entry(moe_cache * mc, size_t q, bool pin) {   // cache lock 
 // (a free window first, else residents colder than it within reach), else the landing area at its cursor over anything not pinned (what is left there belongs
 // to computed layers or earlier calls). A victim whose layer computed in this pass makes the copy wait for that compute. false: no place for every expert yet
 // (an entry ahead: the next split frees some), and nothing changed but the victims gone
-static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t & wait_at) {   // cache lock held
+static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t & wait_at) {
+    optime_t _ot(OP_PLAN_V2);   // cache lock held
     auto & v = mc->v2;
     const size_t li = mc->cs_order[p];
     if (!(li < mc->layers.size() && mc->layers[li].v2u)) {
@@ -16282,6 +16305,7 @@ void llama_moe_cache_step_fork() {
         return;
     }
     resdump_step(mc);
+    { static int ns = 0; if (g_optime_dec_t0 && ++ns % 128 == 0) { optime_report("128 decode steps", ggml_time_us() - g_optime_dec_t0); g_optime_dec_t0 = ggml_time_us(); } }
     // dev: LLAMA_STEP_TIME=1 splits the step's time by section (llama-context.cpp logs the whole step)
     static const bool st_on = getenv("LLAMA_STEP_TIME") != nullptr;
     static int64_t st_sum[8] = {0};
@@ -16865,6 +16889,7 @@ void llama_moe_cache_step_fork() {
                 if (mc->v2.gap_step != mc->n_steps) { size_t mg = 0; for (const auto & g : mc->v2.main.gaps) { mg = std::max(mg, g.second); } mc->v2.max_gap = mg; mc->v2.gap_step = mc->n_steps; }
                 if (pv2_dist_due(mc->n_steps, mc->v2.heat_step)) { pv2_refresh(mc, false, false); mc->v2.heat_step = mc->n_steps; }   // the targets and every resident's heat: the first step and every 64 (a per-step pass over every resident cost decode time)
                 const int64_t hx = pv2_heat(mc, ls, id, false, 0.0);
+                optime_t _os(OP_SWAP);
                 const pv2_pick pk = pv2_pick_main(mc, li, id, std::llround(1e6 * (xscore(mc, ls, id) - pay_back(link_margin[ls.link]))), mc->v2.reach, ls.v2n + ls.v2u <= mc->v2.max_gap ? SIZE_MAX : 2 * mc->v2.reach);   // decode: free windows only near the target (a scan of every gap cost 40% of the main thread per token)
                 if (pk.s == PV2_NONE) {
                     mc->pr[7] += ls.pending.end() - it;
@@ -17207,6 +17232,7 @@ extern "C" { GGML_API void ggml_backend_set_link_rate_fork(ggml_backend_dev_t de
 // topic map's prediction for this request with dynhot, else the lifetime counts and the recent window), the landing area refilled with the hottest experts no heap
 // holds (pv2_refill: the colder ones it held leave), and the call's line
 static void pv2_switch(moe_cache * mc) {
+    optime_t _ot(OP_SWITCH);
     auto & v = mc->v2;
     for (pv2_heap * h : { &v.main, &v.land }) {
         for (auto & [x, r] : h->res) { if (r.id >= 0) { r.pin = mc->layers[(size_t) (r.id / v.E)].slot_in_flight[r.id % v.E]; } }
@@ -17255,6 +17281,7 @@ static void pv2_switch(moe_cache * mc) {
 }
 
 void llama_moe_cache_prompt_call_fork(bool on) {
+    if (on) { g_optime_call_t0 = ggml_time_us(); }
     if (!on && g_cache) { cs_end(g_cache); }
     if (!on && g_cache && g_prompt_call.load(std::memory_order_relaxed)) { g_resdump_arm.store(1); }
     if (!on && g_cache && g_cache->v2.on && g_prompt_call.load(std::memory_order_relaxed)) {   // pool-v2: the switch to decode
@@ -17268,6 +17295,7 @@ void llama_moe_cache_prompt_call_fork(bool on) {
         LLAMA_LOG_WARN("moe-cache: pool-v2 shadow: %llu checks, %llu mismatches with the size classes, %llu places refused, %llu lent or zoned over a shadow expert; heap %zu residents\n",
                 (unsigned long long) v.n_check, (unsigned long long) v.n_bad, (unsigned long long) v.n_refused, (unsigned long long) v.n_held_bad, v.where.size());
     }
+    if (!on && g_cache && g_optime_call_t0) { optime_report("prompt call", ggml_time_us() - g_optime_call_t0); g_optime_call_t0 = 0; g_optime_dec_t0 = ggml_time_us(); }
     if (!on && g_cache && g_cs_pick_held.exchange(false)) { cs_rest_set(g_cache); }   // the ring back to its smallest: the KV and the decode graphs get the pool
     static const bool refill_end = [] { const char * e = moe_opt("refill-end"); return !e || atoi(e) != 0; }();   // --moe refill-end=0: off (the step's refill only)
     if (!on && refill_end && g_cache && g_prompt_call.load(std::memory_order_relaxed)) {
