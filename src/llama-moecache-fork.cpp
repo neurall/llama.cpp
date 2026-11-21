@@ -8389,34 +8389,6 @@ static size_t pv2_fill_free(moe_cache * mc, bool wait, bool ini_only) {
         gmax = 0;
         for (const auto & [g, n] : v.main.gaps) { gmax = std::max(gmax, n); }
     }
-    if (!ini_only && gmax > 0) {   // free bytes are no use empty: after the top-k rule, the next hottest missing experts by the decode score, any layer, until no free window fits one (background)
-        struct ex { double sc; size_t li; int32_t e; };
-        std::vector<ex> rest;
-        for (size_t li = 0; li < mc->layers.size(); ++li) {
-            const layer_state & ls = mc->layers[li];
-            if (!ls.v2u) { continue; }
-            for (int32_t e = 0; e < (int32_t) ls.expert_slot.size(); ++e) {
-                if (ls.at[(size_t) e] >= 0 || ls.queued[e]) { continue; }
-                const double sc = xscore(mc, ls, e);
-                if (sc > 0.0) { rest.push_back({ sc, li, e }); }
-            }
-        }
-        std::stable_sort(rest.begin(), rest.end(), [](const ex & a, const ex & b) { return a.sc > b.sc; });
-        size_t n2 = 0; double b2 = 0.0;
-        for (const auto & c : rest) {
-            layer_state & ls = mc->layers[c.li];
-            if (ls.v2n > gmax) { continue; }
-            const pv2_pick pk = pv2_pick_main(mc, c.li, c.e, std::numeric_limits<int64_t>::min(), 0, SIZE_MAX);
-            if (pk.s == PV2_NONE) { continue; }
-            pv2_put(mc, v.main, c.li, c.e, pk.s, std::llround(1e6 * c.sc), true);
-            jobs.push_back(pv2_job(mc, c.li, c.e, false, 2));
-            bytes += ls.v2n; n2++; b2 += ls.v2n;
-            gmax = 0;
-            for (const auto & [g, n] : v.main.gaps) { gmax = std::max(gmax, n); }
-            if (gmax == 0) { break; }
-        }
-        if (n2) { LLAMA_LOG_WARN("moe-cache: pool-v2: %zu more experts (%.2f GB) into free windows past the top-k rule, by the decode score\n", n2, b2 / 1e9); }
-    }
     pv2_queue(mc, jobs);
     static int logged = 0;
     if (!jobs.empty() && logged++ < 16) {
