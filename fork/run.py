@@ -9158,11 +9158,11 @@ def our_best_times(model_path, out):
 
 
 def best_prompt_cell_label(r):
-    """`b12k/1k 12438` for a best-prompt cell (the exact prompt tokens it feeds, ours or the shortened stock prompt), '' for any other cell"""
+    """`b12k/1k` for a best-prompt cell (its prompt rounded to thousands; the exact count is in the run's row, user 2026-11-21: "dont show real pp len as col too wide"), '' for any other cell"""
     m = re.search(r"PERF_PTOK=(\d+)", r.get("extra") or "")
     if not m: return ""
     n, o = int(m[1]), int(r.get("tokens") or 1024)
-    return f"b{round(n / 1000)}k/{out_k(o)} {n}"
+    return f"b{round(n / 1000)}k/{out_k(o)}"
 
 
 def best_prompt_chat(post, text, n, name):
