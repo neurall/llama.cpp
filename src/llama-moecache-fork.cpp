@@ -2698,6 +2698,55 @@ void pv2_give_range(moe_cache * mc, size_t a, size_t b) {
     if (b > v.H) { pv2_unhold(v.main, std::max(a, v.H), b); }
     if (a < v.H && b > v.M) { pv2_unhold(v.land, std::max(a, v.M), std::min(b, v.H)); }
 }
+// A stretch [a, b) is about to be taken by the KV zone, a lend or CUDA's room (user 2026-11-21): every resident in [0, b) would leave, hot or not (a 15.5k prompt threw
+// out 348 experts above the 90th percentile of decode heat and 1.7k above the median). First the hot ones move above b by device copies (pv2_sort_range: a free window,
+// else over a colder resident, which is the one that leaves): bytes copied inside the pool buffer, the table entry rewritten after each copy (the device tables are flushed
+// before the next graph). Cache lock taken here; the caller (pv2_sync, not locked) has no graph running and no worker copying into the stretch
+static void pv2_zone_sort(moe_cache * mc, size_t a, size_t b) {
+    auto & v = mc->v2;
+    const bool from_low_end = a <= v.main.lo || (!v.held.empty() && v.held[0].first <= v.main.lo && v.held[0].second >= a);   // only a zone growing up from the heap's low end (a room or lend at the top takes what is there)
+    if (!from_low_end) { return; }
+    static const bool off = [] { const char * e = moe_opt("zone-sort"); return e && atoi(e) == 0; }();
+    if (off || v.ap_idx >= mc->alias.size()) { return; }
+    optime_t _ot(OP_ZONE_SORT);
+    std::lock_guard<std::mutex> lk(mc->mtx);
+    pv2_refresh(mc, false, true);   // every resident's keep rank now
+    const pv2_zone zp = pv2_sort_range(v.main, b, (size_t) 4 << 30, 0);
+    if (zp.steps.empty()) { return; }
+    auto & ap = mc->alias[v.ap_idx];
+    uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf);
+    size_t n_move = 0, n_evict = 0; double b_move = 0.0;
+    for (const auto & st : zp.steps) {
+        layer_state & lo = mc->layers[(size_t) (st.id / v.E)];
+        const int32_t e = st.id % v.E;
+        if (st.to == PV2_NONE) {   // the colder resident above the stretch that makes room
+            evict_slot(mc, lo, e);
+            pv2_out(mc, lo, e);
+            lo.queued[e] = 0;
+            n_evict++;
+            continue;
+        }
+        const size_t len = lo.v2n;
+        ggml_tensor ta = {}, tb = {};
+        for (ggml_tensor * t : { &ta, &tb }) {
+            t->type = GGML_TYPE_I8; t->buffer = ap.buf;
+            t->ne[0] = (int64_t) len; t->ne[1] = t->ne[2] = t->ne[3] = 1;
+            t->nb[0] = 1; t->nb[1] = t->nb[2] = t->nb[3] = len;
+        }
+        ta.data = base + st.from; tb.data = base + st.to;
+        ggml_backend_tensor_copy(&ta, &tb);   // a step may overlap its own source: the copy runs toward the destination
+        const pv2_res r = pv2_drop(v.main, st.from);
+        const bool ok = pv2_add(v.main, st.to, r);
+        GGML_ASSERT(ok && "pool-v2: a zone-sort step into bytes that are not free");
+        lo.at[(size_t) e] = (int32_t) (st.to / lo.v2u);
+        set_table_entry(lo.pub, e, e);
+        n_move++; b_move += (double) len;
+    }
+    static int logged = 0;
+    if (logged++ < 24) {
+        LLAMA_LOG_WARN("moe-cache: pool-v2: zone sort before [0, %.0f) MiB is taken: %zu experts moved up (%.2f GB), %zu colder ones out\n", b / 1048576.0, n_move, b_move / 1e9, n_evict);
+    }
+}
 // The heap's held stretches follow the blocks the lend, the KV zone and CUDA's room hold (owner -2, -3, ROOM, of any class; the blocks stay the lend's and the
 // zone's bookkeeping): residents in a newly held stretch leave first (their uploads dropped or awaited, pv2_take_range), bytes no longer held come back free.
 // locked (cache lock held): only gives back. false: an upload into a new stretch did not finish in 10 s. *n_ev: the residents that left
@@ -2727,6 +2776,7 @@ static bool pv2_sync(moe_cache * mc, bool locked, size_t * n_ev = nullptr) {
         for (const auto & q : v.held) { old = old || (q.first <= r.first && r.second <= q.second); }
         if (old) { continue; }
         GGML_ASSERT(!locked && "pool-v2: a lend or zone grew where the heap is synced under the cache lock");
+        pv2_zone_sort(mc, r.first, r.second);
         if (!pv2_take_range(mc, r.first, r.second, n_ev)) { return false; }
     }
     std::unique_lock<std::mutex> lk(mc->mtx, std::defer_lock);
