@@ -2081,6 +2081,21 @@ def state_paths(args):
     return st, [d for d in glob.glob(os.path.join(os.path.dirname(st), glob.escape(os.path.basename(MODEL)) + "_*")) if os.path.isdir(d)]
 
 
+def best_state_snap(model, test, name):
+    import sqlite3
+    """(snapshot dir, campaign, decode t/s, date) of the fastest stored run whose snapshot still exists: this cell's own runs first, then any of the model with the same prompt test"""
+    try:
+        c = sqlite3.connect(f"file:{RUNS_DB}?mode=ro", uri=True)
+        q = "SELECT state_snap, campaign, tps, substr(ts,1,16) FROM runs WHERE state_snap IS NOT NULL AND tps > 0 AND model LIKE ? AND build NOT LIKE 'stock%%' %s ORDER BY tps DESC"
+        mb = "%" + os.path.basename(model)
+        for extra, args in ((" AND campaign LIKE ?", (mb, f"%-{name}-{test}")), (" AND campaign LIKE ?", (mb, f"%-{test}"))):
+            for snap, camp, tps, ts in c.execute(q % extra, args):
+                if os.path.isdir(snap): return snap, camp, tps, ts
+    except sqlite3.Error:
+        pass
+    return None
+
+
 def state_snapshot(args, build):
     """user 2026-11-13 (K3 decode 3.05 -> 1.1 t/s on the same binary, a drifted learned state): "store hotmoe ini files for best runs again to be able to repro
     hotmoes". A copy of the state file and the model's heat as this start reads them; --state-from DIR puts such a copy back first. Copies no row claims
@@ -8656,6 +8671,7 @@ def run_list(name, argv):
     ap.add_argument("-clampasses", "--clamp-passes", action="store_true", help="pfbest cells: the best prompt cut to whole passes of the engine's newest measured pass maximum for this model and VRAM (runs.db ubatch_max with the stream's chunk cap, clamp_passes): a best prompt a sliver past k passes runs k, not k+1; each cut is printed")
     ap.add_argument("-gh", "--global-hot", action="store_true", help="every server starts from the hot-expert map of its (model, test), the same for every build (fork/hotglobal.py): written into the state the start reads, learned from the runs until it settles, then frozen; a speed difference between builds is then the code, not the map")
     ap.add_argument("--hot-settle", action="store_true", help="-gh, and every cell repeats until its hot map is settled (the hottest experts of each layer change by under 1%% twice in a row; at most RUN_HOT_SETTLE_MAX = 8 runs): one pass per prompt and model, before the builds are compared")
+    ap.add_argument("-bst", "--best-state", dest="best_state", action="store_true", help="every cell of ours starts from the learned state its fastest stored run started from (runs.db state_snap: the cell's own runs, else the model's with the same prompt test), so a best run repeats (gainers); the source run is printed. Not with -cs")
     ap.add_argument("-cs", "--clean-state", action="store_true", help="every cell starts from an EMPTY learned state of its own (bench --clean-state) on a server of its own: run 1 is the cold start of a new user, run 2 runs on the same server (warm). Two builds compared this way learn from zero on the same prompt, so they should arrive at the same speed (reg tests); the user's state file is not touched. No cell inherits another's state (an A/B of two builds read in run order once gave a 37%% gap that was only the shared state file)")
     ap.add_argument("-nk", "-x", "--kill", action="store_true", help="kill the server after every run (default: it stays up and the next run, also of the next cell, uses it when model, build and args are the same; later runs then start with what the earlier ones cached)")
     ap.add_argument("-r", "--runs", default="2", help="measured runs per cell (default 2: one run can be an outlier; 0 = the list's n)")
@@ -9010,6 +9026,13 @@ def run_list(name, argv):
             # a boxed stock cell gets -b 512: progress after every 512 tokens, so the box can stop its prompt (a 2048-token batch reports only at its end: K3.1 about 23 min)
             cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], ((" " + r["args"]) if r.get("args") else "") + (((" " + o.stock_args) if o.stock_args else "") + (" -b 512" if _isst and "PERF_BOX" in (r.get("extra") or "") and not re.search(r"(^|\s)(-b|--batch-size)\s", f" {o.stock_args or ''} {r.get('args') or ''}") else "") + (stock_moe_args(o.stock_moe) if o.stock_moe else "") + _soc if _isst else "")] + (["--warm"] if o.warm else []) + ([] if o.kill else ["--keep-server"]) + (["--clean-state"] if o.clean_state else []) + (["--ledger"] if o.ledger else [])
             cmd += (["--tokens", r["tokens"]] if r.get("tokens") else []) + shlex.split(r.get("extra") or "")
+            if o.best_state and not _isst and not o.clean_state:   # -bst: the learned state the fastest run of this model and prompt started from (user 2026-11-21: best runs must repeat for gainers)
+                bs = best_state_snap(r["model"], r["test"], r["name"])
+                if bs:
+                    cmd += ["--state-from", bs[0]]
+                    print(col(90, f"  -bst {r['name']}: state of {bs[1]} ({bs[2]:.2f} t/s, {bs[3]})"), flush=True)
+                else:
+                    print(col(33, f"  -bst {r['name']}: no stored state for {os.path.basename(r['model'])} {r['test']}, runs from the current one"), flush=True)
             if o.dry: print(f"[{name}] {tag}: {re.sub(r' pf(?=\d+k)', ' ', shlex.join(cmd[3:]))}", flush=True)
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
             tin = TEST_IN.get(r["test"]); tout = int(r["tokens"]) if r.get("tokens") else 0
