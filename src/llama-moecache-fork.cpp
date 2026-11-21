@@ -11693,7 +11693,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         // the landing area holds at least one layer's experts (user 2026-11-21: "one layer of moes sized area to upload to"): the stream's reserve
                         // below it can be smaller (a 39 MiB reserve against 250 MiB OLMoE layers aborted the second prompt's stream: main full of hotter experts)
                         size_t lay = 0;
-                        for (const auto & l : mc->layers) { if (l.v2u) { lay = std::max(lay, l.expert_slot.size() * l.v2p); } }
+                        for (const auto & l : mc->layers) { if (l.v2u) { lay = std::max(lay, l.at.size() * l.v2p); } }
                         v.H = ap.tail_end;
                         v.M = std::min<size_t>(ap.floor_end, v.H > lay ? v.H - lay : 0);
                         v.ap_idx = mc->alias.size();
