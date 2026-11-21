@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+mtr-q38,qwen38,1,pf14k1k,1024,"-bs --moe tokheat=/p/bw/data/moetrace/qwen38,tokheat-trace=1",--env CUDA_VISIBLE_DEVICES=0
+mtr-mimo,mimo,1,pf12k,1024,"-bs --moe tokheat=/p/bw/data/moetrace/mimo,tokheat-trace=1",
