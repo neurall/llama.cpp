@@ -86,6 +86,45 @@ static inline pv2_res pv2_drop(pv2_heap & h, size_t s) {
     return r;
 }
 
+// Held stretches (stage 2): bytes of the card's buffer the heap lends out for a while (a graph's lend, the KV zone, a retype's staging). Each free piece of one is
+// a pinned stand-in of id PV2_HOLD and the hottest heat: no placement crosses it, no refill drops it. The residents in a stretch go before it is held (pv2_overlap).
+static constexpr int32_t PV2_HOLD = std::numeric_limits<int32_t>::min();
+// the starts of the residents (not held stand-ins) that reach into [a, b)
+static inline std::vector<size_t> pv2_overlap(const pv2_heap & h, size_t a, size_t b) {
+    std::vector<size_t> out;
+    auto it = h.res.lower_bound(a);
+    if (it != h.res.begin() && std::prev(it)->first + std::prev(it)->second.n > a) { --it; }
+    for (; it != h.res.end() && it->first < b; ++it) { if (it->second.id != PV2_HOLD) { out.push_back(it->first); } }
+    return out;
+}
+// every free byte of [a, b) inside the heap becomes held; false (nothing changed) while a resident reaches into it
+static inline bool pv2_hold(pv2_heap & h, size_t a, size_t b) {
+    a = std::max(a, h.lo); b = std::min(b, h.hi);
+    if (a >= b) { return true; }
+    if (!pv2_overlap(h, a, b).empty()) { return false; }
+    std::vector<std::pair<size_t, size_t>> pieces;
+    auto g = h.gaps.upper_bound(a);
+    if (g != h.gaps.begin()) { --g; }
+    for (; g != h.gaps.end() && g->first < b; ++g) {
+        const size_t x = std::max(a, g->first), y = std::min(b, g->first + g->second);
+        if (x < y) { pieces.push_back({ x, y - x }); }
+    }
+    for (const auto & [x, n] : pieces) { pv2_add(h, x, { PV2_HOLD, n, std::numeric_limits<int64_t>::max(), true }); }
+    return true;
+}
+// every held byte of [a, b) becomes free; a stand-in reaching past the stretch keeps its outside part
+static inline void pv2_unhold(pv2_heap & h, size_t a, size_t b) {
+    std::vector<std::pair<size_t, size_t>> held;
+    auto it = h.res.lower_bound(a);
+    if (it != h.res.begin() && std::prev(it)->first + std::prev(it)->second.n > a) { --it; }
+    for (; it != h.res.end() && it->first < b; ++it) { if (it->second.id == PV2_HOLD) { held.push_back({ it->first, it->second.n }); } }
+    for (const auto & [s, n] : held) {
+        pv2_drop(h, s);
+        if (s < a)     { pv2_add(h, s, { PV2_HOLD, a - s, std::numeric_limits<int64_t>::max(), true }); }
+        if (s + n > b) { pv2_add(h, b, { PV2_HOLD, s + n - b, std::numeric_limits<int64_t>::max(), true }); }
+    }
+}
+
 // the start that is a multiple of u nearest t for n bytes inside [a, b), PV2_NONE when none fits
 static inline size_t pv2_fit(size_t a, size_t b, size_t n, size_t u, size_t t) {
     const size_t s0 = (a + u - 1) / u * u;
@@ -225,15 +264,17 @@ static inline size_t pv2_target(size_t lo, size_t top, size_t d, size_t n) { ret
 struct pv2_cand { int32_t id; size_t n, u; int64_t heat; };
 // The switch to decode (user 2026-11-21: "this tail layer sized area is fully refilled and reclaimed by hottest missing moes"): the landing area keeps no cold
 // leftovers. Over its residents (decode heat set by the caller) and `miss` (experts no heap holds, hottest first), hottest first, a resident before a newcomer
-// of the same heat (it costs no upload), as many as the area's bytes hold stay or come in; the other residents leave. A newcomer takes the free window nearest
-// its place in that order (hottest at lo, next to the main heap's hot end). Returns the newcomers placed: the refill upload.
-static inline std::vector<pv2_cand> pv2_refill(pv2_heap & h, const std::vector<pv2_cand> & miss) {
-    std::vector<std::pair<int64_t, size_t>> rs;   // (heat, start), hottest first
-    for (const auto & [s, r] : h.res) { rs.push_back({ r.heat, s }); }
+// of the same heat (it costs no upload), as many as the area's bytes hold stay or come in; the other residents leave (appended to *left). A resident in flight
+// or a held stretch stays whatever its heat, its bytes taken from the area first. A newcomer takes the free window nearest its place in that order (hottest at
+// lo, next to the main heap's hot end). Returns the newcomers placed: the refill upload.
+static inline std::vector<pv2_cand> pv2_refill(pv2_heap & h, const std::vector<pv2_cand> & miss, std::vector<pv2_res> * left = nullptr) {
+    std::vector<std::pair<int64_t, size_t>> rs;   // (heat, start), hottest first: the residents that may leave
+    size_t used = 0;
+    for (const auto & [s, r] : h.res) { if (r.pin) { used += r.n; } else { rs.push_back({ r.heat, s }); } }
     std::sort(rs.begin(), rs.end(), [](const auto & a, const auto & b) { return a.first != b.first ? a.first > b.first : a.second < b.second; });
     std::vector<size_t> keep;
     std::vector<std::pair<size_t, size_t>> in;     // (miss index, its target)
-    size_t used = 0, i = 0, j = 0;
+    size_t i = 0, j = 0;
     while (i < rs.size() || j < miss.size()) {
         const bool res = j == miss.size() || (i < rs.size() && rs[i].first >= miss[j].heat);
         const size_t nb = res ? h.res.at(rs[i].second).n : miss[j].n;
@@ -243,7 +284,7 @@ static inline std::vector<pv2_cand> pv2_refill(pv2_heap & h, const std::vector<p
     }
     std::sort(keep.begin(), keep.end());
     for (size_t k = 0; k < rs.size(); ++k) {
-        if (!std::binary_search(keep.begin(), keep.end(), rs[k].second)) { pv2_drop(h, rs[k].second); }
+        if (!std::binary_search(keep.begin(), keep.end(), rs[k].second)) { const pv2_res r = pv2_drop(h, rs[k].second); if (left) { left->push_back(r); } }
     }
     std::vector<pv2_cand> up;
     for (const auto & [jj, t] : in) {

@@ -251,11 +251,48 @@ static int unit_tests() {
         pv2_add(h, 0,   { 1, 200, 5, false });
         pv2_add(h, 300, { 2, 200, 1, false });
         const std::vector<pv2_cand> miss = { { 3, 300, 1, 9 }, { 4, 300, 1, 3 }, { 5, 300, 1, 2 } };
-        const auto up = pv2_refill(h, miss);
+        std::vector<pv2_res> left;
+        const auto up = pv2_refill(h, miss, &left);
         check("refill: the hottest that fit come in", up.size() == 2 && up[0].id == 3 && up[1].id == 4);
         check("refill: a hot resident stays in place, a cold one leaves", h.res.count(0) && h.res.at(0).id == 1 && h.res.size() == 3);
+        check("refill: the one that left is reported", left.size() == 1 && left[0].id == 2);
         std::map<int32_t, size_t> u1 = { { 1, 1 }, { 3, 1 }, { 4, 1 } };
         check("refill: heap invariants", heap_ok(h, u1));
+        // an upload on its way (pinned) stays whatever its heat, and its bytes count against the area
+        pv2_heap g = pv2_make(0, 1000);
+        pv2_add(g, 0,   { 1, 400, 0, true });
+        pv2_add(g, 500, { 2, 100, 0, false });
+        left.clear();
+        const auto up2 = pv2_refill(g, { { 3, 400, 1, 9 }, { 4, 400, 1, 8 } }, &left);
+        check("refill: a resident in flight stays, the area is what it leaves", g.res.count(0) && g.res.at(0).id == 1 && up2.size() == 1 && up2[0].id == 3);
+        check("refill: a cold resident not in flight leaves for a hotter newcomer", left.size() == 1 && left[0].id == 2);
+    }
+    {   // held stretches (a graph's lend, the KV zone): no placement crosses one, no refill drops one, they come back free
+        std::map<int32_t, size_t> uh = { { PV2_HOLD, 1 }, { 1, 1 }, { 2, 1 }, { 3, 1 } };
+        pv2_heap h = pv2_make(0, 1000);
+        pv2_add(h, 100, { 1, 100, 1, false });
+        pv2_add(h, 400, { 2, 100, 1, false });
+        const auto ov = pv2_overlap(h, 150, 450);
+        check("overlap: the residents that reach into a stretch", ov.size() == 2 && ov[0] == 100 && ov[1] == 400);
+        check("overlap: none outside", pv2_overlap(h, 200, 400).empty() && pv2_overlap(h, 500, 1000).empty());
+        check("hold: refused while a resident is in it", !pv2_hold(h, 150, 450));
+        check("hold: the heap is unchanged after a refusal", heap_ok(h, uh) && h.gaps.size() == 3);
+        pv2_drop(h, 100);
+        check("hold: a stretch with no resident", pv2_hold(h, 0, 300) && heap_ok(h, uh));
+        check("hold: nothing free in it", h.gaps.lower_bound(0) == h.gaps.end() || h.gaps.begin()->first >= 300);
+        check("place: never over a held stretch, however hot", pv2_place(h, 0, 250, 1, std::numeric_limits<int64_t>::max(), 1000, true).s >= 300 ||
+                                                               pv2_place(h, 0, 250, 1, std::numeric_limits<int64_t>::max(), 1000, true).s == PV2_NONE);
+        check("hold: a second stretch over the first holds the rest", pv2_hold(h, 200, 350) && heap_ok(h, uh) && (h.gaps.empty() || h.gaps.begin()->first >= 350));
+        pv2_unhold(h, 100, 250);
+        check("unhold: the middle comes back free, the ends stay held", heap_ok(h, uh) && h.gaps.count(100) && h.gaps.at(100) == 150 &&
+                                                                       h.res.count(0) && h.res.at(0).id == PV2_HOLD && h.res.at(0).n == 100);
+        std::vector<pv2_res> left;
+        pv2_heap land = pv2_make(0, 300);
+        pv2_hold(land, 0, 100);
+        pv2_refill(land, { { 3, 300, 1, 9 } }, &left);
+        check("refill: a held stretch stays", land.res.count(0) && land.res.at(0).id == PV2_HOLD && left.empty());
+        pv2_unhold(h, 0, 1000);
+        check("unhold: everything held comes back", heap_ok(h, uh) && h.res.size() == 1 && h.res.count(400));
     }
     stress(1, 4000, true);
     check("deterministic: one seed, one result", stress(7, 3000, false) == stress(7, 3000, false));
