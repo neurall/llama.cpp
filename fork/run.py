@@ -8582,6 +8582,7 @@ def run_list(name, argv):
     ap.add_argument("-nrt", "--not-today", nargs="?", type=int, const=1, default=0, metavar="DAYS", help="skip cells (and so models) that already have their runs in runs.db from the last DAYS days (default 1 = today); a stock pulled within those days is not replaced by a newer release")
     ap.add_argument("-hw", metavar="TEXT", help="rows of the machine whose hardware line holds TEXT (comma list, all must match), any date: -hw 3700 (the old 128 GiB desktop), -hw 3975 or -hw 256g (now); stock, best runs and gains all from those rows")
     ap.add_argument("-br", "--best-run", action="store_true", help="the best run column in the tables: our best earlier run of the cell (build, prompt, speeds, ms per token, power)")
+    ap.add_argument("--gaps", "-gaps", action="store_true", help="run only what the tables lack on this machine's current hardware (since it changed): a cell of ours with no ok run of any build, a stock cell with no run of its answer length on any stock build; the rest is skipped like -nrt")
     ap.add_argument("-nrts", nargs="?", type=int, const=1, default=None, metavar="DAYS", help="-nrt (skip the cells that already ran in the last DAYS days, default 1; the others run) with the --status table: every skipped cell on one line, its best run on any build, stock gains, sorted from best")
     ap.add_argument("-pin", dest="force_pin", action="store_true", help="force pinned RAM for every cell (-lm pin) instead of the default auto; `-nm` is the mmap counterpart. In a row's args column: -pin")
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
@@ -8624,6 +8625,7 @@ def run_list(name, argv):
     if o.dense_split: o.cell_args = (o.cell_args + " dense-split=" + {"on": "1", "off": "0"}.get(o.dense_split, o.dense_split)).strip()
     if o.status: o.not_today = o.not_today or 1; o.nodl = True
     if o.nrts is not None: o.not_today = o.nrts or 1; STATUS_FMT[0] = True; o.nodl = True
+    if o.gaps: o.not_today = 36500   # --gaps: every run since the hardware changed counts (HWF), of any build (user 2026-11-21: "run the biggest gaps we miss data or recent enough stock")
     BEST_RUN_COL[0] = o.best_run
     RELAX_STOCK[0] = bool(o.status)   # -nrts: -nrt, the skipped cells in the status format
     RELAX_ERA[0] = not o.status   # status weighs every hardware state against its own stock (best_gainer): a stock row of another state never stands in
@@ -8772,8 +8774,8 @@ def run_list(name, argv):
         if cur is None and re.fullmatch(r"b\d+", os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, o.build)))): cur = int(os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, o.build)))[1:])   # --version failed: the directory is named by the build number
         try:
             for c, t, p, bn, nt in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
-                    "select campaign, tps, pp, bno, note from runs where cast(ok as integer)=1 and tps is not null and date(coalesce(start_ts, ts))>=date('now','localtime','-%d days') and coalesce(env,'') not like '%%warmpass%%'" % (o.not_today - 1) + (HWF[0] if HW_TEXT[0] else " and hw='%s'" % (row_hw() if os.environ.get("RUN_SIMJOE") else HW)) + " order by ts"):   # -hw: the rows of that hardware line   # simjoe rows are stored under pc1joe...: -nrt must look there
-                if cur and not str(c).startswith("stock") and int(bn or 0) != cur: continue
+                    "select campaign, tps, pp, bno, note from runs where cast(ok as integer)=1 and tps is not null and date(coalesce(start_ts, ts))>=date('now','localtime','-%d days') and coalesce(env,'') not like '%%warmpass%%'" % (o.not_today - 1) + (HWF[0] if HW_TEXT[0] or o.gaps else " and hw='%s'" % (row_hw() if os.environ.get("RUN_SIMJOE") else HW)) + " order by ts"):   # -hw: the rows of that hardware line; --gaps: of the current hardware   # simjoe rows are stored under pc1joe...: -nrt must look there
+                if cur and not o.gaps and not str(c).startswith("stock") and int(bn or 0) != cur: continue   # --gaps: a run of any build fills the cell
                 done.setdefault(c, []).append((float(t), float(p or 0))); donepn.setdefault(c, []).append((re.search(r"bp2=(\S+)", nt or "") or [None, None])[1])
         except sqlite3.Error as e: print(f"-nrt: runs.db: {e}", flush=True)
         def today(r):   # today's ok runs of this cell on this build; a campaign named after another label of the same build (um3d-..., latest-...) counts, the build number decides
@@ -8782,7 +8784,7 @@ def run_list(name, argv):
             def only(c, v): return [x for x, n in zip(v, donepn.get(c, [])) if not want or n == want]
             if k in done or r['_b'].startswith("stock"): return only(k, done.get(k, []))
             return next((only(c, v) for c, v in done.items() if c.endswith(f"-{r['name']}-{r['test']}") and not c.startswith("stock")), [])
-        keep = [r for r in rows if len(today(r)) < (1 if o.status else int(r["n"] or 1))]   # --status: a cell with any run today has its line
+        keep = [r for r in rows if len(today(r)) < (1 if o.status or o.gaps else int(r["n"] or 1))]   # --status: a cell with any run today has its line; --gaps: one run fills it
         if o.nrts is not None: keep = []   # -nrts: nothing runs, every cell shows its best run (user 2026-11-21: "-nrts still started runs")
         RELAX_STOCK[0] = True
         for r in rows:   # the skipped cells keep their line, with the results of today's runs and the gain over stock, as if they had just run
