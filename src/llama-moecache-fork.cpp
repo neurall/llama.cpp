@@ -256,6 +256,10 @@ struct layer_state {
     int32_t               n_cache = 0;    // cache slots (the rest stream predicted experts); block pool: this layer's nominal share, used only by heuristics (hot set, adopt limit)
     int32_t               pcls    = -1;   // block pool: the size class this layer's experts are cached in (index into moe_cache::pool), -1 = own tensors (--moe pool=0)
     int32_t               tbl_mul = 1;    // --moe pool-v2: units of the views' nb[2] in one block (slot_off, the device tables); 1 = the block is nb[2]
+    // --moe pool-v2 (stage 2-3, fork/docs/pool-v2.md): a slot is the expert itself (n_slots = the layer's experts); at[e] its start in the card's heap in units of v2u
+    // (-1: not placed), v2n the bytes it takes (pv2_shape_of), v2p the pitch of a run of them packed back to back (the stream's 2D copies)
+    std::vector<int32_t>  at;
+    size_t                v2n = 0, v2u = 0, v2p = 0;
     int32_t               n_own   = 0;    // block pool: blocks of the class this layer owns now
     std::vector<uint8_t>  is_stream;      // slot -> holds streamed (predicted) experts, not the cache
     std::unique_ptr<std::atomic<const char *>[]> pin_ptr[3];   // tensor (up, gate, down) -> expert -> its pinned copy (--moe pinr), nullptr = not pinned
@@ -366,9 +370,20 @@ struct moe_cache {
     bool pv2 = false;
     // --moe pool-v2, stage 2b: the card's heap kept as a shadow of the size classes (llama-poolv2-fork.h pv2_mirror, pv2_held_set): it hears every expert's new
     // place (set_table_entry) and every change of the lent, zone and room blocks, places nothing, and is checked against the classes at each call (pv2_check)
+    // stage 2-3 (on): the card's expert heap (one card). main [0, M): experts in heat order, coldest at 0 (the lend and the KV zone take its low end as held
+    // stretches); landing area [M, H) (behind floor_end, the stream's reserve): a prompt's streamed experts with no place in main, refilled with the hottest
+    // missing at the switch to decode. A resident's id is layer x E + expert
     struct pv2_card_t {
-        bool     on = false;
-        pv2_heap main;
+        bool     on = false;                       // the heap runs the card (pool-v2=1 with the stream into the cache, one card, one buffer)
+        bool     shadow = false;                   // stage 2b: the heap only mirrors the size classes (pool-v2=1 where the heap cannot run)
+        pv2_heap main, land;
+        size_t   M = 0, H = 0, cur = 0;            // cur: the landing area's cursor
+        size_t   reach = (size_t) 256 << 20;       // a placement looks this far either way of its target (test-poolv2-fork --sim)
+        std::vector<size_t> dist;                  // per id: its distance from the hot end in the heat in force (pv2_heat_dist): a main placement's target
+        uint64_t heat_step = UINT64_MAX;           // the decode step the decode heat was last set at
+        size_t   done_seen = 0;                    // the stream's positions below it are unpinned (cs_done)
+        std::vector<std::pair<size_t, size_t>> held;   // the byte ranges the lend, the KV zone and the room hold, as last synced (pv2_sync)
+        size_t   n_heat = 0, b_heat = 0, n_land = 0, b_land = 0, n_used = 0, n_evict = 0, n_forced = 0, n_refill = 0, b_refill = 0;   // the prompt call's line
         std::map<int32_t, size_t> where;    // id (entry x E + expert; entry: a layer, or a cstream shadow after them) -> start
         std::vector<size_t> cls_base, cls_n;   // per size class: its grid's first byte in the card's buffer, an expert's bytes (pv2_shape_of)
         int32_t  E = 0;
@@ -2348,6 +2363,7 @@ namespace {
 void set_table_entry(llama_moe_cache_layer_fork & pub, int32_t expert, int32_t slot_or_dummy);
 void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, bool drop);
 void note_evict(moe_cache * mc, layer_state & ls, int32_t e);
+void pv2_out(moe_cache * mc, layer_state & ls, int32_t e);   // pool-v2: an expert leaves the card's heap (below the block pool runtime)
 double score(const layer_state & ls, int32_t id, uint64_t gmax);
 double score(const layer_state & ls, int32_t id);
 // score of an expert competing with experts of other layers for a block: one common scale (moe_cache::gmax_all) in the pool
@@ -2375,8 +2391,14 @@ inline double prompt_victim_rank(const moe_cache * mc, const layer_state & lo, s
 
 // a slot's bytes from the start of one of its layer's cache views (up_c, gate_c or down_c), and its device table entry: a block is tbl_mul steps of the views'
 // nb[2] (1 today; --moe pool-v2: the class unit, fork/docs/pool-v2.md). Every write into a block and every table entry goes through these two
-inline size_t  slot_off(const ggml_tensor * view, const layer_state & ls, int32_t slot) { return (size_t) slot * view->nb[2] * (size_t) ls.tbl_mul; }
-inline int32_t slot_tbl(const layer_state & ls, int32_t slot) { return slot * ls.tbl_mul; }
+// (stage 2-3: a slot is the expert, its place is at[slot] units of nb[2] into the card's heap)
+inline size_t  slot_off(const ggml_tensor * view, const layer_state & ls, int32_t slot) {
+    if (ls.v2u) { GGML_ASSERT(ls.at[slot] >= 0 && "pool-v2: an expert with no place in the heap"); return (size_t) ls.at[slot] * view->nb[2]; }
+    return (size_t) slot * view->nb[2] * (size_t) ls.tbl_mul;
+}
+inline int32_t slot_tbl(const layer_state & ls, int32_t slot) { return ls.v2u ? ls.at[slot] : slot * ls.tbl_mul; }
+// the bytes a slot holds (a block; pool-v2: the expert's extent): what an adoption or a resident lookup checks a slice against
+inline size_t  slot_bytes(const ggml_tensor * view, const layer_state & ls) { return ls.v2u ? ls.v2n : view->nb[2] * (size_t) ls.tbl_mul; }
 
 // ---- block pool runtime ----------------------------------------------------------------------------------------------------------------------------
 // With the block pool the slot index used everywhere (tables, upload offsets, the slot arrays of a layer) is a block of the layer's size class.
@@ -2418,7 +2440,7 @@ slot_pick pick_slot(moe_cache * mc, size_t li, Rank rank, double & best) {
 // block b now belongs to layer li (the expert its previous owner cached there must be evicted first)
 void pool_take(moe_cache * mc, size_t li, int32_t b) {   // li: a layer, or a cstream shadow (csl)
     layer_state & ls = csl(mc, li);
-    if (ls.pcls < 0) {
+    if (ls.pcls < 0 || ls.v2u) {   // pool-v2: no block of a class holds an expert (the heap does, pv2_put)
         return;
     }
     auto & ps = mc->pool[ls.pcls];
@@ -2443,7 +2465,7 @@ void pool_take(moe_cache * mc, size_t li, int32_t b) {   // li: a layer, or a cs
 // layer li gives the empty block b back: any layer of the class may take it
 void pool_release(moe_cache * mc, size_t li, int32_t b) {
     layer_state & ls = mc->layers[li];
-    if (ls.pcls < 0 || mc->pool[ls.pcls].owner[b] != (int32_t) li) {
+    if (ls.pcls < 0 || ls.v2u || mc->pool[ls.pcls].owner[b] != (int32_t) li) {
         return;
     }
     mc->pool[ls.pcls].owner[b] = -1;
@@ -2463,6 +2485,196 @@ void evict_slot(moe_cache * mc, layer_state & lo, int32_t b) {
     note_evict(mc, lo, v);
     lo.cached_since[v] = 0;
     if (lo.dropped[v]) { page_hint(mc, lo, v, false); lo.dropped[v] = false; }
+    if (lo.v2u) { pv2_out(mc, lo, v); }   // pool-v2: its bytes go back to the heap
+}
+
+// ---- pool v2: the card's expert heap (stage 2-3, fork/docs/pool-v2.md; the rules: llama-poolv2-fork.h) ------------------------------------------------------
+// Every change runs under the cache lock. A resident is pinned while an upload into it is on its way (until its publish) or, in a prompt's stream, while its layer's
+// compute is queued and not done; a pinned resident never leaves for a placement.
+inline int32_t pv2_id(const moe_cache * mc, size_t li, int32_t e) { return (int32_t) li * mc->v2.E + e; }
+inline pv2_heap & pv2_heap_of(moe_cache * mc, size_t start) { return start >= mc->v2.M && start < mc->v2.H ? mc->v2.land : mc->v2.main; }
+// the heat pool v2 places by. A prompt and the boot fill: the expert's share of its layer's lifetime picks (glob_count: the shipped map's or the state's, and this
+// run's), x 1e9, one scale for every layer. The switch to decode and decode: the decode cache's score over the pool (xscore: the recent window, the lifetime share,
+// the request's predicted map when the topic maps set it), x 1e6
+int64_t pv2_heat(const moe_cache * mc, const layer_state & ls, int32_t e, bool prompt, double lsum) {
+    return prompt ? std::llround(1e9 * (double) ls.glob_count[e] / std::max(1.0, lsum)) : std::llround(1e6 * xscore(mc, ls, e));
+}
+// the resident of expert e of layer ls, nullptr when it has no place
+pv2_res * pv2_find(moe_cache * mc, layer_state & ls, int32_t e) {
+    if (!ls.v2u || ls.at[e] < 0) { return nullptr; }
+    const size_t s = (size_t) ls.at[e] * ls.v2u;
+    pv2_heap & h = pv2_heap_of(mc, s);
+    auto it = h.res.find(s);
+    return it == h.res.end() ? nullptr : &it->second;
+}
+// expert e of layer li moves in at byte s of heap h (what the pick evicted is gone: pv2_take)
+void pv2_put(moe_cache * mc, pv2_heap & h, size_t li, int32_t e, size_t s, int64_t heat, bool pin) {
+    layer_state & ls = mc->layers[li];
+    GGML_ASSERT(ls.at[e] < 0 && s % ls.v2u == 0 && "pool-v2: an expert placed twice, or off its unit");
+    const bool ok = pv2_add(h, s, { pv2_id(mc, li, e), ls.v2n, heat, pin });
+    GGML_ASSERT(ok && "pool-v2: a placement over bytes the heap does not have free");
+    ls.at[e] = (int32_t) (s / ls.v2u);
+    ls.n_own++;
+}
+// expert e of layer ls leaves the heap (evicted, or its upload dropped before it landed)
+void pv2_out(moe_cache * mc, layer_state & ls, int32_t e) {
+    if (!ls.v2u || ls.at[e] < 0) { return; }
+    const size_t s = (size_t) ls.at[e] * ls.v2u;
+    pv2_heap & h = pv2_heap_of(mc, s);
+    auto it = h.res.find(s);
+    GGML_ASSERT(it != h.res.end() && it->second.id == pv2_id(mc, (size_t) (&ls - mc->layers.data()), e) && "pool-v2: the heap does not hold the expert its table names");
+    pv2_drop(h, s);
+    ls.at[e] = -1;
+    ls.n_own--;
+}
+// the pick p of heap h taken by expert e of layer li: what it covers leaves (evict_slot: tables, counts), the expert moves in
+void pv2_take(moe_cache * mc, pv2_heap & h, const pv2_pick & p, size_t li, int32_t e, int64_t heat, bool pin, size_t * n_ev = nullptr) {
+    std::vector<int32_t> ids;
+    for (size_t s : p.evict) { ids.push_back(h.res.at(s).id); }
+    for (int32_t id : ids) {
+        layer_state & lo = mc->layers[(size_t) (id / mc->v2.E)];
+        const int32_t x = id % mc->v2.E;
+        evict_slot(mc, lo, x);
+        pv2_out(mc, lo, x);   // one placed and never published (no table entry names it)
+        if (n_ev) { (*n_ev)++; }
+    }
+    pv2_put(mc, h, li, e, p.s, heat, pin);
+}
+// a main-heap window for expert e of layer li of heat `heat` near its heat target: the free window nearest it anywhere in the heap, else (heat above INT64_MIN)
+// residents colder than `heat` within reach (pv2_place). The target: its place in the heat order packed down from the top, the landing area skipped
+pv2_pick pv2_pick_main(moe_cache * mc, size_t li, int32_t e, int64_t heat, size_t reach) {
+    const layer_state & ls = mc->layers[li];
+    auto & v = mc->v2;
+    const size_t hole = v.H - v.M;
+    size_t t = pv2_target(v.main.lo, v.main.hi - hole, v.dist.empty() ? 0 : v.dist[(size_t) pv2_id(mc, li, e)], ls.v2n);
+    if (t >= v.M) { t += hole; }
+    pv2_pick p = pv2_place(v.main, t, ls.v2n, ls.v2u, std::numeric_limits<int64_t>::min(), v.main.hi - v.main.lo, true);
+    if (p.s != PV2_NONE || heat == std::numeric_limits<int64_t>::min()) { return p; }
+    return pv2_place(v.main, t, ls.v2n, ls.v2u, heat, reach, true);
+}
+// every resident's heat as the decode cache scores it now (once a step that places)
+void pv2_heat_now(moe_cache * mc) {
+    for (pv2_heap * h : { &mc->v2.main, &mc->v2.land }) {
+        for (auto & [s, r] : h->res) {
+            if (r.id >= 0) { r.heat = pv2_heat(mc, mc->layers[(size_t) (r.id / mc->v2.E)], r.id % mc->v2.E, false, 0.0); }
+        }
+    }
+}
+// the heat in force: every resident's and the main heap's targets (pv2_heat_dist). prompt: the placement heat, and the landing area's residents become leftovers (-1)
+void pv2_refresh(moe_cache * mc, bool prompt) {
+    auto & v = mc->v2;
+    const size_t N = mc->layers.size() * (size_t) v.E;
+    std::vector<int64_t> heat(N, -1);
+    std::vector<size_t>  nb(N, 0);
+    for (size_t li = 0; li < mc->layers.size(); ++li) {
+        const layer_state & ls = mc->layers[li];
+        double lsum = 0.0;
+        if (prompt) { for (uint64_t c : ls.glob_count) { lsum += (double) c; } }
+        for (int32_t e = 0; e < (int32_t) ls.expert_slot.size(); ++e) {
+            heat[(size_t) pv2_id(mc, li, e)] = pv2_heat(mc, ls, e, prompt, lsum);
+            nb[(size_t) pv2_id(mc, li, e)]   = ls.v2n;
+        }
+    }
+    v.dist = pv2_heat_dist(heat, nb);
+    for (auto & [s, r] : v.main.res) { if (r.id >= 0) { r.heat = heat[(size_t) r.id]; } }
+    for (auto & [s, r] : v.land.res) { if (r.id >= 0) { r.heat = prompt ? -1 : heat[(size_t) r.id]; } }
+}
+// bytes [a, b) of the card's buffer leave the heap for a while (a graph's lend, the KV zone, a retype's staging): queued uploads of the experts placed there are
+// dropped, finished unpublished ones discarded, running ones awaited; the experts there leave, the bytes are held. Takes the locks (upload queue, then cache).
+// false: an upload did not finish in 10 s (nothing held)
+bool pv2_take_range(moe_cache * mc, size_t a, size_t b, size_t * n_evict = nullptr) {
+    auto & v = mc->v2;
+    a = std::max(a, v.main.lo); b = std::min(b, v.main.hi);
+    if (a >= b) { return true; }
+    auto in_zone = [&](const upload_job & j) {
+        const layer_state & lo = mc->layers[j.layer_idx];
+        if (!lo.v2u || lo.at[j.slot] < 0) { return false; }
+        const size_t s = (size_t) lo.at[j.slot] * lo.v2u;
+        return s < b && s + lo.v2n > a;
+    };
+    auto drop = [&](const upload_job & j) {
+        layer_state & lo = mc->layers[j.layer_idx];
+        lo.slot_in_flight[j.slot] = false;
+        if (j.expert >= 0 && j.expert < (int32_t) lo.queued.size()) { lo.queued[j.expert] = 0; }
+        if (lo.expert_slot[j.expert] < 0) { pv2_out(mc, lo, j.expert); }
+    };
+    for (int spin = 0; spin < 200000; ++spin) {
+        {
+            std::lock_guard<std::mutex> wlk(mc->wmtx);
+            std::lock_guard<std::mutex> lk(mc->mtx);
+            for (auto it = mc->todo.begin(); it != mc->todo.end(); ) { if (in_zone(*it)) { drop(*it); it = mc->todo.erase(it); } else { ++it; } }
+            for (size_t k = 0; k < mc->done.size(); ) { if (in_zone(mc->done[k])) { drop(mc->done[k]); mc->done[k] = mc->done.back(); mc->done.pop_back(); } else { ++k; } }
+            bool busy = false;
+            std::vector<int32_t> ids;
+            for (pv2_heap * h : { &v.main, &v.land }) {
+                for (size_t s : pv2_overlap(*h, a, b)) {
+                    const int32_t id = h->res.at(s).id;
+                    busy = busy || mc->layers[(size_t) (id / v.E)].slot_in_flight[id % v.E];   // a worker copies into it right now
+                    ids.push_back(id);
+                }
+            }
+            if (!busy) {
+                for (int32_t id : ids) {
+                    layer_state & lo = mc->layers[(size_t) (id / v.E)];
+                    evict_slot(mc, lo, id % v.E);
+                    pv2_out(mc, lo, id % v.E);
+                    lo.queued[id % v.E] = 0;
+                    if (n_evict) { (*n_evict)++; }
+                }
+                const bool held = pv2_hold(v.main, a, b) && pv2_hold(v.land, a, b);
+                GGML_ASSERT(held && "pool-v2: a resident left in a stretch taken from the heap");
+                return true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+    return false;
+}
+// bytes [a, b) come back to the heap (free), never the landing area's place in the main heap; cache lock held
+void pv2_give_range(moe_cache * mc, size_t a, size_t b) {
+    auto & v = mc->v2;
+    if (a >= b) { return; }
+    if (a < v.M) { pv2_unhold(v.main, a, std::min(b, v.M)); }
+    if (b > v.H) { pv2_unhold(v.main, std::max(a, v.H), b); }
+    if (a < v.H && b > v.M) { pv2_unhold(v.land, std::max(a, v.M), std::min(b, v.H)); }
+}
+// The heap's held stretches follow the blocks the lend, the KV zone and CUDA's room hold (owner -2, -3, ROOM, of any class; the blocks stay the lend's and the
+// zone's bookkeeping): residents in a newly held stretch leave first (their uploads dropped or awaited, pv2_take_range), bytes no longer held come back free.
+// locked (cache lock held): only gives back. false: an upload into a new stretch did not finish in 10 s. *n_ev: the residents that left
+static bool pv2_sync(moe_cache * mc, bool locked, size_t * n_ev = nullptr) {
+    auto & v = mc->v2;
+    if (!v.on || v.ap_idx >= mc->alias.size()) { return true; }
+    const auto & ap = mc->alias[v.ap_idx];
+    std::vector<std::pair<size_t, size_t>> held;
+    {
+        std::unique_lock<std::mutex> lk(mc->mtx, std::defer_lock);
+        if (!locked) { lk.lock(); }
+        for (const auto & sg : ap.segs) {
+            const auto & ps = mc->pool[sg.pcls];
+            for (int32_t b = 0; b < sg.n && b < (int32_t) ps.owner.size(); ++b) {
+                const int32_t o = ps.owner[b];
+                if (o == -2 || o == -3 || o == POOLX_ROOM) { held.push_back({ sg.base + (size_t) b * sg.B, sg.base + (size_t) (b + 1) * sg.B }); }
+            }
+        }
+    }
+    std::sort(held.begin(), held.end());
+    std::vector<std::pair<size_t, size_t>> u;
+    for (const auto & r : held) { if (!u.empty() && r.first <= u.back().second) { u.back().second = std::max(u.back().second, r.second); } else { u.push_back(r); } }
+    if (u == v.held) { return true; }
+    for (const auto & r : u) {   // what is new: residents out, bytes held
+        bool old = false;
+        for (const auto & q : v.held) { old = old || (q.first <= r.first && r.second <= q.second); }
+        if (old) { continue; }
+        GGML_ASSERT(!locked && "pool-v2: a lend or zone grew where the heap is synced under the cache lock");
+        if (!pv2_take_range(mc, r.first, r.second, n_ev)) { return false; }
+    }
+    std::unique_lock<std::mutex> lk(mc->mtx, std::defer_lock);
+    if (!locked) { lk.lock(); }
+    size_t x = 0;
+    for (const auto & r : u) { pv2_give_range(mc, x, r.first); x = std::max(x, r.second); }
+    pv2_give_range(mc, x, v.main.hi);
+    v.held = u;
+    return true;
 }
 
 // the release's own hot map of a model: hotmaps/<state section>.ini beside the program (run.py packs one per model it measured, the test prompts'
@@ -2606,6 +2818,35 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
         }
     }
     mc->profile_ready.store(ok, std::memory_order_release);
+    if (mc->v2.on) {   // pool-v2: every expert by the map's heat, packed down from the heap's top (pv2_heat_dist), free windows only, until the heap is full
+        pv2_refresh(mc, true);
+        std::vector<std::pair<size_t, int32_t>> all;   // (main target distance, id)
+        for (size_t il = 0; il < mc->layers.size(); ++il) {
+            if (!mc->layers[il].v2u) { continue; }
+            for (int32_t e = 0; e < (int32_t) mc->layers[il].expert_slot.size(); ++e) { all.push_back({ mc->v2.dist[(size_t) pv2_id(mc, il, e)], pv2_id(mc, il, e) }); }
+        }
+        std::sort(all.begin(), all.end());
+        size_t bytes = 0;
+        for (const auto & [d, id] : all) {
+            const size_t il = (size_t) (id / mc->v2.E);
+            const int32_t e = id % mc->v2.E;
+            layer_state & ls = mc->layers[il];
+            if (ls.at[e] >= 0 || ls.queued[e]) { continue; }
+            const pv2_pick pk = pv2_pick_main(mc, il, e, std::numeric_limits<int64_t>::min(), 0);
+            if (pk.s == PV2_NONE) { continue; }   // a bigger expert's window may be gone where a smaller one's is not
+            pv2_put(mc, mc->v2.main, il, e, pk.s, 0, true);
+            ls.slot_in_flight[e] = true;
+            ls.queued[e]         = 1;
+            upload_job pj { il, e, e };
+            pj.t_queued = ggml_time_us();
+            mc->todo.push_back(pj);
+            bytes += ls.v2n;
+            queued++;
+        }
+        LLAMA_LOG_WARN("moe-cache: pool-v2: the boot fill places %zu experts (%.2f GB) by the map's heat, the hottest at the heap's top\n", queued, bytes / 1e9);
+        mc->wcv.notify_all();
+        return queued;
+    }
     std::stable_sort(picks.begin(), picks.end(), [](const pick & a, const pick & b) { return a.heat > b.heat; });
     if (!v2heat.empty()) {   // pool-v2 (c1): the heat order the heap packs by (ties to the lower id), still placed in free blocks by pick_slot
         picks.clear();
@@ -2789,6 +3030,14 @@ static const moe_cache::alias_pool * led_block(const moe_cache * mc, int32_t pcl
         }
     }
     return nullptr;
+}
+// a slot's bytes in its card's buffer (the upload gate and the range locks): its block, or with pool-v2 the expert's place in the heap
+static const moe_cache::alias_pool * slot_range(const moe_cache * mc, const layer_state & ls, int32_t slot, size_t & lo, size_t & hi) {
+    if (!ls.v2u) { return ls.pcls >= 0 ? led_block(mc, ls.pcls, slot, lo, hi) : nullptr; }
+    if (ls.at[slot] < 0 || mc->v2.ap_idx >= mc->alias.size()) { return nullptr; }
+    lo = (size_t) ls.at[slot] * ls.v2u;
+    hi = lo + ls.v2n;
+    return &mc->alias[mc->v2.ap_idx];
 }
 // an upload into block `slot` of layer li's class: at its start and at its end the block must still be that layer's (not lent, not the KV's, not another
 // layer's) and outside the zone's bytes
@@ -3716,6 +3965,7 @@ void publish_job(moe_cache * mc, const upload_job & j) {
     if (j.skipped) {
         ls.slot_in_flight[j.slot] = false;
         ls.queued[j.expert]       = 0;
+        if (ls.v2u && ls.expert_slot[j.expert] < 0) { pv2_out(mc, ls, j.expert); }   // pool-v2: it never landed, its place goes back to the heap
         return;
     }
     if (ls.expert_slot[j.expert] >= 0 && ls.expert_slot[j.expert] != j.slot) {   // --moe jit-all: the token needed it before this copy landed, the JIT
@@ -3735,6 +3985,7 @@ void publish_job(moe_cache * mc, const upload_job & j) {
     ls.up_t[j.expert]    = j.t_done;
     ls.up_cost[j.expert] = j.read_us + j.copy_us;
     ls.up_hits[j.expert] = 0;
+    if (pv2_res * r = pv2_find(mc, ls, j.expert)) { r->pin = false; }   // pool-v2: landed, it may leave for a hotter expert now
 }
 
 // an upload's pay-back is settled (decode hits x CPU eval time saved >= upload time): at its eviction, or at a segment end for an expert still cached (ctl_poll)
@@ -4785,9 +5036,10 @@ bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t 
         return false;
     }
     layer_state & ls = mc->layers[it->second.first];
+    if (mc->v2.on) { return false; }   // pool-v2 heap: no adoption from a staged pass (its blocks are pick_slot's)
     const int kind = it->second.second;
     ggml_tensor * c = kind == 0 ? ls.pub.up_c : kind == 1 ? ls.pub.gate_c : ls.pub.down_c;
-    if (!c || !c->buffer || slot_off(c, ls, 1) < weight->nb[2] || c->nb[1] != weight->nb[1] ||
+    if (!c || !c->buffer || slot_bytes(c, ls) < weight->nb[2] || c->nb[1] != weight->nb[1] ||
         ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
         return false;
     }
@@ -4958,7 +5210,7 @@ static std::vector<pv2_blk> pv2_shadow_blocks(moe_cache * mc, bool held_only) {
 }
 // pool-v2 (stage 2b): the shadow's held stretches follow the lent, zone and room blocks (cache lock held)
 static void pv2_shadow_held(moe_cache * mc) {
-    if (!mc->v2.on) { return; }
+    if (!mc->v2.shadow) { return; }
     std::vector<pv2_at> res;
     std::vector<std::pair<size_t, size_t>> u;
     pv2_expect(pv2_shadow_blocks(mc, true), res, u);
@@ -4968,7 +5220,7 @@ static bool pv2_strict() { static const bool v = moe_opt("stats") != nullptr; re
 // pool-v2 (stage 2b): the shadow against the classes, once a call (cache lock held); a mismatch is logged with its first differences, counted, fatal in a -dbg run
 static void pv2_shadow_check(moe_cache * mc, const char * when) {
     auto & v = mc->v2;
-    if (!v.on) { return; }
+    if (!v.shadow) { return; }
     std::vector<pv2_at> res;
     std::vector<std::pair<size_t, size_t>> u;
     pv2_expect(pv2_shadow_blocks(mc, false), res, u);
@@ -4997,7 +5249,7 @@ static void pv2_shadow_check(moe_cache * mc, const char * when) {
 }
 
 void set_table_entry(llama_moe_cache_layer_fork & pub, int32_t expert, int32_t slot_or_dummy) {
-    if (g_cache && g_cache->v2.on) { pv2_shadow_entry(g_cache, pub, expert, slot_or_dummy); }
+    if (g_cache && g_cache->v2.shadow) { pv2_shadow_entry(g_cache, pub, expert, slot_or_dummy); }
     if (pub.jit_n > 0 && slot_or_dummy != pub.n_slots + 1 && g_cache) {
         // the main cache takes (or drops) this expert: it leaves the JIT pool, or the pool chain would add it twice
         for (auto & l : g_cache->layers) {
@@ -5021,11 +5273,11 @@ void set_table_entry(llama_moe_cache_layer_fork & pub, int32_t expert, int32_t s
 
 
 // --moe pool-v2: the tbl_mul of the layer or stream shadow whose table pub is (1 without it)
-static int32_t tbl_mul_of(const llama_moe_cache_layer_fork * pub) {
+static const layer_state * tbl_layer(const llama_moe_cache_layer_fork * pub) {
     const moe_cache * mc = g_cache;
-    if (!mc || !mc->pv2) { return 1; }
-    for (const auto & l : mc->layers)  { if (&l.pub == pub) { return l.tbl_mul; } }
-    for (const auto & l : mc->shadows) { if (&l.pub == pub) { return l.tbl_mul; } }
+    if (!mc || !mc->pv2) { return nullptr; }
+    for (const auto & l : mc->layers)  { if (&l.pub == pub) { return &l; } }
+    for (const auto & l : mc->shadows) { if (&l.pub == pub) { return &l; } }
     GGML_ABORT("moe-cache: pool-v2: a device table of no layer and no shadow (layer %d)", pub->il);
 }
 
@@ -5047,9 +5299,10 @@ void flush_tables() {
         for (auto & x : v) {
             x = x >= pub->n_slots ? -1 : x;   // uncached (n_slots) and JIT pool experts (n_slots + 1): -1, which every kernel skips (no zero block is read)
         }
-        const int32_t mul = tbl_mul_of(pub);
-        if (mul != 1) { u = v; for (auto & x : u) { x = x < 0 ? x : x * mul; } }   // --moe pool-v2: a block is mul units of the views' nb[2]
-        ggml_backend_tensor_set(pub->dev_table, (mul != 1 ? u : v).data(), 0, v.size()*sizeof(int32_t));
+        const layer_state * tl = tbl_layer(pub);
+        const bool map = tl && (tl->v2u || tl->tbl_mul != 1);
+        if (map) { u = v; for (auto & x : u) { x = x < 0 ? x : tl->v2u ? tl->at[(size_t) x] : x * tl->tbl_mul; } }   // --moe pool-v2: a block is tbl_mul units of nb[2]; the heap: the expert's start
+        ggml_backend_tensor_set(pub->dev_table, (map ? u : v).data(), 0, v.size()*sizeof(int32_t));
         led_line("?", "table", 0, v.size()*sizeof(int32_t), tr_fmt("L%d device table", pub->il));
         if (guard_level() > 0) { std::lock_guard<std::mutex> lk(g_gtbl_mu); g_gtbl[pub] = v; }   // the guard reads its copies as slots
     }
@@ -5406,7 +5659,7 @@ static int moe_where_cb(const ggml_tensor * weight, int32_t lo, int32_t hi, ggml
             if (t[e] >= 0 && t[e] < ls.pub.n_slots) { data[e - lo] = GGML_MOE_ELSEWHERE; }
         }
     }
-    if (!c || !c->buffer || slot_off(c, ls, 1) < weight->nb[2] || c->nb[1] != weight->nb[1] ||
+    if (!c || !c->buffer || slot_bytes(c, ls) < weight->nb[2] || c->nb[1] != weight->nb[1] ||
         ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
         moe_where_count(hi - lo, 0, 0, hi - lo);
         if (lk >= 0) { mc->pf_ask[lk] += hi - lo; mc->pf_wrong[lk] += hi - lo; }
@@ -5457,7 +5710,7 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
         return false;
     };
     ggml_tensor * c = it->second.second == 0 ? ls.pub.up_c : it->second.second == 1 ? ls.pub.gate_c : ls.pub.down_c;
-    if (!c || !c->buffer || slot_off(c, ls, 1) < weight->nb[2] || c->nb[1] != weight->nb[1] ||
+    if (!c || !c->buffer || slot_bytes(c, ls) < weight->nb[2] || c->nb[1] != weight->nb[1] ||
         ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
         return streamed();
     }
@@ -5733,11 +5986,31 @@ static std::atomic<int> g_pp_k { -1 };   // staging slots the pass planner gave 
 // decode steps later. Blocks holding a published expert, being uploaded, free, lent to a graph (its tensors, the CUDA scratch, the staging slots), and the
 // card's free memory. A prompt must leave nothing behind: after it the lent count falls back to what a decode graph borrows and the refill
 // (reheat_free_blocks) turns the free blocks into experts again.
+// pool-v2: the heap's state in one phrase: experts held (main, landing), uploading, free bytes and those in gaps no expert of the card fits (stranded), held bytes
+static std::string pv2_state(const moe_cache * mc) {
+    const auto & v = mc->v2;
+    size_t n_min = SIZE_MAX;
+    for (const auto & l : mc->layers) { if (l.v2u) { n_min = std::min(n_min, l.v2n); } }
+    size_t nm = 0, bm = 0, nl = 0, bl = 0, nup = 0, fr = 0, st = 0, hd = 0;
+    for (const pv2_heap * h : { &v.main, &v.land }) {
+        for (const auto & [x, r] : h->res) {
+            if (r.id == PV2_HOLD) { hd += r.n; continue; }
+            (h == &v.main ? nm : nl)++;
+            (h == &v.main ? bm : bl) += r.n;
+            nup += mc->layers[(size_t) (r.id / v.E)].slot_in_flight[r.id % v.E];
+        }
+        for (const auto & [g, n] : h->gaps) { fr += n; st += n < n_min ? n : 0; }
+    }
+    hd -= std::min(hd, v.H - v.M);   // the landing area's own place in the main heap
+    return tr_fmt("%zu experts by heat (%.2f GB), %zu in the landing area (%.2f GB), %zu uploading, %.0f MiB free (%.0f MiB in gaps no expert fits), %.0f MiB lent or under the KV rows or CUDA's",
+            nm, bm / 1e9, nl, bl / 1e9, nup, fr / 1048576.0, st / 1048576.0, hd / 1048576.0);
+}
 static void pool_fill_log(moe_cache * mc, const char * when) {
     static const bool on = moe_log_has("f");
     if (!on) {
         return;
     }
+    if (mc->v2.on) { LLAMA_LOG_WARN("moe-cache: pool %s: pool-v2 heap: %s\n", when, pv2_state(mc).c_str()); return; }
     struct agg { ggml_backend_dev_t dev = nullptr; size_t n = 0, held = 0, up = 0, fr = 0, lent = 0, kv = 0; double b_held = 0, b_all = 0; };
     std::vector<agg> a;
     for (const auto & ps : mc->pool) {
@@ -5964,8 +6237,8 @@ static void kv_blocks_apply(moe_cache * mc, moe_cache::alias_pool & ap, size_t l
         }
         if (take.empty()) { continue; }
         const int32_t want_pcls = sg.pcls;
-        auto in_zone = [&](const upload_job & j) {
-            return j.layer_idx < mc->layers.size() && mc->layers[j.layer_idx].pcls == want_pcls && std::binary_search(take.begin(), take.end(), j.slot);
+        auto in_zone = [&](const upload_job & j) {   // (pool-v2: a slot is an expert, pv2_sync drops the heap's uploads in the zone)
+            return j.layer_idx < mc->layers.size() && mc->layers[j.layer_idx].pcls == want_pcls && !mc->layers[j.layer_idx].v2u && std::binary_search(take.begin(), take.end(), j.slot);
         };
         auto drop_job = [&](const upload_job & j) {
             layer_state & lo = mc->layers[j.layer_idx];
@@ -6014,7 +6287,12 @@ static void kv_blocks_apply(moe_cache * mc, moe_cache::alias_pool & ap, size_t l
         }, [&](int32_t b) { cls_take_bytes(mc, sg.pcls, b); }, tag);
         n_take += take.size();
     }
-    if (mc->v2.on) { std::lock_guard<std::mutex> lk(mc->mtx); pv2_shadow_held(mc); }   // pool-v2: the shadow hears the zone (and the room)
+    if (mc->v2.on) {   // pool-v2: the heap's experts in the zone leave, what it gave back is the heap's again
+        size_t n_ev = 0;
+        GGML_ASSERT(pv2_sync(mc, false, &n_ev) && "kv-tail: pool-v2: an upload into the bytes taken for the KV never finished");
+        n_evict += n_ev;
+    }
+    if (mc->v2.shadow) { std::lock_guard<std::mutex> lk(mc->mtx); pv2_shadow_held(mc); }   // pool-v2: the shadow hears the zone (and the room)
 }
 
 
@@ -6119,6 +6397,32 @@ static int g_kv_epoch_built = 0;
 // entered for writing (an upload DMA into it waits); when the lock is busy the fill is skipped this time, never done over a block that was just claimed.
 static void poison_free_blocks(moe_cache * mc, const moe_cache::alias_pool & ap) {
     if (!poison_on()) { return; }
+    if (mc->v2.on) {   // pool-v2: the heap's free extents (a block of a class is no expert's)
+        if (&ap != &mc->alias[mc->v2.ap_idx]) { return; }
+        std::vector<std::pair<size_t, size_t>> gaps;
+        {
+            std::lock_guard<std::mutex> lk(mc->mtx);
+            for (const pv2_heap * h : { &mc->v2.main, &mc->v2.land }) { for (const auto & [g, n] : h->gaps) { gaps.push_back({ g, g + n }); } }
+        }
+        for (const auto & [lo, hi] : gaps) {
+            pool_enter(ap, lo, hi, true);
+            if (mc->mtx.try_lock()) {
+                std::vector<std::pair<size_t, size_t>> runs;   // still free now that no DMA can start in the range
+                for (const pv2_heap * h : { &mc->v2.main, &mc->v2.land }) {
+                    auto g = h->gaps.upper_bound(lo);
+                    if (g != h->gaps.begin()) { --g; }
+                    for (; g != h->gaps.end() && g->first < hi; ++g) {
+                        const size_t a = std::max(lo, g->first), b = std::min(hi, g->first + g->second);
+                        if (a < b) { runs.push_back({ a, b }); }
+                    }
+                }
+                mc->mtx.unlock();
+                for (const auto & r : runs) { pool_fill(ap, r.first, r.second, 5); }
+            }
+            pool_leave(ap, lo, hi, true);
+        }
+        return;
+    }
     for (const auto & sg : ap.segs) {
         const auto & ps = mc->pool[sg.pcls];
         int32_t b = 0;
@@ -7848,8 +8152,8 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             // an adoption is cancelled (its device copy was queued before this graph on the same stream). The step publishes uploads only later,
             // so waiting for the publish would never end.
             const int32_t want_pcls = sg.pcls;
-            auto in_zone = [&](const upload_job & j) {
-                return j.layer_idx < mc->layers.size() && mc->layers[j.layer_idx].pcls == want_pcls && j.slot >= blocked && j.slot < need;
+            auto in_zone = [&](const upload_job & j) {   // (pool-v2: a slot is an expert, pv2_sync drops the heap's uploads in the lend)
+                return j.layer_idx < mc->layers.size() && mc->layers[j.layer_idx].pcls == want_pcls && !mc->layers[j.layer_idx].v2u && j.slot >= blocked && j.slot < need;
             };
             auto drop_job = [&](const upload_job & j) {
                 layer_state & lo = mc->layers[j.layer_idx];
@@ -7902,7 +8206,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                 continue;
             }
             std::lock_guard<std::mutex> lk(mc->mtx);
-            if (n_tokens > llama_moe_cache_max_batch_fork()) {
+            if (n_tokens > llama_moe_cache_max_batch_fork() && !mc->v2.on) {   // pool-v2: the heap's low end holds its coldest experts
                 keep_hot_move(mc, sched, ap, sg, blocked, need);
             }
             if (poolx_lend(ps, blocked, need, [&](int32_t o, int32_t b) {
@@ -7933,6 +8237,15 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             if (g_alias_err.empty()) { g_alias_err = std::string("kv-tail: a lend of ") + std::to_string(kv_lend_round(ap, need_b) / 1048576) + " MiB on " + ggml_backend_dev_name(ap.dev) + " reaches the KV zone at " + std::to_string(ap.kv_start / 1048576) + " MiB"; }
         }
     }
+    if (mc->v2.on) {   // pool-v2: the heap's experts in the lent bytes leave (their uploads dropped or awaited)
+        size_t n_ev = 0;
+        if (!pv2_sync(mc, false, &n_ev)) {
+            LLAMA_LOG_ERROR("moe-cache: compute alias: pool-v2: an upload into the lent bytes did not finish in 10 s, this pass is refused\n");
+            if (g_alias_err.empty()) { g_alias_err = "compute alias: pool-v2: an upload into the lent bytes did not finish in 10 s"; }
+        }
+        g_ac.evict_n += n_ev;
+        changed = changed || n_ev > 0;
+    }
     if (changed) {
         const int64_t s0 = ggml_time_us();
         // the previous graph may still read those blocks and the tables that point into them: it finishes first, then the tables change (flushed before
@@ -7943,7 +8256,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         g_ac.sync_us += ggml_time_us() - s0; g_ac.sync_n++;
     }
     room_lend(mc, sched, changed, n_tokens);   // CUDA's room grows here: after the sync, before this graph runs
-    if (mc->v2.on) { std::lock_guard<std::mutex> lk(mc->mtx); pv2_shadow_held(mc); }   // pool-v2: the shadow hears the lend (and the room)
+    if (mc->v2.shadow) { std::lock_guard<std::mutex> lk(mc->mtx); pv2_shadow_held(mc); }   // pool-v2: the shadow hears the lend (and the room)
     return false;
 }
 
@@ -7964,7 +8277,7 @@ static size_t alias_release(moe_cache * mc) {
         }
         ap.blocked = ap.segs.empty() ? 0 : ap.segs[0].blocked;
     }
-    if (n_back > 0) { pv2_shadow_held(mc); alias_cost_log("after a prompt"); }   // pool-v2: the shadow hears the lend back
+    if (n_back > 0) { if (mc->v2.on) { pv2_sync(mc, true); } pv2_shadow_held(mc); alias_cost_log("after a prompt"); }   // pool-v2: the bytes back to the heap (the shadow hears the lend back)
     return n_back;
 }
 
@@ -7988,10 +8301,85 @@ static bool fixed_on() { static const bool v = [] { const char * e = moe_opt("fi
 // --moe reheat-all=1: every refill job at normal priority, not only each layer's top k. The background part waited behind the decode steps' own misses: after a
 // 15.5k prompt on one card the refill of 2.7-6.5 GB took ~1.1 s (2.4-5.9 GB/s of a 26.6 GB/s link) and its 68 tokens ran at 16.1 ms against 12.6 (Qwen3.8 IQ3_S, 2026-11-20)
 static bool reheat_all() { static const bool v = [] { const char * e = moe_opt("reheat-all"); return e && atoi(e) != 0; }(); return v; }
+// pool-v2: the missing experts by the decode score, each layer's top k first (poolx_refill_parts, as reheat_free_blocks), hottest first
+struct pv2_miss { int8_t part; double sc; size_t li; int32_t e; };
+static std::vector<pv2_miss> pv2_missing(moe_cache * mc, bool ini_only) {
+    std::vector<pv2_miss> c;
+    const int32_t k = (int32_t) std::max<int64_t>(0, mc->n_expert_used);
+    std::vector<double> sc;
+    std::vector<bool>   held;
+    for (size_t li = 0; li < mc->layers.size(); ++li) {
+        const layer_state & ls = mc->layers[li];
+        if (!ls.v2u) { continue; }
+        const int32_t ne = (int32_t) ls.expert_slot.size();
+        sc.assign((size_t) ne, 0.0);
+        held.assign((size_t) ne, false);
+        for (int32_t e = 0; e < ne; ++e) {
+            held[(size_t) e] = ls.at[(size_t) e] >= 0 || ls.queued[e];
+            sc[(size_t) e] = ini_only && !g_topic_on.load(std::memory_order_relaxed) ? (double) ls.glob_count[e] / (double) std::max<uint64_t>(1, mc->gmax_all) : xscore(mc, ls, e);
+        }
+        const std::vector<int8_t> part = poolx_refill_parts(sc, held, k);
+        for (int32_t e = 0; e < ne; ++e) { if (part[(size_t) e] > 0) { c.push_back({ part[(size_t) e], sc[(size_t) e], li, e }); } }
+    }
+    std::sort(c.begin(), c.end(), [](const pv2_miss & a, const pv2_miss & b) { return a.part != b.part ? a.part < b.part : a.sc > b.sc; });
+    return c;
+}
+// pool-v2: an upload of expert e of layer li into its place (cache lock held); part 1 at normal priority when the caller waits, the rest behind decode's misses
+static upload_job pv2_job(moe_cache * mc, size_t li, int32_t e, bool wait, int8_t part) {
+    layer_state & ls = mc->layers[li];
+    ls.slot_in_flight[e] = true;
+    ls.queued[e]         = 1;
+    upload_job j { li, e, e };
+    j.bg       = !(fixed_on() || (wait && (part == 1 || reheat_all())));
+    j.refill   = true;
+    j.t_queued = ggml_time_us();
+    return j;
+}
+static void pv2_queue(moe_cache * mc, const std::vector<upload_job> & jobs) {
+    if (jobs.empty()) { return; }
+    {
+        std::lock_guard<std::mutex> wlk(mc->wmtx);
+        for (const auto & j : jobs) { mc->todo.push_back(j); }
+        mc->n_reheat += jobs.size();
+    }
+    mc->wcv.notify_all();
+}
+// pool-v2: the main heap's free windows to the missing experts, hottest first, each into the free window nearest its heat target (cache lock held)
+static size_t pv2_fill_free(moe_cache * mc, bool wait, bool ini_only) {
+    auto & v = mc->v2;
+    size_t gmax = 0;
+    for (const auto & [g, n] : v.main.gaps) { gmax = std::max(gmax, n); }
+    std::vector<upload_job> jobs;
+    double bytes = 0.0, bytes1 = 0.0;
+    size_t n1 = 0;
+    for (const auto & c : pv2_missing(mc, ini_only)) {
+        layer_state & ls = mc->layers[c.li];
+        if (ls.v2n > gmax) { continue; }
+        const pv2_pick pk = pv2_pick_main(mc, c.li, c.e, std::numeric_limits<int64_t>::min(), 0);
+        if (pk.s == PV2_NONE) { continue; }
+        pv2_put(mc, v.main, c.li, c.e, pk.s, std::llround(1e6 * c.sc), true);
+        jobs.push_back(pv2_job(mc, c.li, c.e, wait, c.part));
+        bytes += ls.v2n;
+        if (!jobs.back().bg) { n1++; bytes1 += ls.v2n; }
+        gmax = 0;
+        for (const auto & [g, n] : v.main.gaps) { gmax = std::max(gmax, n); }
+    }
+    pv2_queue(mc, jobs);
+    static int logged = 0;
+    if (!jobs.empty() && logged++ < 16) {
+        LLAMA_LOG_WARN("moe-cache: pool-v2: %zu experts (%.2f GB) queued into the heap's free windows, best score first: %zu (%.2f GB) at normal priority, the rest in the background\n",
+                jobs.size(), bytes / 1e9, n1, bytes1 / 1e9);
+    }
+    return jobs.size();
+}
+
 static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = false) {   // ini_only: by the lifetime counts alone (the state ini's hot map and this run's use), no recent window
     static const bool on = [] { const char * e = moe_opt("reheat"); return !e || atoi(e) != 0; }();
     if (!on) {
         return 0;
+    }
+    if (mc->v2.on) {
+        return pv2_fill_free(mc, wait, ini_only);
     }
     struct cand { int8_t part; double sc; size_t li; int32_t e; };
     std::vector<upload_job> jobs;
@@ -10169,6 +10557,15 @@ static size_t pv2_layer_unit(const llama_layer * l, size_t B) {
     const size_t u = pv2_shape_of(sl).u;
     return B % u == 0 ? u : B;
 }
+// the heap's shape of a layer's expert (stage 2-3): its slices' offsets and bytes (the class's), the unit its start steps by (pv2_layer_unit)
+static pv2_shape pv2_layer_shape(const llama_layer * l, size_t B) {
+    const ggml_tensor * t[3] = { l->ffn_up_exps, l->ffn_gate_exps, l->ffn_down_exps };
+    poolx_slice sl[3];
+    for (int k = 0; k < 3; ++k) { sl[k] = { t[k]->nb[2], ggml_type_size(t[k]->type), (size_t) ggml_blck_size(t[k]->type), (size_t) t[k]->ne[0] }; }
+    pv2_shape sh = pv2_shape_of(sl);
+    sh.u = pv2_layer_unit(l, B);
+    return sh;
+}
 
 static pool_layout_t pool_layout(const std::vector<const llama_layer *> & ls) {
     pool_layout_t out;
@@ -11112,6 +11509,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         cls_txt += tr_fmt(", 0 x %.2f MiB (%zu layers of other cards, grid of %d)", fc.B / 1048576.0, fc.members.size(), gnf);
                     }
                 }
+                // --moe pool-v2, stage 2-3: one heap over the card's pool, the views of every layer over all of it (one buffer, the stream into the cache)
+                mc->v2.on = mc->pv2 && pp_no_staging() && !split && ubufs.size() == 1;
                 for (size_t i = 0; i < cands.size(); ++i) {
                     layer_state * ls = nullptr;
                     for (auto & l : mc->layers) {
@@ -11120,6 +11519,28 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     const size_t       ci = pl.lay_cls[i];
                     const pool_class & cl = pl.cls[ci];
                     const int32_t      n  = gn[ci];   // the class's grid (its blocks, and with a grid the neighbours' bytes before them)
+                    if (mc->v2.on) {   // an expert's start is any multiple of the unit in [0, tail_all - its bytes]: the views reach that far, the tables hold start / unit
+                        const pv2_shape sh = pv2_layer_shape(ll[i], cl.B);
+                        GGML_ASSERT(sh.off[0] == cl.off[0] && sh.off[1] == cl.off[1] && sh.off[2] == cl.off[2] && sh.n <= cl.B && sh.n <= tail_all && "pool-v2: the heap's expert shape is not the class's");
+                        const int64_t ne2 = (int64_t) ((tail_all - sh.n) / sh.u) + 1;
+                        ggml_tensor * t3[3] = { ls->pub.up_c, ls->pub.gate_c, ls->pub.down_c };
+                        for (int k = 0; k < 3; ++k) {
+                            t3[k]->ne[2]  = ne2;
+                            t3[k]->nb[2]  = sh.u;
+                            t3[k]->nb[3]  = sh.u * (size_t) ne2;
+                            t3[k]->buffer = pbuf;
+                            t3[k]->data   = (uint8_t *) ggml_backend_buffer_get_base(pbuf) + cl.off[k];
+                        }
+                        const int32_t E = (int32_t) ll[i]->ffn_up_exps->ne[2];
+                        ls->pub.n_slots = E;   // a slot is the expert; E marks "uncached" in the host tables (-1 in the device tables)
+                        ls->pcls        = (int32_t) (pool0 + ci);
+                        ls->tbl_mul     = 1;
+                        ls->n_cache     = slots;
+                        ls->at.assign((size_t) E, -1);
+                        ls->v2n = sh.n; ls->v2u = sh.u; ls->v2p = poolx_up(sh.n, sh.u);
+                        mc->v2.E = std::max(mc->v2.E, E);
+                        continue;
+                    }
                     // --moe pool-v2: the views step by the layer's unit, a block is B / u steps; the last block's slices stay inside the view (the backend's
                     // bounds check) and so does nothing past it
                     const size_t       u  = mc->pv2 ? pv2_layer_unit(ll[i], cl.B) : cl.B;
@@ -11267,9 +11688,18 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                     ap.span_full = ap.span;
                     kv_tail_bind(ap);
-                    if (mc->pv2 && !split && ubufs.size() == 1) {   // pool-v2 stage 2b: the card's heap as the classes' shadow
+                    if (mc->v2.on) {   // the heap: [0, floor_end) and the tail area by heat, [floor_end, tail_end) the landing area (the stream's reserve)
                         auto & v = mc->v2;
-                        v.on     = true;
+                        v.M = ap.floor_end; v.H = ap.tail_end; v.ap_idx = mc->alias.size();
+                        v.main = pv2_make(0, ap.tail_real);
+                        pv2_hold(v.main, v.M, v.H);
+                        v.land = pv2_make(v.M, v.H);
+                        LLAMA_LOG_WARN("moe-cache: pool-v2 heap on %s: experts by heat in [0, %.0f) and [%.0f, %.0f) MiB, the landing area [%.0f, %.0f) MiB (%.0f MiB); no size classes "
+                                "for experts, the lend, the KV zone and CUDA's room take bytes from it\n", ggml_backend_buft_name(buft), v.M / 1048576.0, v.H / 1048576.0,
+                                ap.tail_real / 1048576.0, v.M / 1048576.0, v.H / 1048576.0, (v.H - v.M) / 1048576.0);
+                    } else if (mc->pv2 && !split && ubufs.size() == 1) {   // pool-v2 stage 2b: the card's heap as the classes' shadow
+                        auto & v = mc->v2;
+                        v.shadow = true;
                         v.ap_idx = mc->alias.size();
                         v.main   = pv2_make(0, ap.tail_real);
                         v.cls_base.assign(mc->pool.size(), SIZE_MAX);
@@ -11698,7 +12128,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
                 if (ls.pcls >= 0) {
                     size_t blo = 0, bhi = 0;
-                    const moe_cache::alias_pool * bap = led_block(mc, ls.pcls, j.slot, blo, bhi);
+                    const moe_cache::alias_pool * bap = slot_range(mc, ls, j.slot, blo, bhi);
                     if (bap && !pool_gate(*bap, blo, bhi, "upload")) {
                         std::lock_guard<std::mutex> lk(mc->wmtx);
                         j.skipped = true; j.done = true;
@@ -11710,7 +12140,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                 }
                 size_t ulo = 0, uhi = 0;
-                const moe_cache::alias_pool * uap = ls.pcls >= 0 ? led_block(mc, ls.pcls, j.slot, ulo, uhi) : nullptr;
+                const moe_cache::alias_pool * uap = slot_range(mc, ls, j.slot, ulo, uhi);
                 if (uap && !pool_try_enter(*uap, ulo, uhi, true)) {
                     std::lock_guard<std::mutex> lk(mc->wmtx);
                     j.skipped = true; j.done = true;
@@ -12311,7 +12741,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
         }
     };
     if (!prompt) { need_all(); }
-    if (!mc || knobs().jit == 0 || !experts_in_file_layout(pub)) {   // repacked: the misses stay with the CPU, which runs that layout
+    if (!mc || knobs().jit == 0 || !experts_in_file_layout(pub) || mc->v2.on) {   // repacked: the misses stay with the CPU, which runs that layout; pool-v2: no JIT upload into the heap yet
         if (prompt) { need_all(); }
         return;
     }
@@ -13336,8 +13766,109 @@ static void cs_tail_moves(moe_cache * mc, int32_t pc, const std::vector<int32_t>
         }
     }
 }
+// pool-v2 (stage 3): the residents of stream entry q pinned (planned: its kernels will read them) or not (its layer's compute is queued: a copy over them waits for it)
+static void pv2_pin_entry(moe_cache * mc, size_t q, bool pin) {   // cache lock held
+    if (q >= mc->cs_order.size() || mc->cs_order[q] >= mc->layers.size()) { return; }
+    layer_state & ls = mc->layers[mc->cs_order[q]];
+    if (!ls.v2u) { return; }
+    const int32_t e0 = q < mc->cs_rng.size() ? std::max(0, mc->cs_rng[q].first) : 0;
+    const int32_t e1 = q < mc->cs_rng.size() ? std::min((int32_t) ls.at.size(), mc->cs_rng[q].second) : (int32_t) ls.at.size();
+    for (int32_t e = e0; e < e1; ++e) {
+        if (pv2_res * r = pv2_find(mc, ls, e)) { r->pin = pin || ls.slot_in_flight[e]; }
+    }
+}
+// pool-v2 (stage 3): an entry's experts into the heap. One it holds stays, pinned until its layer's compute is queued; else, by the map's heat, the main heap
+// (a free window first, else residents colder than it within reach), else the landing area at its cursor over anything not pinned (what is left there belongs
+// to computed layers or earlier calls). A victim whose layer computed in this pass makes the copy wait for that compute. false: no place for every expert yet
+// (an entry ahead: the next split frees some), and nothing changed but the victims gone
+static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t & wait_at) {   // cache lock held
+    auto & v = mc->v2;
+    const size_t li = mc->cs_order[p];
+    GGML_ASSERT(li < mc->layers.size() && mc->layers[li].v2u && "pool-v2: a stream entry of a shadow, or of a layer outside the heap");
+    layer_state & ls = mc->layers[li];
+    out.clear();
+    wait_at = 0;
+    for (; v.done_seen < mc->cs_done[ls.link]; ++v.done_seen) { pv2_pin_entry(mc, v.done_seen, false); }
+    const int32_t e0 = p < mc->cs_rng.size() ? std::max(0, mc->cs_rng[p].first) : 0;
+    const int32_t e1 = p < mc->cs_rng.size() ? std::min((int32_t) ls.expert_slot.size(), mc->cs_rng[p].second) : (int32_t) ls.expert_slot.size();
+    std::vector<int32_t> want;
+    for (int32_t e = e0; e < e1; ++e) {
+        if (ls.expert_slot[e] < 0) { want.push_back(e); }
+        else if (pv2_res * r = pv2_find(mc, ls, e)) { r->pin = true; v.n_used++; }
+    }
+    if (want.empty()) { return true; }
+    // the landing area must hold what the main heap may not take: its free bytes and its residents not pinned (a fragment may still refuse one: undone below)
+    size_t room = 0;
+    for (const auto & [g, n] : v.land.gaps) { room += n; }
+    for (const auto & [x, r] : v.land.res) { room += r.pin ? 0 : r.n; }
+    if (room < want.size() * ls.v2p) { return false; }
+    double lsum = 0.0;
+    for (uint64_t c : ls.glob_count) { lsum += (double) c; }
+    const size_t done = mc->cs_done[ls.link];
+    auto victim = [&](const pv2_heap & h, const pv2_pick & pk) {   // the computed layers whose kernels the copy waits for
+        for (size_t x : pk.evict) {
+            const int32_t id = h.res.at(x).id;
+            const int32_t q = mc->cs_pos[(size_t) (id / v.E)];
+            if (q >= 0 && (size_t) q < done) {
+                GGML_ASSERT((size_t) q < mc->cs_cov.size() && mc->cs_cov[(size_t) q] >= q);
+                wait_at = std::max(wait_at, (size_t) mc->cs_cov[(size_t) q] + 1);
+            }
+        }
+    };
+    std::vector<int32_t> placed;
+    size_t n_heat = 0, b_heat = 0, n_land = 0, n_ev = 0;
+    for (int32_t e : want) {
+        const int64_t hx = pv2_heat(mc, ls, e, true, lsum);
+        pv2_pick pk = pv2_pick_main(mc, li, e, hx, v.reach);
+        if (pk.s != PV2_NONE) {
+            victim(v.main, pk);
+            pv2_take(mc, v.main, pk, li, e, hx, true, &n_ev);
+            n_heat++; b_heat += ls.v2n;
+        } else {
+            const size_t t = v.cur < v.M || v.cur + ls.v2n > v.H ? v.M : v.cur;
+            pk = pv2_place(v.land, t, ls.v2n, ls.v2u, std::numeric_limits<int64_t>::max() - 1, v.H - v.M, false);
+            if (pk.s == PV2_NONE) {   // a fragment refused it: the entry waits for the next split
+                for (int32_t x : placed) { pv2_out(mc, ls, x); }
+                return false;
+            }
+            victim(v.land, pk);
+            pv2_take(mc, v.land, pk, li, e, -1, true, &n_ev);
+            v.cur = pk.s + ls.v2n;
+            n_land++;
+        }
+        placed.push_back(e);
+    }
+    v.n_heat += n_heat; v.b_heat += b_heat; v.n_land += n_land; v.b_land += n_land * ls.v2n; v.n_evict += n_ev;
+    const double S   = (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]);
+    const double rlb = mc->gbs_link[ls.link] * 1e3;
+    for (int32_t e : want) {
+        ls.slot_in_flight[e] = true;   // until the layer's split: the lend and the KV zone wait for it
+        ls.ring_slots.push_back(e);
+        ls.slot_expert[e]   = e;
+        ls.expert_slot[e]   = e;
+        ls.slot_last_use[e] = ++mc->clock;
+        set_table_entry(ls.pub, e, e);
+        ls.cached_since[e] = mc->n_steps + 1;
+        ls.up_t[e]    = ggml_time_us();
+        ls.up_cost[e] = rlb > 0 ? (float) (S / rlb) : 0.0f;
+        ls.up_hits[e] = 0;
+        mc->up_bytes += (int64_t) S; mc->link_bytes[ls.link] += (int64_t) S; mc->cs_b_plan += (uint64_t) S;
+        pu_note(mc, li, ls.link, S, false);
+        out.push_back({ e, e });
+    }
+    mc->cs_n_up += want.size();
+    mc->cs_n_free += n_heat; mc->cs_n_done += n_land;
+    ls.ring_pending = true;
+    return true;
+}
+
 static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t & wait_at, const std::vector<uint8_t> * sel = nullptr, bool late = false, bool cheap = false,
                     std::vector<cs_mv> * mvs = nullptr) {   // cache lock held; mvs: --moe cs-tail's moves (none without)
+    if (mc->v2.on) {   // pool-v2: no k arm, no late fix, no mix, no cs-tail (pp_decide keeps them off)
+        GGML_ASSERT(!sel && !late && "pool-v2: the k arm's lists reached the heap's stream");
+        if (mvs) { mvs->clear(); }
+        return cs_plan_v2(mc, p, out, wait_at);
+    }
     ring_hot_cuts(mc);
     const size_t li = mc->cs_order[p];
     layer_state & ls = csl(mc, li);
@@ -13611,11 +14142,15 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, s
         mc->cs_rel[link].push_back({ li, { keys[0], keys[1], keys[2] }, std::move(need) });   // its blocks go back once its uploads landed (cs_release_pool)
     }
     uint64_t up_bytes = 0;
+    // a slot's bytes from the views' start: its block (pool-v2 stage 1: tbl_mul units of nb[2]), or the heap's start of the expert; a run's pitch: the block, or the
+    // expert's bytes up to its unit (pool-v2: experts packed back to back)
+    const auto off_of = [&](int32_t b, size_t B) { return ls.v2u ? (size_t) ls.at[(size_t) b] * ls.v2u : (size_t) b * B; };
+    const auto adjacent = [&](int32_t a, int32_t b, size_t n) { return ls.v2u ? (size_t) ls.at[(size_t) b] * ls.v2u == (size_t) ls.at[(size_t) a] * ls.v2u + n * ls.v2p : b == a + (int32_t) n; };
     for (size_t i = 0; i < cps.size(); ) {
         size_t n = 1;   // a run: consecutive experts into consecutive blocks (host weights are one array per tensor; the RAM pool's blocks are not)
-        while (!rp && i + n < cps.size() && cps[i + n].e == cps[i].e + (int32_t) n && cps[i + n].b == cps[i].b + (int32_t) n) { ++n; }
+        while (!rp && i + n < cps.size() && cps[i + n].e == cps[i].e + (int32_t) n && adjacent(cps[i].b, cps[i + n].b, n)) { ++n; }
         for (int k = 0; k < 3; ++k) {
-            const size_t sz = srcs[k]->nb[2], B = slot_off(dsts[k], ls, 1);   // a block (pool-v2: tbl_mul units of nb[2])
+            const size_t sz = srcs[k]->nb[2], B = ls.v2u ? ls.v2p : slot_off(dsts[k], ls, 1);   // a block (pool-v2: tbl_mul units of nb[2]; the heap: the run's pitch)
             const char * rpp = rp ? ggml_rampool_use_fork(srcs[k], cps[i].e) : nullptr;   // shortcut: the pool block is not held until the copy lands (no pool eviction while it fits in RAM)
             std::unique_lock<std::mutex> jl(mc->jit_mu, std::defer_lock);
             if (rp && !rpp) { jl.lock(); }
@@ -13626,7 +14161,7 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, s
             const bool past_next = pb0 > 0 && nx == (const char *) srcs[k]->data + (size_t) (cps[i].e + 1)*sz;
             const char * dr = rp && !rpp ? jit_direct_src(mc, rb, srcs[k], (size_t) cps[i].e*sz, sz + (past_next ? pb0 : 0), (int) mc->n_expert_used) : nullptr;
             if (rp && !rpp) { (dr ? mc->cs_n_direct : mc->cs_n_map)++; }
-            ggml_backend_tensor_set_2d_async(rb, dsts[k], rpp ? rpp : dr ? dr : (const char *) srcs[k]->data + (size_t) cps[i].e*sz, (size_t) cps[i].b*B, sz, n, B, sz);
+            ggml_backend_tensor_set_2d_async(rb, dsts[k], rpp ? rpp : dr ? dr : (const char *) srcs[k]->data + (size_t) cps[i].e*sz, off_of(cps[i].b, B), sz, n, B, sz);
             // a run from the tensor itself: each slice's past bytes are the next expert's first bytes, one strided copy for the run (one copy per expert was 12461 copies
             // before a Qwen3.8 12k split pass's first kernel: 650 ms of the scheduler thread). The tensor's last expert, when in the run, takes its zeros below.
             size_t m0 = 0;
@@ -13635,7 +14170,7 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, s
                 if (const size_t pb = expert_past(mc, ls, k, cps[i].e, srcs[k], from)) {
                     m0 = poolx_past_rows(cps[i].e, n, srcs[k]->ne[2]);
                     if (m0 > 0) {
-                        ggml_tensor z = expert_past_view(dsts[k], (size_t) cps[i].b*B + sz, (m0 - 1)*B + pb);
+                        ggml_tensor z = expert_past_view(dsts[k], off_of(cps[i].b, B) + sz, (m0 - 1)*B + pb);
                         ggml_backend_tensor_set_2d_async(rb, &z, (const char *) srcs[k]->data + (size_t) (cps[i].e + 1)*sz, 0, pb, m0, B, sz);
                         mc->cs_b_past[link] += pb*m0;
                     }
@@ -13646,7 +14181,7 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, s
             for (size_t m = m0; m < n; ++m) {   // what a matmul reads past each slice (classes with rows not a multiple of 512 values)
                 const char * from = nullptr;
                 if (const size_t pb = expert_past(mc, ls, k, cps[i + m].e, srcs[k], from)) {
-                    ggml_tensor z = expert_past_view(dsts[k], (size_t) cps[i + m].b*B + sz, pb);
+                    ggml_tensor z = expert_past_view(dsts[k], off_of(cps[i + m].b, B) + sz, pb);
                     ggml_backend_tensor_set_async(rb, &z, rpp ? rpp + sz : dr && past_next ? dr + sz : from, 0, pb);
                     mc->cs_b_past[link] += pb;
                 }
@@ -13745,6 +14280,35 @@ static void cs_drain(moe_cache * mc) {   // every planned job copied: a pass's s
 static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id, int n_splits, uint64_t uid);   // below
 
 // before a graph of a cstream call runs (pp_freeze, after pp_settle): the pass's layer order, the events, the upload streams' start. Nothing is copied here.
+// pool-v2 (stage 3), a cstream pass begins (cache lock held): the last pass's pins off (its kernels are done before this pass's copies start, cs_start_ev); a layer
+// outside the stream graph keeps its main-heap experts pinned (its path reads them during the pass). The call's first pass: the map's heat in force (the landing
+// area's residents are leftovers), the call's counts zeroed, a layer outside the graph drops what it holds in the landing area. true: tables changed
+static bool pv2_pass_begin(moe_cache * mc, bool first) {
+    auto & v = mc->v2;
+    bool any = false;
+    if (first) {
+        pv2_refresh(mc, true);
+        v.n_heat = v.b_heat = v.n_land = v.b_land = v.n_used = v.n_evict = 0;
+        std::vector<int32_t> out;
+        for (const auto & [x, r] : v.land.res) { if (r.id >= 0 && mc->cs_pos[(size_t) (r.id / v.E)] < 0 && !mc->layers[(size_t) (r.id / v.E)].slot_in_flight[r.id % v.E]) { out.push_back(r.id); } }
+        for (int32_t id : out) {
+            layer_state & lo = mc->layers[(size_t) (id / v.E)];
+            evict_slot(mc, lo, id % v.E);
+            pv2_out(mc, lo, id % v.E);
+            any = true;
+        }
+    }
+    for (pv2_heap * h : { &v.main, &v.land }) {
+        for (auto & [x, r] : h->res) {
+            if (r.id < 0) { continue; }
+            const size_t li = (size_t) (r.id / v.E);
+            r.pin = mc->cs_pos[li] < 0 || mc->layers[li].slot_in_flight[r.id % v.E];
+        }
+    }
+    v.done_seen = 0;
+    return any;
+}
+
 static void cs_begin(moe_cache * mc) {
     static const bool hooked = [] { ggml_sched_set_split_hook_fork(cs_split_cb); return true; }();   // in front of the ledger's or guard's hook (g_cs_hook_next)
     GGML_UNUSED(hooked);
@@ -13842,6 +14406,10 @@ static void cs_begin(moe_cache * mc) {
             for (int k = 0; k < mc->n_links; ++k) { if (mc->link_be[k]) { ggml_backend_synchronize(mc->link_be[k]); } }
             flush_tables();   // no kernel runs: the device tables say "uncached" before the layer's path reads them
         }
+    }
+    if (mc->v2.on && pv2_pass_begin(mc, !g_cs_live.load())) {
+        for (int k = 0; k < mc->n_links; ++k) { if (mc->link_be[k]) { ggml_backend_synchronize(mc->link_be[k]); } }
+        flush_tables();
     }
     mc->cs_pass++;
     const int64_t t_b4 = ggml_time_us();
@@ -14055,7 +14623,7 @@ static void cs_end(moe_cache * mc) {
             l.ring_pending = false;
         }
         cs_shadow_drop(mc);
-        cls_home(mc);
+        if (!mc->v2.on) { cls_home(mc); }   // pool-v2: no claims of other classes' bytes
         if (mc->cs_masked) {   // device tables held only their pass's range of experts: every layer's goes out again from its host table
             mc->cs_masked = false;
             std::lock_guard<std::mutex> lk(g_tbl_mtx);
@@ -14327,6 +14895,7 @@ static void pp_pred_log(moe_cache * mc) {
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids) {
     moe_cache * mc = g_cache;
     GGML_ASSERT(mc != nullptr);
+    GGML_ASSERT(!mc->v2.on && "pool-v2: the prompt chain's uploads are not on the heap yet (pp_decide keeps the chain off)");
     struct ahead_cp { layer_state * l; int32_t e, slot; };
     std::vector<ahead_cp>      ahead_cps;   // pp-ahead: copies chosen under the lock below, issued after it
     std::vector<layer_state *> ahead_ls;
@@ -15239,6 +15808,9 @@ bool llama_moe_cache_swap_layers_fork(int il_a, int il_b) {
     if (!mc) {
         return true;   // no expert cache: nothing to move
     }
+    if (mc->v2.on) {
+        return false;   // pool-v2: one card, no layer moves between cards
+    }
     size_t ia = SIZE_MAX, ib = SIZE_MAX;
     for (size_t i = 0; i < mc->layers.size(); ++i) {
         if (mc->layers[i].pub.il == il_a) { ia = i; }
@@ -15585,7 +16157,8 @@ static void tables_check(moe_cache * mc) {
         for (int64_t e = 0; e < ne; ++e) {
             const int32_t s = h[e];
             if (s < 0 || s >= ls.pub.n_slots) { continue; }   // uncached (n_slots) or in the JIT pool (n_slots + 1)
-            const int32_t own = s < (int32_t) ps.owner.size() ? ps.owner[s] : -9;
+            const int32_t own = ls.v2u ? (pv2_find(mc, const_cast<layer_state &>(ls), (int32_t) e) ? (int32_t) li : -9) :   // pool-v2: the heap holds it
+                                s < (int32_t) ps.owner.size() ? ps.owner[s] : -9;
             const int32_t has = s < (int32_t) ls.slot_expert.size() ? ls.slot_expert[s] : -9;
             if (own == (int32_t) li && has == (int32_t) e) { continue; }
             // the prompt's preheat (moe_fill_cb) gave this block to another layer; the entry is reset below in this step, and no graph of the call read it (one-card stream passes read their copies)
@@ -16207,6 +16780,31 @@ void llama_moe_cache_step_fork() {
                 mc->pr[6]++;
                 continue;
             }
+            if (ls.v2u) {   // pool-v2: a window of the heap near its heat target, free first, else over residents colder than it by the pay-back margin
+                if (mc->v2.heat_step != mc->n_steps) { pv2_heat_now(mc); mc->v2.heat_step = mc->n_steps; }
+                const int64_t hx = pv2_heat(mc, ls, id, false, 0.0);
+                const pv2_pick pk = pv2_pick_main(mc, li, id, std::llround(1e6 * (xscore(mc, ls, id) - pay_back(link_margin[ls.link]))), mc->v2.reach);
+                if (pk.s == PV2_NONE) {
+                    mc->pr[7] += ls.pending.end() - it;
+                    break;   // candidates are sorted: nothing colder in reach for a colder one either
+                }
+                if (!pk.evict.empty()) {
+                    if (budget-- <= 0) {
+                        mc->pr[8] += ls.pending.end() - it;
+                        break;
+                    }
+                    mc->pr[5]++;
+                }
+                mc->pr[4] += pk.evict.empty();
+                pv2_take(mc, mc->v2.main, pk, li, id, hx, true);
+                ls.slot_in_flight[id] = true;
+                ls.queued[id]         = 1;
+                std::lock_guard<std::mutex> wlk(mc->wmtx);
+                upload_job sj { li, id, id };
+                sj.t_queued = ggml_time_us();
+                mc->todo.push_back(sj);
+                continue;
+            }
 
             // victim: a free block if any, else the lowest-scored cached expert (block pool: of ANY layer of the class, so the blocks go to the
             // layers whose experts score highest; without the pool: of this layer)
@@ -16523,9 +17121,64 @@ static bool cpu_gpu_shape_on() {
 }
 
 extern "C" { GGML_API void ggml_backend_set_link_rate_fork(ggml_backend_dev_t dev, double gbs); }   // ggml-backend.cpp (declared there, no shared header)
+// pool-v2 (stage 3), the switch to decode (a prompt call ended, its stream drained; cache lock held): the stream's pins off, the decode heat in force (xscore: the
+// topic map's prediction for this request with dynhot, else the lifetime counts and the recent window), the landing area refilled with the hottest experts no heap
+// holds (pv2_refill: the colder ones it held leave), and the call's line
+static void pv2_switch(moe_cache * mc) {
+    auto & v = mc->v2;
+    for (pv2_heap * h : { &v.main, &v.land }) {
+        for (auto & [x, r] : h->res) { if (r.id >= 0) { r.pin = mc->layers[(size_t) (r.id / v.E)].slot_in_flight[r.id % v.E]; } }
+    }
+    pv2_refresh(mc, false);
+    v.heat_step = UINT64_MAX;
+    const bool wait = fixed_on() || !reheat_bg();
+    std::vector<pv2_miss> ms = pv2_missing(mc, false);
+    std::unordered_map<int32_t, int8_t> part;
+    std::vector<pv2_cand> miss;
+    for (const auto & m : ms) {
+        const layer_state & ls = mc->layers[m.li];
+        miss.push_back({ pv2_id(mc, m.li, m.e), ls.v2n, ls.v2u, std::llround(1e6 * m.sc) });
+        part[miss.back().id] = m.part;
+    }
+    std::stable_sort(miss.begin(), miss.end(), [](const pv2_cand & a, const pv2_cand & b) { return a.heat > b.heat; });
+    std::vector<pv2_res> left;
+    const std::vector<pv2_cand> up = pv2_refill(v.land, miss, &left);
+    for (const auto & r : left) {   // its bytes are the refill's now: out of the tables
+        layer_state & lo = mc->layers[(size_t) (r.id / v.E)];
+        const int32_t x = r.id % v.E;
+        lo.at[(size_t) x] = -1;
+        lo.n_own--;
+        evict_slot(mc, lo, x);
+    }
+    std::unordered_map<int32_t, size_t> where;
+    for (const auto & [x, r] : v.land.res) { where[r.id] = x; }
+    std::vector<upload_job> jobs;
+    size_t b_up = 0;
+    for (const auto & c : up) {
+        const size_t li = (size_t) (c.id / v.E);
+        const int32_t e = c.id % v.E;
+        layer_state & ls = mc->layers[li];
+        const size_t x = where.at(c.id);
+        ls.at[(size_t) e] = (int32_t) (x / ls.v2u);
+        ls.n_own++;
+        v.land.res.at(x).pin = true;   // until its upload is published
+        jobs.push_back(pv2_job(mc, li, e, wait, part[c.id]));
+        b_up += c.n;
+    }
+    pv2_queue(mc, jobs);
+    LLAMA_LOG_WARN("moe-cache: pool-v2: prompt call: %zu experts streamed (%zu held already), %zu placed by the map's heat in the main heap (%.2f GB), %zu landed (%.2f GB), "
+            "%zu residents evicted colder; switch to decode: %zu experts (%.2f GB) refilled into the landing area by decode heat, %zu landing experts left for hotter ones; heap: %s\n",
+            v.n_heat + v.n_land, v.n_used, v.n_heat, v.b_heat / 1e9, v.n_land, v.b_land / 1e9, v.n_evict, up.size(), b_up / 1e9, left.size(), pv2_state(mc).c_str());
+    v.n_heat = v.b_heat = v.n_land = v.b_land = v.n_used = v.n_evict = 0;
+}
+
 void llama_moe_cache_prompt_call_fork(bool on) {
     if (!on && g_cache) { cs_end(g_cache); }
-    if (!on && g_cache && g_cache->v2.on && g_prompt_call.load(std::memory_order_relaxed)) {   // pool-v2: the shadow's check at the call's end, and the call's line
+    if (!on && g_cache && g_cache->v2.on && g_prompt_call.load(std::memory_order_relaxed)) {   // pool-v2: the switch to decode
+        std::lock_guard<std::mutex> lk(g_cache->mtx);
+        pv2_switch(g_cache);
+    }
+    if (!on && g_cache && g_cache->v2.shadow && g_prompt_call.load(std::memory_order_relaxed)) {   // pool-v2: the shadow's check at the call's end, and the call's line
         std::lock_guard<std::mutex> lk(g_cache->mtx);
         pv2_shadow_check(g_cache, "at a prompt call's end");
         auto & v = g_cache->v2;
