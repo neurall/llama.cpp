@@ -16232,11 +16232,35 @@ void llama_moe_cache_step_overlap_fork() {
     if (mc) { step_graph_join(mc); }   // a step that returned early
 }
 
+// dev: GGML_MOE_RESDUMP=PATH: the resident experts ("layer expert" lines) at the 2nd and the 40th decode step after each prompt call, PATH.<call>.<step>.txt (heap: ls.at, classes: expert_slot);
+// compared with the picks of the answer (--moe tokheat-trace) it gives the resident set's coverage of the first tokens
+static std::atomic<int> g_resdump_arm { 0 };
+static int g_resdump_call = 0;
+static void resdump_step(moe_cache * mc) {
+    static const char * path = getenv("GGML_MOE_RESDUMP");
+    if (!path || !*path) { return; }
+    static int cnt = 0;
+    if (g_resdump_arm.exchange(0)) { cnt = 0; g_resdump_call++; }
+    if (g_resdump_call == 0) { return; }
+    ++cnt;
+    if (cnt != 2 && cnt != 40) { return; }
+    FILE * f = fopen((std::string(path) + "." + std::to_string(g_resdump_call) + "." + std::to_string(cnt) + ".txt").c_str(), "w");
+    if (!f) { return; }
+    for (size_t li = 0; li < mc->layers.size(); ++li) {
+        const layer_state & ls = mc->layers[li];
+        for (int32_t e = 0; e < (int32_t) ls.expert_slot.size(); ++e) {
+            const bool res = ls.v2u ? ls.at[(size_t) e] >= 0 : ls.expert_slot[(size_t) e] >= 0;
+            if (res) { fprintf(f, "%d %d\n", ls.pub.il, e); }
+        }
+    }
+    fclose(f);
+}
 void llama_moe_cache_step_fork() {
     moe_cache * mc = g_cache;
     if (!mc) {
         return;
     }
+    resdump_step(mc);
     // dev: LLAMA_STEP_TIME=1 splits the step's time by section (llama-context.cpp logs the whole step)
     static const bool st_on = getenv("LLAMA_STEP_TIME") != nullptr;
     static int64_t st_sum[8] = {0};
@@ -17211,6 +17235,7 @@ static void pv2_switch(moe_cache * mc) {
 
 void llama_moe_cache_prompt_call_fork(bool on) {
     if (!on && g_cache) { cs_end(g_cache); }
+    if (!on && g_cache && g_prompt_call.load(std::memory_order_relaxed)) { g_resdump_arm.store(1); }
     if (!on && g_cache && g_cache->v2.on && g_prompt_call.load(std::memory_order_relaxed)) {   // pool-v2: the switch to decode
         std::lock_guard<std::mutex> lk(g_cache->mtx);
         pv2_switch(g_cache);
