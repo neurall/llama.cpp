@@ -364,6 +364,17 @@ struct moe_cache {
     // --moe pool-v2=1 (fork/docs/pool-v2.md, stage 1): the views of a class step by its unit (pv2_shape_of) instead of its block, the device tables hold a block as
     // block x B / unit. Classes, owners, ring, lend, KV and room are unchanged: the same placement through unit views
     bool pv2 = false;
+    // --moe pool-v2, stage 2b: the card's heap kept as a shadow of the size classes (llama-poolv2-fork.h pv2_mirror, pv2_held_set): it hears every expert's new
+    // place (set_table_entry) and every change of the lent, zone and room blocks, places nothing, and is checked against the classes at each call (pv2_check)
+    struct pv2_card_t {
+        bool     on = false;
+        pv2_heap main;
+        std::map<int32_t, size_t> where;    // id (entry x E + expert; entry: a layer, or a cstream shadow after them) -> start
+        std::vector<size_t> cls_base, cls_n;   // per size class: its grid's first byte in the card's buffer, an expert's bytes (pv2_shape_of)
+        int32_t  E = 0;
+        size_t   ap_idx = 0;
+        uint64_t n_check = 0, n_bad = 0, n_refused = 0, n_held_bad = 0;   // the call's checks, their mismatches, refused places, lends over a shadow's expert
+    } v2;
     int64_t  n_expert_used = 0;   // experts per token (the compute alias sizes the CUDA scratch from it)
     uint64_t gmax_all = 1;
     // compute alias (--moe alias=1): per pool buffer, the first size class can lend its first blocks to the scheduler's compute buffer.
@@ -4901,7 +4912,84 @@ void cuda_thread_sync() {
 std::mutex                                g_tbl_mtx;
 std::vector<llama_moe_cache_layer_fork *>      g_tbl_dirty;
 
+// pool-v2 (stage 2b): the shadow hears expert `e` of the entry whose table this is go to `slot` (a block of its class) or out of the classes (cache lock held)
+static void pv2_shadow_entry(moe_cache * mc, const llama_moe_cache_layer_fork & pub, int32_t e, int32_t slot) {
+    auto & v = mc->v2;
+    int64_t lx = -1;
+    if (!mc->layers.empty()) {
+        const char * a = (const char *) &mc->layers.front().pub, * p = (const char *) &pub;
+        if (p >= a && (size_t) (p - a) % sizeof(layer_state) == 0 && (size_t) (p - a) / sizeof(layer_state) < mc->layers.size()) { lx = (int64_t) ((size_t) (p - a) / sizeof(layer_state)); }
+    }
+    for (size_t k = 0; lx < 0 && k < mc->shadows.size(); ++k) { if (&mc->shadows[k].pub == &pub) { lx = (int64_t) (mc->layers.size() + k); } }
+    if (lx < 0) { return; }
+    const layer_state & ls = csl(mc, (size_t) lx);
+    const bool blk = ls.pcls >= 0 && (size_t) ls.pcls < v.cls_base.size() && slot >= 0 && slot < pub.n_slots;
+    const size_t s = blk ? v.cls_base[(size_t) ls.pcls] + (size_t) slot * mc->pool[(size_t) ls.pcls].B : PV2_NONE;
+    if (!pv2_mirror(v.main, v.where, (int32_t) lx * v.E + e, s, blk ? v.cls_n[(size_t) ls.pcls] : 0)) { v.n_refused++; }
+}
+
+// pool-v2 (stage 2b): every block of the card's classes as the shadow's check sees it, or only the held ones (cache lock held)
+static std::vector<pv2_blk> pv2_shadow_blocks(moe_cache * mc, bool held_only) {
+    const auto & v = mc->v2;
+    std::vector<pv2_blk> out;
+    for (size_t pc = 0; pc < mc->pool.size() && pc < v.cls_base.size(); ++pc) {
+        if (v.cls_base[pc] == SIZE_MAX) { continue; }   // a class of no layer of this card
+        const auto & ps = mc->pool[pc];
+        for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {
+            const int32_t o = ps.owner[(size_t) b];
+            const size_t  s = v.cls_base[pc] + (size_t) b * ps.B;
+            if (o == -2 || o == -3 || o == POOLX_ROOM) { out.push_back({ s, ps.B, -1, 0, true }); continue; }
+            if (held_only) { continue; }
+            const int64_t lx = cs_li_of(mc, o);
+            if (lx < 0 || (size_t) lx >= mc->layers.size() + mc->shadows.size()) { continue; }
+            const int32_t x = csl(mc, (size_t) lx).slot_expert[(size_t) b];
+            if (x >= 0) { out.push_back({ s, ps.B, (int32_t) lx * v.E + x, v.cls_n[pc], false }); }
+        }
+    }
+    return out;
+}
+// pool-v2 (stage 2b): the shadow's held stretches follow the lent, zone and room blocks (cache lock held)
+static void pv2_shadow_held(moe_cache * mc) {
+    if (!mc->v2.on) { return; }
+    std::vector<pv2_at> res;
+    std::vector<std::pair<size_t, size_t>> u;
+    pv2_expect(pv2_shadow_blocks(mc, true), res, u);
+    mc->v2.n_held_bad += pv2_held_set(mc->v2.main, u);
+}
+static bool pv2_strict() { static const bool v = moe_opt("stats") != nullptr; return v; }   // a -dbg run (run.py passes stats=): a mismatch aborts
+// pool-v2 (stage 2b): the shadow against the classes, once a call (cache lock held); a mismatch is logged with its first differences, counted, fatal in a -dbg run
+static void pv2_shadow_check(moe_cache * mc, const char * when) {
+    auto & v = mc->v2;
+    if (!v.on) { return; }
+    std::vector<pv2_at> res;
+    std::vector<std::pair<size_t, size_t>> u;
+    pv2_expect(pv2_shadow_blocks(mc, false), res, u);
+    const size_t bad = pv2_check(v.main, res, u);
+    v.n_check++;
+    if (bad == 0) { return; }
+    v.n_bad += bad;
+    static int logged = 0;
+    if (logged++ < 8 || pv2_strict()) {
+        std::map<size_t, int32_t> ex;
+        for (const auto & r : res) { ex[r.s] = r.id; }
+        std::string d;
+        int k = 0;
+        for (const auto & [x, r] : v.main.res) {
+            if (r.id == PV2_HOLD) { continue; }
+            const auto it = ex.find(x);
+            if ((it == ex.end() || it->second != r.id) && k++ < 4) { d += tr_fmt(" heap: id %d at %zu, classes: %d;", r.id, x, it == ex.end() ? -1 : it->second); }
+        }
+        for (const auto & r : res) {
+            const auto it = v.main.res.find(r.s);
+            if ((it == v.main.res.end() || it->second.id != r.id) && k++ < 8) { d += tr_fmt(" classes: id %d at %zu, heap: %d;", r.id, r.s, it == v.main.res.end() ? -1 : it->second.id); }
+        }
+        LLAMA_LOG_ERROR("moe-cache: pool-v2 shadow: %zu mismatches with the size classes %s (%zu held ranges expected):%s\n", bad, when, u.size(), d.c_str());
+    }
+    if (pv2_strict()) { GGML_ABORT("moe-cache: pool-v2 shadow: the heap is not what the size classes hold (%s)", when); }
+}
+
 void set_table_entry(llama_moe_cache_layer_fork & pub, int32_t expert, int32_t slot_or_dummy) {
+    if (g_cache && g_cache->v2.on) { pv2_shadow_entry(g_cache, pub, expert, slot_or_dummy); }
     if (pub.jit_n > 0 && slot_or_dummy != pub.n_slots + 1 && g_cache) {
         // the main cache takes (or drops) this expert: it leaves the JIT pool, or the pool chain would add it twice
         for (auto & l : g_cache->layers) {
@@ -5918,6 +6006,7 @@ static void kv_blocks_apply(moe_cache * mc, moe_cache::alias_pool & ap, size_t l
         }, [&](int32_t b) { cls_take_bytes(mc, sg.pcls, b); }, tag);
         n_take += take.size();
     }
+    if (mc->v2.on) { std::lock_guard<std::mutex> lk(mc->mtx); pv2_shadow_held(mc); }   // pool-v2: the shadow hears the zone (and the room)
 }
 
 
@@ -7846,6 +7935,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         g_ac.sync_us += ggml_time_us() - s0; g_ac.sync_n++;
     }
     room_lend(mc, sched, changed, n_tokens);   // CUDA's room grows here: after the sync, before this graph runs
+    if (mc->v2.on) { std::lock_guard<std::mutex> lk(mc->mtx); pv2_shadow_held(mc); }   // pool-v2: the shadow hears the lend (and the room)
     return false;
 }
 
@@ -7866,7 +7956,7 @@ static size_t alias_release(moe_cache * mc) {
         }
         ap.blocked = ap.segs.empty() ? 0 : ap.segs[0].blocked;
     }
-    if (n_back > 0) { alias_cost_log("after a prompt"); }
+    if (n_back > 0) { pv2_shadow_held(mc); alias_cost_log("after a prompt"); }   // pool-v2: the shadow hears the lend back
     return n_back;
 }
 
@@ -11169,6 +11259,22 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                     ap.span_full = ap.span;
                     kv_tail_bind(ap);
+                    if (mc->pv2 && !split && ubufs.size() == 1) {   // pool-v2 stage 2b: the card's heap as the classes' shadow
+                        auto & v = mc->v2;
+                        v.on     = true;
+                        v.ap_idx = mc->alias.size();
+                        v.main   = pv2_make(0, ap.tail_real);
+                        v.cls_base.assign(mc->pool.size(), SIZE_MAX);
+                        v.cls_n.assign(mc->pool.size(), 0);
+                        for (size_t c = 0; c < pl.cls.size(); ++c) {
+                            const auto & ps = mc->pool[pool0 + c];
+                            v.cls_base[pool0 + c] = gbase[c];
+                            v.cls_n[pool0 + c]    = ps.off[2] + poolx_up(ps.len[2], 128) + std::max({ ps.past[0], ps.past[1], ps.past[2] });   // pv2_shape_of's bytes
+                        }
+                        for (const auto & l : mc->layers) { v.E = std::max(v.E, (int32_t) l.pub.up_src->ne[2]); }
+                        LLAMA_LOG_WARN("moe-cache: pool-v2 on %s: the heap [0, %.0f) MiB kept as a shadow of the size classes (every expert's place, the lent, zone and room "
+                                "blocks), checked against them once a call; it places nothing yet\n", ggml_backend_buft_name(buft), ap.tail_real / 1048576.0);
+                    }
                     mc->alias.push_back(ap);
                 }
                 for (auto * b : ubufs) { mc->bufs.push_back(b); }
@@ -15760,6 +15866,7 @@ void llama_moe_cache_step_fork() {
     std::lock_guard<std::mutex> lock(mc->mtx);
     mc->n_steps++;
     g_step_us[mc->n_steps & 4095] = ggml_time_us();
+    pv2_shadow_check(mc, "at a decode step");
     if (mc->rp_on) {   // the graph that ran is over (synchronised): the pool may evict what the one before it asked for
         mc->vis_now.store(mc->vis_base + 1 + (uint32_t) mc->n_steps, std::memory_order_relaxed);
         ggml_rampool_graph_fork();
@@ -16410,6 +16517,13 @@ static bool cpu_gpu_shape_on() {
 extern "C" { GGML_API void ggml_backend_set_link_rate_fork(ggml_backend_dev_t dev, double gbs); }   // ggml-backend.cpp (declared there, no shared header)
 void llama_moe_cache_prompt_call_fork(bool on) {
     if (!on && g_cache) { cs_end(g_cache); }
+    if (!on && g_cache && g_cache->v2.on && g_prompt_call.load(std::memory_order_relaxed)) {   // pool-v2: the shadow's check at the call's end, and the call's line
+        std::lock_guard<std::mutex> lk(g_cache->mtx);
+        pv2_shadow_check(g_cache, "at a prompt call's end");
+        auto & v = g_cache->v2;
+        LLAMA_LOG_WARN("moe-cache: pool-v2 shadow: %llu checks, %llu mismatches with the size classes, %llu places refused, %llu lent or zoned over a shadow expert; heap %zu residents\n",
+                (unsigned long long) v.n_check, (unsigned long long) v.n_bad, (unsigned long long) v.n_refused, (unsigned long long) v.n_held_bad, v.where.size());
+    }
     if (!on && g_cache && g_cs_pick_held.exchange(false)) { cs_rest_set(g_cache); }   // the ring back to its smallest: the KV and the decode graphs get the pool
     static const bool refill_end = [] { const char * e = moe_opt("refill-end"); return !e || atoi(e) != 0; }();   // --moe refill-end=0: off (the step's refill only)
     if (!on && refill_end && g_cache && g_prompt_call.load(std::memory_order_relaxed)) {
