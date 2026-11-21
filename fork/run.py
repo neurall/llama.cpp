@@ -1306,10 +1306,12 @@ def kept_kill():
 
 
 TAGBOX = {"v": ""}   # the running test and prompt (game4-racing, edit4-2, long1k, ...): --moe tag= puts it into the routing file name
-def _ctx_args(default):
-    """-c for a test: --ctx N, else the test's own; --ctx -1 passes no -c at all (the engine decides: kv-tail makes it the model's maximum)"""
+def _ctx_args(default, ours=False):
+    """-c for a test: --ctx N, else the test's own; --ctx -1 passes no -c at all (the engine decides: kv-tail makes it the model's maximum). Our builds get no -c
+    unless --ctx asks (user 2026-11-21: "dont use -c, our ctx is automatic"): the test's own -c only made every cell start a server of its own"""
     c = OVR.get("ctx")
-    return [] if c is not None and int(c) < 0 else ["-c", str(c or default)]
+    if c is not None and int(c) < 0 or (ours and not c): return []
+    return ["-c", str(c or default)]
 
 IDX = 0    # run counter: test chatv answers prompt IDX mod len(CHAT_PROMPTS) (a repeated temp-0 answer would reuse exactly the cached experts)
 CHAT_PROMPTS = config.prompt_lines("chatv")
@@ -3151,28 +3153,28 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         base = CHAT_TESTS.get(test, test)
         if base in ("tetris", "t100", "fix"):
             # t100: what most people run on a CLI: one short prompt, 100 tokens, -c 1024, temperature 0 (GREEDY)
-            args = COMMON + _ctx_args((2048 if base == "fix" else 1024))
+            args = COMMON + _ctx_args((2048 if base == "fix" else 1024), not (plain or build.startswith("stock")))
             res, logf, text = generate(build, env, args, ovr_prompt(config.prompt("tetris") if base == "tetris" else GAME_TEMPLATE.format(word="tetris")),
                                        int(OVR.get("tokens") or (-1 if base == "tetris" else 1024 if base == "fix" else 100)), chat, FIXED if base == "fix" else None)
         elif base == "game4":
             word = GAME_WORDS[(OVR.get('pidx', REP or 0)) % len(GAME_WORDS)]
             TAGBOX["v"] = "game4-" + word.replace(" ", "_") + ("-chat" if chat else "")
-            args = COMMON + _ctx_args(1024)
+            args = COMMON + _ctx_args(1024, not (plain or build.startswith("stock")))
             res, logf, text = generate(build, env, args, ovr_prompt(GAME_TEMPLATE.format(word=word)), int(OVR.get("tokens") or 100), chat, {"cache_prompt": False})
         elif base == "long1k":   # a prompt of about 1024 tokens (src_1k.cpp = the first 4.4k characters of src_3k.cpp) asking for a bug fix, 1024 tokens out, -c 4096: a long prefill and a long decode
             snippet = open(config.prompt_path("src1k")).read()
-            args = COMMON + _ctx_args(4096)
+            args = COMMON + _ctx_args(4096, not (plain or build.startswith("stock")))
             res, logf, text = generate(build, env, args, snippet + "\n\n" + LONG2K_INSTR, int(OVR.get("tokens") or 1024), chat, {"cache_prompt": False})
         elif base == "edit4":
             snippet = open(OVR.get("snippet") or config.prompt_path("src3k")).read()
             ins = EDIT_INSTR[(OVR.get('pidx', REP or 0)) % len(EDIT_INSTR)]
             TAGBOX["v"] = "edit4-%d" % ((REP or 0) % len(EDIT_INSTR)) + ("-chat" if chat else "")
-            args = COMMON + _ctx_args(4096)
+            args = COMMON + _ctx_args(4096, not (plain or build.startswith("stock")))
             res, logf, text = generate(build, env, args, snippet + "\n\n" + ins, int(OVR.get("tokens") or 128), chat, {"cache_prompt": False})
         elif test == "gen":   # --gen SPEC: repetition k sends prompt k of the spec (generated on the fly, stored), never the same one twice
             g = gen_prompt(OVR["gen"], REP or 0)
             TAGBOX["v"] = "gen-%d" % (REP or 0)
-            args = COMMON + _ctx_args(gen_ctx(OVR["gen"]))
+            args = COMMON + _ctx_args(gen_ctx(OVR["gen"]), not (plain or build.startswith("stock")))
             res, logf, text = generate(build, env, args, ovr_prompt(g["text"]), int(OVR.get("tokens") or g["out"]), True, {"cache_prompt": False})
             PROCSTAT["note"] = f"gen {REP or 0}: {g['task'][:24]}, {g['topic'][:32]}, in {g['n_tokens']} out {g['out']}"
         elif test in config.user_tests():   # a prompt of your own from prompts.ini ([name] path = ..., test = chat|completion, tokens = ..., ctx = ...)
@@ -3180,7 +3182,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             args = COMMON + _ctx_args(int(ut.get("ctx") or 4096))
             res, logf, text = generate(build, env, args, ovr_prompt(config.prompt(test)), int(OVR.get("tokens") or ut.get("tokens") or 256), ut["test"] == "chat", {"cache_prompt": False})
         else:
-            args = COMMON + _ctx_args(4096)
+            args = COMMON + _ctx_args(4096, not (plain or build.startswith("stock")))
             chatv = test == "chatv"  # varied prompts (index = run counter), thinking off: the topic switches the cache has to follow
             res, logf = server_run(build, env, args, "/v1/chat/completions",
                                    {"messages": [{"role": "user", "content": ovr_prompt(CHAT_PROMPTS[OVR.get("pidx", IDX) % len(CHAT_PROMPTS)] if chatv else CHAT_LONG if test == "chat2" else GAME_TEMPLATE.format(word="tetris"))}],
@@ -8598,7 +8600,7 @@ def run_list(name, argv):
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
     ap.add_argument("-sa", "--stock-args", metavar="ARGS", help="server arguments for the stock cells only (-s, -sc, -nrt stock gap), both stock arms: -sa '-fitt 20000' leaves 20000 MiB free on every card, a restricted-VRAM stock (the rows keep them in their args column)")
     ap.add_argument("-rh", "--real-hold", action="store_true", help="-sim holds the VRAM for real (vramhog.py) for every cell, ours and stock alike, instead of our server faking the free memory: all arms of a comparison see the same cards")
-    ap.add_argument("-1s", "--one-server", dest="one_server", action="store_true", help="the cells of a model run as requests on one server per build: every cell of the model gets one -c (its largest cell's prompt + answer), so the kept server is reused; only the model's first cell starts cold (-cs and -gh still start one per cell: their state differs)")
+    ap.add_argument("-1s", "--one-server", dest="one_server", action="store_true", help="stock: the cells of a model run as requests on one stock server: every stock cell of the model gets one -c (its largest cell's prompt + answer). Ours needs no switch: it takes no -c, its cells share the kept server already (-cs and -gh still start one per cell: their state differs)")
     ap.add_argument("-scl", "--stock-clip", dest="stock_clip", action="store_true", help="stock cells as one shortened request instead of the clock box (the default): the prompt cut to what stock reads in our prompt time, the answer to what it writes in our answer time (rates from the model's newest stock row, 5 and 0.5 t/s when it has none), so the answer follows its own prompt as ours does; the row counts when its answer is within half and double of what it asked for")
     ap.add_argument("-so", "--stock-opt", action="store_true", help="stock optimized: stock cells get -c = prompt + answer rounded up to 1024 (what a user would set), rows <stock build>-so-<cell>")
     ap.add_argument("-som", "--stock-opt-moe", nargs="?", const="16000,0.95", metavar="MIB[,SHARE]", help="stock optimized + upstream's expert cache (default 16000,0.95): -so and -sm together, rows <stock build>-moe-so-<cell>")
@@ -8781,8 +8783,8 @@ def run_list(name, argv):
             return (int(mt_[1]) if mt_ else int(mk_[1]) * 1024 if mk_ else 8192) + int(r.get("tokens") or 1024) + 256   # a chat test's prompt: 8k at most (edit4c is about 3.3k)
         _cx = {}
         for r in rows: _cx[(r["model"], r["_b"])] = max(_cx.get((r["model"], r["_b"]), 0), _need(r))
-        for r in rows:
-            if "--ctx" not in (r.get("extra") or ""): r["extra"] = f"{r.get('extra') or ''} --ctx {-(-_cx[(r['model'], r['_b'])] // 1024) * 1024}".strip()
+        for r in rows:   # stock only: ours takes no -c at all (_ctx_args), so its cells share the kept server anyway
+            if str(r["_b"]).startswith("stock") and "--ctx" not in (r.get("extra") or ""): r["extra"] = f"{r.get('extra') or ''} --ctx {-(-_cx[(r['model'], r['_b'])] // 1024) * 1024}".strip()
     if o.hog_gpu and not o.dry and o.nrts is None and rows and (o.real_hold or all(str(r["_b"]).startswith("stock") for r in rows)):   # -sim on a list of stock cells: stock cannot fake free memory (no --moe sim-vram), so the VRAM is really held, on every card, until the list ends
         v = str(o.hog_gpu).lower().rstrip("ib").rstrip("b"); free_mib = int(float(v[:-1]) if v.endswith("m") else float(v[:-1] if v.endswith("g") else v) * (1 if v.endswith("m") else 1024))
         import atexit   # (run_list imports it further down for simjoe: without this line the name is a local there and unbound here)
