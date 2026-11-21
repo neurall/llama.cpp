@@ -294,6 +294,73 @@ static int unit_tests() {
         pv2_unhold(h, 0, 1000);
         check("unhold: everything held comes back", heap_ok(h, uh) && h.res.size() == 1 && h.res.count(400));
     }
+    {   // stage 2b, the heap as a shadow of the size classes: OLMoE's two classes (Q4_K down, Q6_K down) back to back, a recorded sequence of what the engine
+        // does to their blocks (boot fill, a decode swap, a lend, the KV zone, a stream pass, the lend back); the shadow hears each expert's new place (the
+        // host table entry) and each change of the held blocks, and must equal what the classes hold after every step
+        const poolx_slice c0[3] = { { 1179648, 144, 256, 2048 }, { 1179648, 144, 256, 2048 }, { 1179648, 144, 256, 1024 } };
+        const poolx_slice c1[3] = { { 1179648, 144, 256, 2048 }, { 1179648, 144, 256, 2048 }, { 1720320, 210, 256, 1024 } };
+        const size_t B[2] = { poolx_block_class(c0).B, poolx_block_class(c1).B }, n[2] = { pv2_shape_of(c0).n, pv2_shape_of(c1).n };
+        const int32_t N[2] = { 6, 4 };
+        const size_t base[2] = { 0, (size_t) N[0] * B[0] }, top = base[1] + (size_t) N[1] * B[1];
+        std::vector<int32_t> o[2] = { std::vector<int32_t>(N[0], -1), std::vector<int32_t>(N[1], -1) };   // the classes: per block its expert, -1 free, -2 lent, -3 KV
+        pv2_heap h = pv2_make(0, top);
+        std::map<int32_t, size_t> where;
+        size_t refused = 0;
+        auto blocks = [&]() {   // what the engine hands the check: every block of every class
+            std::vector<pv2_blk> v;
+            for (int c = 0; c < 2; ++c) {
+                for (int32_t b = 0; b < N[c]; ++b) { v.push_back({ base[c] + (size_t) b * B[c], B[c], o[c][(size_t) b] >= 0 ? o[c][(size_t) b] : -1, n[c], o[c][(size_t) b] <= -2 }); }
+            }
+            return v;
+        };
+        auto check_now = [&]() {
+            std::vector<pv2_at> res;
+            std::vector<std::pair<size_t, size_t>> u;
+            pv2_expect(blocks(), res, u);
+            return pv2_check(h, res, u);
+        };
+        auto held_now = [&]() {   // the engine at a lend, a release, a KV change: the held union from the blocks
+            std::vector<pv2_at> res;
+            std::vector<std::pair<size_t, size_t>> u;
+            pv2_expect(blocks(), res, u);
+            return pv2_held_set(h, u);
+        };
+        auto entry = [&](int c, int32_t b, int32_t id) {   // set_table_entry: expert id now in block b of class c (b -1: uncached)
+            if (b >= 0) { o[c][(size_t) b] = id; }
+            refused += !pv2_mirror(h, where, id, b >= 0 ? base[c] + (size_t) b * B[c] : PV2_NONE, n[c]);
+        };
+        auto evict = [&](int c, int32_t b) { const int32_t id = o[c][(size_t) b]; o[c][(size_t) b] = -1; entry(c, -1, id); };
+        // boot fill (the hottest into the highest free blocks), each publish one entry
+        entry(0, 5, 3); entry(0, 4, 7); entry(1, 3, 64 + 2); entry(1, 2, 64 + 9);
+        check("shadow: boot fill", check_now() == 0 && refused == 0);
+        evict(0, 4); entry(0, 4, 12);   // a decode swap: the victim's entry first, then the newcomer's publish
+        check("shadow: a decode swap", check_now() == 0 && refused == 0);
+        o[0][0] = o[0][1] = -2;        // a lend of two blocks (they were free), the KV zone over a block of the other class
+        o[1][0] = -3;
+        check("shadow: a lend not yet heard is a mismatch", check_now() > 0);
+        check("shadow: the lend and the zone heard, no resident in them", held_now() == 0 && check_now() == 0);
+        entry(0, 2, 5); entry(0, 3, 6);   // a stream pass: two experts into free blocks, one cached expert replaced
+        evict(0, 5); entry(0, 5, 40);
+        entry(1, 1, 64 + 33);
+        check("shadow: a stream pass", check_now() == 0 && refused == 0);
+        o[0][0] = o[0][1] = -1;        // the lend back (alias_release)
+        check("shadow: the lend back", held_now() == 0 && check_now() == 0 && refused == 0);
+        std::map<int32_t, size_t> uo = { { PV2_HOLD, 1 } };
+        for (const auto & [id, s] : where) { uo[id] = 1; }
+        check("shadow: heap invariants after the sequence", heap_ok(h, uo) && where.size() == 7);
+        // what the check catches: a victim the shadow never heard of (the newcomer's place is not free), a lend over a cached expert, a lost evict
+        const int32_t was = o[0][4];
+        o[0][4] = 13;
+        check("shadow: a missed evict refuses the newcomer's place", !pv2_mirror(h, where, 13, base[0] + 4 * B[0], n[0]) && check_now() > 0);
+        o[0][4] = was;
+        check("shadow: the state is unchanged by the refusal", check_now() == 0);
+        o[1][3] = -2;   // a lend over block 3 of class 1, whose expert the shadow still holds
+        check("shadow: a lend over a cached expert is counted", held_now() == 1 && check_now() > 0);
+        o[1][3] = 64 + 2;
+        check("shadow: back to the same", held_now() == 0 && check_now() == 0);
+        o[0][2] = -1;   // the classes dropped an expert the shadow was not told of
+        check("shadow: a lost evict is a mismatch", check_now() > 0);
+    }
     stress(1, 4000, true);
     check("deterministic: one seed, one result", stress(7, 3000, false) == stress(7, 3000, false));
     check("deterministic: another seed, another result", stress(7, 3000, false) != stress(8, 3000, false));

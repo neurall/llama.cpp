@@ -97,11 +97,10 @@ static inline std::vector<size_t> pv2_overlap(const pv2_heap & h, size_t a, size
     for (; it != h.res.end() && it->first < b; ++it) { if (it->second.id != PV2_HOLD) { out.push_back(it->first); } }
     return out;
 }
-// every free byte of [a, b) inside the heap becomes held; false (nothing changed) while a resident reaches into it
-static inline bool pv2_hold(pv2_heap & h, size_t a, size_t b) {
+// every free byte of [a, b) inside the heap becomes held, whatever resides there
+static inline void pv2_hold_free(pv2_heap & h, size_t a, size_t b) {
     a = std::max(a, h.lo); b = std::min(b, h.hi);
-    if (a >= b) { return true; }
-    if (!pv2_overlap(h, a, b).empty()) { return false; }
+    if (a >= b) { return; }
     std::vector<std::pair<size_t, size_t>> pieces;
     auto g = h.gaps.upper_bound(a);
     if (g != h.gaps.begin()) { --g; }
@@ -110,6 +109,11 @@ static inline bool pv2_hold(pv2_heap & h, size_t a, size_t b) {
         if (x < y) { pieces.push_back({ x, y - x }); }
     }
     for (const auto & [x, n] : pieces) { pv2_add(h, x, { PV2_HOLD, n, std::numeric_limits<int64_t>::max(), true }); }
+}
+// every free byte of [a, b) inside the heap becomes held; false (nothing changed) while a resident reaches into it
+static inline bool pv2_hold(pv2_heap & h, size_t a, size_t b) {
+    if (!pv2_overlap(h, std::max(a, h.lo), std::min(b, h.hi)).empty()) { return false; }
+    pv2_hold_free(h, a, b);
     return true;
 }
 // every held byte of [a, b) becomes free; a stand-in reaching past the stretch keeps its outside part
@@ -123,6 +127,68 @@ static inline void pv2_unhold(pv2_heap & h, size_t a, size_t b) {
         if (s < a)     { pv2_add(h, s, { PV2_HOLD, a - s, std::numeric_limits<int64_t>::max(), true }); }
         if (s + n > b) { pv2_add(h, b, { PV2_HOLD, s + n - b, std::numeric_limits<int64_t>::max(), true }); }
     }
+}
+
+// ---- stage 2b: the heap as a shadow of the size classes (no placement of its own: it hears where the classes put each expert and which blocks are held) ----
+// a block of a size class as the shadow's check sees it: its start and bytes, the expert it holds (-1 none) and that expert's bytes, held (lent, KV, CUDA's room)
+struct pv2_blk { size_t s, B; int32_t id; size_t n; bool held; };
+struct pv2_at  { size_t s; int32_t id; size_t n; };   // a resident: start, id, bytes
+// what the heap must hold for these blocks: a resident at each block's start that holds an expert, the union of the held blocks' bytes (sorted, disjoint)
+static inline void pv2_expect(const std::vector<pv2_blk> & blks, std::vector<pv2_at> & res, std::vector<std::pair<size_t, size_t>> & u) {
+    res.clear(); u.clear();
+    std::vector<std::pair<size_t, size_t>> hb;
+    for (const auto & b : blks) {
+        if (b.held) { hb.push_back({ b.s, b.s + b.B }); } else if (b.id >= 0) { res.push_back({ b.s, b.id, b.n }); }
+    }
+    std::sort(hb.begin(), hb.end());
+    for (const auto & r : hb) { if (!u.empty() && r.first <= u.back().second) { u.back().second = std::max(u.back().second, r.second); } else { u.push_back(r); } }
+    std::sort(res.begin(), res.end(), [](const pv2_at & a, const pv2_at & b) { return a.s < b.s; });
+}
+// how far the heap is from `res` and `u` (pv2_expect): each resident it has that is not expected or expected and missing (start, id, bytes), each held range
+// not exactly one of u and each range of u not exactly held; 0: the same
+static inline size_t pv2_check(const pv2_heap & h, const std::vector<pv2_at> & res, const std::vector<std::pair<size_t, size_t>> & u) {
+    size_t bad = 0, i = 0;
+    std::vector<std::pair<size_t, size_t>> hu;
+    for (const auto & [s, r] : h.res) {
+        if (r.id == PV2_HOLD) {
+            if (!hu.empty() && hu.back().second == s) { hu.back().second += r.n; } else { hu.push_back({ s, s + r.n }); }
+            continue;
+        }
+        while (i < res.size() && res[i].s < s) { ++bad; ++i; }   // expected, missing
+        if (i < res.size() && res[i].s == s && res[i].id == r.id && res[i].n == r.n) { ++i; } else { ++bad; }
+    }
+    bad += res.size() - i;
+    for (const auto & r : hu) { bad += !std::binary_search(u.begin(), u.end(), r); }
+    for (const auto & r : u)  { bad += !std::binary_search(hu.begin(), hu.end(), r); }
+    return bad;
+}
+// the shadow hears expert `id` is now at s with n bytes (PV2_NONE: nowhere; where: id -> start): it leaves its old place, takes the new one. false: the new
+// place is not free in the heap (the classes put it over an expert or held bytes the shadow still has: a missed move); nothing then changes but its leaving
+static inline bool pv2_mirror(pv2_heap & h, std::map<int32_t, size_t> & where, int32_t id, size_t s, size_t n, int64_t heat = 0) {
+    auto it = where.find(id);
+    if (it != where.end()) {
+        auto r = h.res.find(it->second);
+        if (r != h.res.end() && r->second.id == id) {
+            if (it->second == s && r->second.n == n) { return true; }
+            pv2_drop(h, it->second);
+        }
+        where.erase(it);
+    }
+    if (s == PV2_NONE) { return true; }
+    if (!pv2_add(h, s, { id, n, heat, false })) { return false; }
+    where[id] = s;
+    return true;
+}
+// the held stretches made exactly the union u (pv2_expect): what is held outside u comes back free, the free bytes in u are held; returns the residents that reach
+// into u (the shadow: the classes lent or zoned bytes an expert of the shadow still has)
+static inline size_t pv2_held_set(pv2_heap & h, const std::vector<std::pair<size_t, size_t>> & u) {
+    pv2_unhold(h, h.lo, h.hi);
+    size_t bad = 0;
+    for (const auto & [a, b] : u) {
+        bad += pv2_overlap(h, std::max(a, h.lo), std::min(b, h.hi)).size();
+        pv2_hold_free(h, a, b);
+    }
+    return bad;
 }
 
 // the start that is a multiple of u nearest t for n bytes inside [a, b), PV2_NONE when none fits
