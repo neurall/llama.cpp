@@ -16952,7 +16952,7 @@ void llama_moe_cache_step_fork() {
                 pv2_pick pkf = pk;
                 if (pkf.s == PV2_NONE) {   // nothing colder near its heat target: the coldest resident of the same size anywhere in the heap (as the classes take the class's coldest);
                     // the table points anywhere, so the swap is exact and correct; keeping the heap sorted is background work (user 2026-11-22: a swap is never refused for placement)
-                    static std::map<std::pair<size_t, size_t>, std::vector<std::pair<int64_t, size_t>>> cold;   // (bytes, unit) -> (decode score, start), coldest first
+                    static std::map<std::pair<size_t, size_t>, std::vector<std::tuple<int64_t, size_t, int32_t>>> cold;   // (bytes, unit) -> (decode score, start, id), coldest first
                     static std::map<std::pair<size_t, size_t>, size_t> cur;
                     static uint64_t cold_step = UINT64_MAX;
                     if (cold_step != mc->n_steps) {
@@ -16962,16 +16962,23 @@ void llama_moe_cache_step_fork() {
                             const layer_state & lq = mc->layers[(size_t) (r.id / mc->v2.E)];
                             const int32_t eq = r.id % mc->v2.E;
                             if (lq.slot_in_flight[(size_t) eq] || lq.queued[eq]) { continue; }
-                            cold[{ lq.v2n, lq.v2u }].push_back({ std::llround(1e6 * xscore(mc, lq, eq)), x });
+                            cold[{ lq.v2n, lq.v2u }].push_back({ std::llround(1e6 * xscore(mc, lq, eq)), x, r.id });
                         }
-                        for (auto & [k, v] : cold) { std::sort(v.begin(), v.end()); }
+                        for (auto & [k, v] : cold) { std::sort(v.begin(), v.end(), [](const auto & a, const auto & b) { return std::get<0>(a) != std::get<0>(b) ? std::get<0>(a) < std::get<0>(b) : std::get<1>(a) < std::get<1>(b); }); }
                     }
                     auto ci = cold.find({ ls.v2n, ls.v2u });
                     size_t & cx = cur[{ ls.v2n, ls.v2u }];
                     const int64_t need = std::llround(1e6 * (xscore(mc, ls, id) - pay_back(link_margin[ls.link])));
-                    while (ci != cold.end() && cx < ci->second.size() && !mc->v2.main.res.count(ci->second[cx].second)) { ++cx; }   // taken earlier this step
-                    if (ci != cold.end() && cx < ci->second.size() && ci->second[cx].first < need) {
-                        pkf.s = ci->second[cx].second; pkf.evict = { pkf.s }; ++cx;
+                    auto still_ok = [&](const std::tuple<int64_t, size_t, int32_t> & c) {   // the same expert still sits there, no upload on its way (an earlier pick of this step may have replaced it)
+                        const auto rit = mc->v2.main.res.find(std::get<1>(c));
+                        if (rit == mc->v2.main.res.end() || rit->second.id != std::get<2>(c) || rit->second.pin) { return false; }
+                        const layer_state & lq = mc->layers[(size_t) (rit->second.id / mc->v2.E)];
+                        const int32_t eq = rit->second.id % mc->v2.E;
+                        return !lq.slot_in_flight[(size_t) eq] && !lq.queued[eq] && lq.at[(size_t) eq] >= 0;
+                    };
+                    while (ci != cold.end() && cx < ci->second.size() && !still_ok(ci->second[cx])) { ++cx; }
+                    if (ci != cold.end() && cx < ci->second.size() && std::get<0>(ci->second[cx]) < need) {
+                        pkf.s = std::get<1>(ci->second[cx]); pkf.evict = { pkf.s }; ++cx;
                         g_pv2_fallback++;   // admitted by the global fallback
                     }
                 }
