@@ -6,12 +6,12 @@ less the usual spread, is not more than 20% above the release's: (cand_mean - sp
 of runs (the run-to-run noise on that cell). Why: a build that streams a long prompt several times faster loses a little decode speed while the cache refills,
 which a 1k-in / short-out cell shows as a drop; what a user feels is how long the whole request takes (user, 2026-10-19).
 Runs are compared only under the same power limits (the pl column; day 220/280 W, night 200/200 W). Cells without a prompt_s in the note use n_gen / decode speed only (short prompts: the prompt part is under a second)."""
-import re, sqlite3, statistics, sys
+import os, re, sqlite3, statistics, sys
 pre, cand, rel = sys.argv[1], sys.argv[2], sys.argv[3]
 # SINCE (optional 4th argument, 'YYYY-MM-DD HH:MM'): only runs from then on. The release's older runs may come from another hardware state
 # (GPU unlock 2026-10-27 11:08: tensor math 1.3-1.5x faster) or carry a since-fixed bug (DeepSeek token-0 answers before dsfix1), so a gate reruns both builds and reads only those rows
 since = sys.argv[4] if len(sys.argv) > 4 else ""
-c = sqlite3.connect("/p/bw/wt-main/fork/runs.db")
+c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
 rows = c.execute("select campaign, build, tps, pp, n_gen, note, pl, pw_avg, out_chars, loop from runs where build in (?, ?) and tps > 0 and ts >= ?", (cand, rel, since)).fetchall()
 # run.py run names a cell's campaign <build>-<row>-<test>: the build prefix comes off, so the candidate's and the release's runs of a row meet in one cell
 # (campaigns named the same for both builds, e.g. gate-..., stay as they are); PREFIX then filters the cell names

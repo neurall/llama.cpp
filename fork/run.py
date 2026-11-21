@@ -6029,6 +6029,7 @@ def cmd_build(a):
         tmp = os.path.join(BUILD_TMP, name)
         if os.path.exists(tmp):
             _git(a.repo, "worktree", "remove", "--force", tmp, check=False)
+        _git(a.repo, "worktree", "prune", check=False)   # BUILD_TMP is a tmpfs (2026-11-21): a reboot empties it but leaves the trees registered
         _git(a.repo, "worktree", "add", "--detach", tmp, rev)
         W = tmp
     else:
@@ -8694,6 +8695,8 @@ def run_list(name, argv):
     ap.add_argument("-ssh", "--ssh", metavar="LINE", help="the ssh line of a rented box for this session, in quotes (\" -p 47086 root@93.91.156.104 -L 8080:localhost:8080\"): the machine named by -pc (cld when -pc is not given) is set to it first (~/.ssh/config and machines.csv), see `run.py machine add`")
     o = ap.parse_args([x for x in argv if x not in ("desc", "simjoe")])   # `run gainers desc` works too, and `run gainers simjoe`
     NOSTATS[0] = bool(o.no_stats); ENGLOG[0] = not o.dbg; NGPU[0] = o.n_gpus   # -dbg: the engine's logs, stats.log and the samplers; the live status needs no switch (-ns: off)
+    import resource; _hc = resource.getrlimit(resource.RLIMIT_CORE)[1]
+    resource.setrlimit(resource.RLIMIT_CORE, (_hc if o.dbg else 0, _hc))   # user 2026-11-21: core files (2.2-2.5 GB each on the model SSD) only with -dbg; the engine prints its own backtrace
     for opt, key in ((None if o.real_hold else o.hog_gpu, "sim-vram"), (o.hog_ram, "sim-ram")):   # GiB -> the server's MiB (-rh: the VRAM is held for real below, the server fakes nothing)
         if opt:
             v = str(opt).lower().rstrip("ib").rstrip("b")   # 16g, 16gb, 16gib, 16384m, 16

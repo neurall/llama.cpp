@@ -2,8 +2,8 @@
 """readme_table.py: the README tables from the rt-* cells of fork/experiments/release_table.py (runs.db): best gainers (stock over ours per model and test),
 the 35B context table (stock static -c against ours static and auto), the dense split on/off. Median of the valid runs; a run whose answer looped is not counted
 (a cell where every run looped shows 'loops'), a refused run shows 'refused'.  usage: readme_table.py [--db PATH]"""
-import sqlite3, statistics, sys
-db = sys.argv[sys.argv.index("--db") + 1] if "--db" in sys.argv else "/p/bw/wt-main/fork/runs.db"
+import os, sqlite3, statistics, sys
+db = sys.argv[sys.argv.index("--db") + 1] if "--db" in sys.argv else os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")
 c = sqlite3.connect(db)
 NAMES = [("mimo", "MiMo-V2.6-Flash 3-bit"), ("glm", "GLM-5.3-Flash 3.0-bit"), ("qni4", "Qwen3.8-Flash-Next UD-IQ4_XS"), ("qni3", "Qwen3.8-Flash-Next IQ3_S (78 GB)"),
          ("q27mtp", "Qwen3.8-27B MTP Q5_K_M (both with MTP)"), ("olmoe", "OLMoE-1B-7B Q4_K_M (fits VRAM)"), ("q36", "Qwen3.6-35B-A3B hybrid (fits VRAM)"),
