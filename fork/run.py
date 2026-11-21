@@ -7655,7 +7655,7 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
                 import sqlite3
                 b_ = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select tps, pp, bno, start_ts, rowid from runs where model=? and test=? and build not like 'stock%' and build not like 'strata%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " order by tps desc limit 1", (os.path.basename(r_["model"]), ALIASES.get(r_["test"], r_["test"]))).fetchone()
             except sqlite3.Error: b_ = None
-            if b_: x.update(t=f(b_[0], 2), p=f(b_[1], 1) if b_[1] else "", bt=f"b{int(b_[2]) if b_[2] else '?'} {str(b_[3])[5:10]}", bts=f"b{int(b_[2]) if b_[2] else '?'}", id=str(b_[4]), g=gpus_used(b_[4]), vp=f"b{int(b_[2]) if b_[2] else '?'} {str(b_[3])[:10]} best run, no stock")
+            if b_: x.update(t=f(b_[0], 2), p=f(b_[1], 1) if b_[1] else "", bt=f"b{int(b_[2]) if b_[2] else '?'} {str(b_[3])[5:10]}", bts=f"b{int(b_[2]) if b_[2] else '?'}", id=str(b_[4]), g=gpus_used(b_[4]), keeptail=True)   # keeptail: the builds and id columns show though there is no stock
     for x in body:   # a cell with no run in the window but older builds' runs (their gains below it): sorted among the done cells by its best older gain (user 2026-11-21)
         og = [math.prod(g) ** (1 / len(g)) for o in x.get("old", []) for g in [[v for v in (o.get("gtv"), o.get("gpv")) if v]] if g]
         if not x["gm"] and og:
@@ -7698,7 +7698,7 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         ln = col(37 if x.get("is_old") else {"done": "1;92", "running": "1;97", "queued": "90"}.get(x.get("section"), 1), f"{x['name']:<{W['name']}}") + "".join(cell(k) for k in ours[1:]) + (col(31, " FAIL") if x["fail"] else "") + (col(33, " LOOP") if x.get("loop") else "")   # name colour = state (`run status`): green done, white running, grey next
         bcell = lambda: "  " + col(90, f"{x.get('vp', ''):<{W['vp']}}")   # the best run: build, prompt, pp and t with ms per token, power limits
         tail = cell("st") + cell("sp") + gcell("gt", x["gtv"]) + gcell("gp", x["gpv"]) + vcell("vt") + bcell() + "  " + col(36, f"{x.get('ppl', ''):>{W['ppl']}}") + "  " + col(37 if x.get("is_old") else 36, f"{x['bt']:<{W['bt']}}") + "".join("  " + col(37 if k == "id" else 36, f"{x[k]:>{W[k]}}") for k in ("id", "sid"))
-        if not x["st"] and not x.get("is_old"):   # no stock row to compare with: the stock cells stay empty, "vs best" (against our own earlier builds) is still shown
+        if not x["st"] and not x.get("is_old") and not x.get("keeptail"):   # no stock row to compare with: the stock cells stay empty, "vs best" (against our own earlier builds) is still shown
             tail = " " * sum(W[k] + 2 for k in ("st", "sp", "gt", "gp")) + vcell("vt") + bcell()
             if not (x.get("vtv") or x.get("vp") or "first" == x.get("vt")): tail = ""
         if wrap and tail.strip(): out += [ln, col(37, f"{x['name']:<{W['name']}}") + tail]
