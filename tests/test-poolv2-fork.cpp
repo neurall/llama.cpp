@@ -547,6 +547,11 @@ static int unit_tests() {
     {   // c2 decode heat: xscore x 1e6; a victim must be colder than the newcomer by the pay-back margin; the dist refresh every 64 steps
         check("decode heat: xscore x 1e6", pv2_decode_heat(0.25) == 250000 && pv2_decode_heat(0.0) == 0);
         check("victim heat: less the margin", pv2_victim_heat(0.25, 0.05) == 200000);
+        // move budget: 1 MiB newcomer, 25 GB/s link, 450 GB/s copies: the pay-back cap is 18 MiB; a 10 us window caps it at 4.5 MB; no window, no moves
+        check("move budget: pay-back cap", pv2_move_budget(1 << 20, 25.0, 450.0, 1e9) == (size_t) (18.0 * (1 << 20)));
+        check("move budget: idle window cap", pv2_move_budget(1 << 20, 25.0, 450.0, 10.0) == 4500000);
+        check("move budget: no window or rate, nothing moves", pv2_move_budget(1 << 20, 25.0, 450.0, 0.0) == 0 && pv2_move_budget(1 << 20, 0.0, 450.0, 10.0) == 0 &&
+              pv2_move_budget(1 << 20, 25.0, 0.0, 10.0) == 0);
         check("dist due: at the first step and every 64", pv2_dist_due(0, PV2_NONE) && !pv2_dist_due(63, 0) && pv2_dist_due(64, 0) && pv2_dist_due(130, 64));
         pv2_heap h = pv2_make(0, 1000);
         pv2_add(h, 400, { 1, 100, pv2_decode_heat(0.22), false });    // colder than 0.25, not by the margin 0.05

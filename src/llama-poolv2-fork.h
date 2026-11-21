@@ -355,6 +355,14 @@ static inline size_t pv2_target_main(size_t lo, size_t hi, size_t M, size_t H, s
 static inline int64_t pv2_decode_heat(double xscore) { return std::llround(1e6 * xscore); }
 static inline int64_t pv2_victim_heat(double xscore, double margin) { return pv2_decode_heat(xscore - margin); }
 // c2 decode: the targets (pv2_heat_dist, ~2 ms on 24.6k experts) are refreshed at the first step and every 64 steps, never per pick (last: PV2_NONE none yet)
+// c2 moves (user 2026-11-21: VRAM copies are cheap, a sorted heap saves re-uploads): a chain for a newcomer of n bytes may copy at most the bytes whose copy
+// time (copy_gbs: a device copy reads and writes, about half the VRAM bandwidth) equals one upload of the newcomer over the link (pcie_gbs), and no more than
+// fit in the idle window at the safe point (idle_us; <= 0: no window, nothing moves). Feeds pv2_plan_move's budget.
+static inline size_t pv2_move_budget(size_t n, double pcie_gbs, double copy_gbs, double idle_us) {
+    if (!(pcie_gbs > 0.0) || !(copy_gbs > 0.0) || !(idle_us > 0.0)) { return 0; }
+    const double pay = (double) n * copy_gbs / pcie_gbs, win = idle_us * copy_gbs * 1e3;
+    return (size_t) std::min(pay, win);
+}
 static constexpr uint64_t PV2_DIST_EVERY = 64;
 static inline bool pv2_dist_due(uint64_t step, uint64_t last) { return last == PV2_NONE || step >= last + PV2_DIST_EVERY; }
 // c2: a main-heap window for n bytes near target t: the free window nearest t anywhere in the heap first, else (heat above INT64_MIN) residents colder than
