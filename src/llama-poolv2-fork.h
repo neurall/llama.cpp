@@ -548,6 +548,33 @@ static inline std::vector<pv2_step> pv2_sort_step(const pv2_heap & h0, const std
     }
 }
 
+// The KV zone / lend / room take [0, Z) of the heap (user 2026-11-21: they must take the coldest, not whatever the heat order put at the low end; a 15.5k prompt
+// threw out 348 experts above the 90th percentile of decode heat and 1.7k above the median). Residents overlapping [0, Z), hottest first (not pinned, not a hold,
+// heat above min_heat), each moves above Z by pv2_plan_move on the heap cut at Z: a free window nearest Z, else over the colder residents there (the chain shifts,
+// only a colder one leaves). Steps run in order: an eviction is a step with to == PV2_NONE, then a chain's steps, then the resident itself (`evicted` lists the ids); bytes copied stay within `budget`.
+struct pv2_zone { std::vector<pv2_step> steps; std::vector<int32_t> evicted; size_t bytes = 0; };
+static inline pv2_zone pv2_sort_range(const pv2_heap & h, size_t Z, size_t budget, int64_t min_heat) {
+    pv2_zone z;
+    pv2_heap sub = pv2_make(std::min(Z, h.hi), h.hi);
+    for (const auto & [s, r] : h.res) { if (s >= Z) { pv2_add(sub, s, r); } }
+    for (const auto & [s, r] : h.res) { if (s < Z && s + r.n > Z) { pv2_add(sub, Z, { PV2_HOLD, s + r.n - Z, 0, true, 1 }); } }   // the resident across Z still covers its bytes above it until it moves
+    std::vector<size_t> cand;
+    for (const auto & [s, r] : h.res) { if (s < Z && !r.pin && r.id != PV2_HOLD && r.heat > min_heat) { cand.push_back(s); } }
+    std::stable_sort(cand.begin(), cand.end(), [&](size_t a, size_t b) { const pv2_res & x = h.res.at(a), & y = h.res.at(b); return x.heat != y.heat ? x.heat > y.heat : a < b; });
+    for (size_t s : cand) {
+        const pv2_res & r = h.res.at(s);
+        if (z.bytes + r.n > budget) { break; }
+        const pv2_move mv = pv2_plan_move(sub, Z, r.n, r.u, r.heat, budget - z.bytes - r.n);
+        if (!mv.ok || mv.s == PV2_NONE) { continue; }
+        for (size_t es : mv.evict) { z.evicted.push_back(sub.res.at(es).id); z.steps.push_back({ sub.res.at(es).id, es, PV2_NONE }); }   // an eviction is a step with no destination, in order
+        pv2_apply_move(sub, mv, r);
+        sub.res.at(mv.s).pin = true;   // placed: a later mover neither evicts nor shifts it (its copy would be wasted)
+        for (const auto & st : mv.steps) { z.steps.push_back(st); }
+        z.steps.push_back({ r.id, s, mv.s });
+        z.bytes += mv.bytes + r.n;
+    }
+    return z;
+}
 struct pv2_cand { int32_t id; size_t n, u; int64_t heat; };
 // The switch to decode (user 2026-11-21: "this tail layer sized area is fully refilled and reclaimed by hottest missing moes"): the landing area keeps no cold
 // leftovers. Over its residents (decode heat set by the caller) and `miss` (experts no heap holds, hottest first), hottest first, a resident before a newcomer

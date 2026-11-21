@@ -547,6 +547,72 @@ static int unit_tests() {
     {   // c2 decode heat: xscore x 1e6; a victim must be colder than the newcomer by the pay-back margin; the dist refresh every 64 steps
         check("decode heat: xscore x 1e6", pv2_decode_heat(0.25) == 250000 && pv2_decode_heat(0.0) == 0);
         check("victim heat: less the margin", pv2_victim_heat(0.25, 0.05) == 200000);
+        {   // zone sort: the KV zone [0, Z) must only take the coldest: hotter residents move out above Z (free window first, else over a colder one there)
+            pv2_heap h = pv2_make(0, 1000);
+            pv2_add(h, 0,   { 1, 100, 100, false, 1 });   // hot, in the zone
+            pv2_add(h, 100, { 2, 100, 1,   false, 1 });   // cold, in the zone
+            pv2_add(h, 200, { 3, 100, 50,  false, 1 });   // above the zone (Z = 200)
+            const pv2_zone zp = pv2_sort_range(h, 200, SIZE_MAX, 1);   // heat above 1 moves; the cold one stays
+            check("zone sort: the hot one leaves the zone into the free window above it", zp.steps.size() == 1 && zp.steps[0].id == 1 && zp.steps[0].to >= 200 && zp.evicted.empty());
+            pv2_heap g = h;   // apply and check: the zone now holds only the cold one
+            for (const auto & st : zp.steps) { const pv2_res v = pv2_drop(g, st.from); if (st.to != PV2_NONE) { pv2_add(g, st.to, v); } }
+            bool hot_in_zone = false;
+            for (const auto & [x, r] : g.res) { hot_in_zone = hot_in_zone || (x < 200 && r.heat > 1); }
+            check("zone sort: no hot resident left in the zone", !hot_in_zone);
+            // no free window above: a colder resident there is evicted, never a hotter one
+            pv2_heap f = pv2_make(0, 400);
+            pv2_add(f, 0,   { 1, 100, 100, false, 1 });
+            pv2_add(f, 100, { 2, 100, 1,   false, 1 });
+            pv2_add(f, 200, { 3, 100, 5,   false, 1 });   // colder than the hot one
+            pv2_add(f, 300, { 4, 100, 500, false, 1 });   // hotter
+            const pv2_zone fz = pv2_sort_range(f, 200, SIZE_MAX, 0);
+            check("zone sort: the colder resident above the zone is evicted for the hot one", fz.steps.size() == 2 && fz.steps[0].id == 3 && fz.steps[0].to == PV2_NONE && fz.steps[1].id == 1 && fz.evicted.size() == 1 && fz.evicted[0] == 3);
+            const pv2_zone bz = pv2_sort_range(f, 200, 50, 0);   // a budget below one expert: nothing moves
+            check("zone sort: the byte budget stops the moves", bz.steps.empty() && bz.evicted.empty());
+            // pinned residents and holds stay
+            pv2_heap p = pv2_make(0, 400);
+            pv2_add(p, 0, { 1, 100, 100, true, 1 });
+            pv2_add(p, 100, { PV2_HOLD, 100, 0, true, 1 });
+            const pv2_zone pz = pv2_sort_range(p, 200, SIZE_MAX, 0);
+            check("zone sort: a pinned resident and a hold do not move", pz.steps.empty());
+        }
+        {   // property: random heaps, the zone's total heat never rises, the heap stays sound, evictions are colder than what moved
+            std::mt19937 g(4242);
+            bool good = true; size_t plans = 0, moved = 0;
+            for (int it = 0; it < 300; ++it) {
+                pv2_heap h = pv2_make(0, 2000);
+                std::vector<size_t> starts;
+                size_t at = 0;
+                while (at + 40 < 2000) {
+                    const size_t n = 20 + (g() % 3) * 20;
+                    if (g() % 4 == 0) { at += n; continue; }
+                    pv2_add(h, at, { (int32_t) starts.size() + 1, n, (int64_t) (g() % 1000), g() % 7 == 0, 1 });
+                    starts.push_back(at); at += n;
+                }
+                const size_t Z = 400 + (g() % 8) * 100;
+                auto zone_heat = [&](const pv2_heap & x) { int64_t t = 0; for (const auto & [s2, r] : x.res) { if (s2 < Z && r.id > 0) { t += r.heat * (int64_t) r.n; } } return t; };
+                const int64_t before = zone_heat(h);
+                const pv2_zone zp = pv2_sort_range(h, Z, SIZE_MAX, 0);
+                pv2_heap a = h;
+                bool applied = true;
+                for (const auto & st : zp.steps) { if (!a.res.count(st.from)) { applied = false; break; } const pv2_res v = pv2_drop(a, st.from); if (st.to != PV2_NONE && !pv2_add(a, st.to, v)) { applied = false; break; } }
+                if (!applied && good) { printf("  case %d: a step did not apply (%zu steps, %zu evicted)\n", it, zp.steps.size(), zp.evicted.size()); }
+                good = good && applied;
+                int64_t prev_end = 0; bool sound = true;
+                for (const auto & [s2, r] : a.res) { sound = sound && s2 >= (size_t) prev_end && s2 + r.n <= a.hi; prev_end = s2 + r.n; }
+                const bool colder = zone_heat(a) <= before;
+                if ((!sound || !colder) && good) { printf("  case %d: sound %d zone heat %lld -> %lld, %zu steps %zu evicted\n", it, (int) sound, (long long) before, (long long) zone_heat(a), zp.steps.size(), zp.evicted.size()); }
+                good = good && sound && colder;
+                int64_t max_moved = -1, max_ev = -1;
+                for (const auto & st : zp.steps) { for (const auto & [s2, r] : h.res) { if (r.id == st.id) { max_moved = std::max(max_moved, r.heat); } } }
+                for (int32_t id : zp.evicted) { for (const auto & [s2, r] : h.res) { if (r.id == id) { max_ev = std::max(max_ev, r.heat); } } }
+                if (!(zp.evicted.empty() || max_ev < max_moved) && good) { printf("  case %d: evicted heat %lld vs hottest mover %lld\n", it, (long long) max_ev, (long long) max_moved); }
+                good = good && (zp.evicted.empty() || max_ev < max_moved);   // every eviction is colder than the hottest mover (each is colder than its own mover)
+                plans += !zp.steps.empty(); moved += zp.steps.size();
+            }
+            printf("zone sort property: %zu heaps changed, %zu moves\n", plans, moved);
+            check("zone sort: 300 random heaps stay sound, the zone only gets colder, evictions are colder than the movers", good && plans > 100);
+        }
         // move budget: 1 MiB newcomer, 25 GB/s link, 450 GB/s copies: the pay-back cap is 18 MiB; a 10 us window caps it at 4.5 MB; no window, no moves
         check("move budget: pay-back cap", pv2_move_budget(1 << 20, 25.0, 450.0, 1e9) == (size_t) (18.0 * (1 << 20)));
         check("move budget: idle window cap", pv2_move_budget(1 << 20, 25.0, 450.0, 10.0) == 4500000);
