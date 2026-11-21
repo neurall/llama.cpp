@@ -2706,7 +2706,7 @@ static void pv2_zone_sort(moe_cache * mc, size_t a, size_t b) {
     auto & v = mc->v2;
     const bool from_low_end = a <= v.main.lo || (!v.held.empty() && v.held[0].first <= v.main.lo && v.held[0].second >= a);   // only a zone growing up from the heap's low end (a room or lend at the top takes what is there)
     if (!from_low_end) { return; }
-    static const bool off = [] { const char * e = moe_opt("zone-sort"); return e && atoi(e) == 0; }();
+    static const bool off = [] { const char * e = moe_opt("zone-sort"); return !(e && atoi(e) != 0); }();   // --moe zone-sort=1: on (off by default: it keeps 1.7k hot experts but showed no decode gain, 254 ms more prompt)
     if (off || v.ap_idx >= mc->alias.size()) { return; }
     optime_t _ot(OP_ZONE_SORT);
     std::lock_guard<std::mutex> lk(mc->mtx);
