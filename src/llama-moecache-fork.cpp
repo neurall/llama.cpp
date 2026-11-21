@@ -8403,6 +8403,7 @@ static size_t pv2_fill_free(moe_cache * mc, bool wait, bool ini_only) {
         }
         std::stable_sort(rest.begin(), rest.end(), [](const ex & a, const ex & b) { return a.sc > b.sc; });
         size_t n2 = 0; double b2 = 0.0;
+        static int dbg = 0; if (dbg++ < 8) { LLAMA_LOG_WARN("moe-cache: pool-v2: rest pass: largest free window %.1f MB, %zu missing experts with a score\n", gmax / 1e6, rest.size()); }
         for (const auto & c : rest) {
             layer_state & ls = mc->layers[c.li];
             if (ls.v2n > gmax) { continue; }
