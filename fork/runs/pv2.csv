@@ -1,0 +1,9 @@
+name,model,n,test,tokens,args,extra
+pv2-ol-off,olmoe,2,pf1k,64,"--moe mode=cache,sim-vram=3072,sim-ram=4900,verify=2,poison=3,pool-v2=0",--env CUDA_VISIBLE_DEVICES=0 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+pv2-ol-on,olmoe,2,pf1k,64,"--moe mode=cache,sim-vram=3072,sim-ram=4900,verify=2,poison=3,pool-v2=1",--env CUDA_VISIBLE_DEVICES=0 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+pv2-ol-full-off,olmoe,2,pf1k,64,"--moe mode=cache,verify=2,pool-v2=0",--env CUDA_VISIBLE_DEVICES=0
+pv2-ol-full-on,olmoe,2,pf1k,64,"--moe mode=cache,verify=2,pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
+pv2-q-vf-off,qwen38,2,pf14k1k,64,"-bs --moe verify=2,pool-v2=0",--env CUDA_VISIBLE_DEVICES=0
+pv2-q-vf-on,qwen38,2,pf14k1k,64,"-bs --moe verify=2,pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
+pv2-q-off,qwen38,2,pf14k1k,1024,-bs,--env CUDA_VISIBLE_DEVICES=0
+pv2-q-on,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
