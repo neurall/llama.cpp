@@ -18964,6 +18964,14 @@ static bool pred_arm(void * b) {
     return false;
 }
 
+// --moe bell-pf=1: a layer's predicted picks the card has no block for go into the bell pool workers' caches before the layer's bell rings, each worker
+// the rows it will compute (bellpool::prefetch). The pool read every missed row cold from RAM: 1.6 experts in 42 us a layer, 71 GB/s on 32 workers,
+// 40-60% of its dots' speed on cached rows (Qwen3.8 IQ3_S one card, 2026-11-21), while the card waited in k_moe_rows (571 us a token, nsys). Turns the
+// prediction bell on where the RAM pool holds every expert as well (bell-pred's default 1 leaves it off there).
+static bool bell_pf_on() { static const bool v = [] { const char * e = moe_opt("bell-pf"); return e && atoi(e) != 0; }(); return v; }
+static std::unordered_map<const llama_moe_cache_layer_fork *, std::vector<int32_t>> g_pf_last;   // a layer's prefetched experts, until its bell
+static uint64_t g_pf_n = 0, g_pf_experts = 0, g_pf_cov = 0, g_pf_miss = 0;
+
 static void pred_serve(const llama_moe_cache_layer_fork * pub, const ggml_bell * b) {
     g_pred_n++;
     moe_cache * mc = g_cache;
@@ -18975,6 +18983,27 @@ static void pred_serve(const llama_moe_cache_layer_fork * pub, const ggml_bell *
     ggml_rampool_ahead_fork(keys, 3, ids, n);   // the ones already in RAM or on their way are skipped there
     g_pred_picks += (uint64_t) n;
     g_pred_asked++;
+    if (bell_pf_on()) {
+        const bell_chain * ch = nullptr;
+        for (const auto & o : g_bell_chains) { if (o.pub == pub) { ch = &o; break; } }
+        bellpool * pool = bell_pool();
+        if (pool && ch && ch->pool_ok == 1 && ch->up && ch->gate && ch->down) {   // the rows the pool's run reads (bell_pool_serve)
+            const ggml_tensor * wu = ch->up->src[0], * wg = ch->gate->src[0], * wd = ch->down->src[0];
+            bellpool_pf P;
+            P.n_embd = (int) wu->ne[0]; P.n_ff = (int) wu->ne[1];
+            P.up_row = wu->nb[1]; P.gate_row = wg->nb[1]; P.down_row = wd->nb[1];
+            auto & last = g_pf_last[pub];
+            last.clear();
+            for (int i = 0; i < n && P.n < 16; ++i) {
+                P.w_up[P.n] = bell_pool_expert(wu, ids[i]); P.w_gate[P.n] = bell_pool_expert(wg, ids[i]); P.w_down[P.n] = bell_pool_expert(wd, ids[i]);
+                P.n++;
+                last.push_back(ids[i]);
+            }
+            pool->prefetch(P);
+            g_pf_n++;
+            g_pf_experts += (uint64_t) P.n;
+        }
+    }
 }
 
 // every armed prediction bell the card has written since the host last read it
@@ -19019,6 +19048,15 @@ static void bell_serve(bell_chain & c) {
     bl.seen = b->seq;
     int32_t miss[GGML_BELL_MAX_USED];
     const int n = ggml_bell_host_misses(b, miss);
+    if (bell_pf_on()) {   // how many of the layer's real misses its prediction had prefetched
+        auto it = g_pf_last.find(c.pub);
+        for (int i = 0; i < b->n_used && n > 0; ++i) {
+            if (miss[i] < 0) { continue; }
+            g_pf_miss++;
+            if (it != g_pf_last.end() && std::find(it->second.begin(), it->second.end(), miss[i]) != it->second.end()) { g_pf_cov++; }
+        }
+        if (it != g_pf_last.end()) { it->second.clear(); }   // one token's prediction
+    }
     memcpy(c.ids_all->data, b->ids, sizeof(int32_t) * (size_t) b->n_used);
     if (n > 0) {
         memcpy(c.x->data, ggml_bell_x(b), sizeof(float) * (size_t) b->n_embd);
@@ -19111,7 +19149,7 @@ void * llama_moe_cache_bell_fork(const llama_moe_cache_layer_fork * pub, int64_t
 // the prediction bell of layer next (its router on the layer before's input): memory mapped for next's card, k picks, no input
 void * llama_moe_cache_bell_pred_fork(const llama_moe_cache_layer_fork * next, int64_t k) {
     static const int mode = [] { const char * e = moe_opt("bell-pred"); return e ? atoi(e) : 1; }();
-    if (mode <= 0 || (mode == 1 && !g_rp_partial) || !bell_opt() || !next || !next->dev_table || !next->dev_table->buffer || k > GGML_BELL_MAX_USED) { return nullptr; }
+    if (mode <= 0 || (mode == 1 && !g_rp_partial && !bell_pf_on()) || !bell_opt() || !next || !next->dev_table || !next->dev_table->buffer || k > GGML_BELL_MAX_USED) { return nullptr; }
     bell_pred & p = g_bell_preds[next];
     if (p.tried) { return p.mem; }
     p.tried = true;
@@ -19188,6 +19226,12 @@ static void bell_free_all() {
         LLAMA_LOG_WARN("moe-cache: bell read-ahead: %" PRIu64 " predictions read, %" PRIu64 " with picks the card lacked, %" PRIu64 " such picks asked of the RAM pool\n",
                        g_pred_n, g_pred_asked, g_pred_picks);
     }
+    if (g_pf_n > 0) {
+        LLAMA_LOG_WARN("moe-cache: bell prefetch: %" PRIu64 " layers, %.2f experts each into the pool workers' caches; %" PRIu64 " of %" PRIu64 " missed picks (%.0f%%) had been prefetched\n",
+                       g_pf_n, (double) g_pf_experts / (double) g_pf_n, g_pf_cov, g_pf_miss, g_pf_miss ? 100.0 * (double) g_pf_cov / (double) g_pf_miss : 0.0);
+    }
+    g_pf_n = g_pf_experts = g_pf_cov = g_pf_miss = 0;
+    g_pf_last.clear();
     for (auto & kv : g_bell_preds) { if (kv.second.mem && kv.second.free_fn) { kv.second.free_fn(kv.second.mem); } }
     g_bell_preds.clear();
     g_pred_armed.clear();

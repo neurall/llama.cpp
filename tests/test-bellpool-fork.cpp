@@ -5,6 +5,7 @@
 #undef NDEBUG
 #include <cassert>
 #include <cstdio>
+#include <map>
 #include <random>
 
 static void dot_f32(int n, float * s, size_t, const void * x, size_t, const void * y, size_t, int) {
@@ -182,6 +183,44 @@ int main() {
             assert(o[r] == a * uu);
         }
     }
-    printf("ok: bell pool, 1/3/8 workers, 50 layers each, float and quantized input, wake after sleep, up and gate in one pass, down rows in pairs, clamped SwiGLU, SITU\n");
+    {   // a row of an expert is computed by the same worker whatever the other missing experts are and in which order: a worker can then warm its own
+        // cache with its rows of a layer's predicted misses before the layer's bell rings (bellpool::prefetch)
+        static std::mutex own_mu;
+        static std::map<const void *, std::thread::id> own;
+        const bellpool_dot_t rec_dot = [](int n, float * s, size_t bs, const void * x, size_t bx, const void * y, size_t by, int nrc) {
+            { std::lock_guard<std::mutex> lk(own_mu); own[x] = std::this_thread::get_id(); }
+            dot_f32(n, s, bs, x, bx, y, by, nrc);
+        };
+        const int n_embd = 96, n_ff = 40;
+        std::mt19937 rng(21);
+        std::normal_distribution<float> nd(0.0f, 0.3f);
+        std::vector<std::vector<float>> w(9);   // up, gate and down of experts A, B, C
+        for (auto & v : w) { v.resize((size_t) n_ff * n_embd); for (float & f : v) { f = nd(rng); } }
+        std::vector<float> x(n_embd), o(3 * (size_t) n_embd);
+        for (float & f : x) { f = nd(rng); }
+        bellpool pool(4);
+        auto run_with = [&](const std::vector<int> & ex) {
+            bellpool_layer L;
+            L.n_embd = n_embd; L.n_ff = n_ff; L.n = (int) ex.size(); L.x = x.data();
+            L.up   = { rec_dot, nullptr, (size_t) n_embd * 4, (size_t) n_embd * 4 };
+            L.gate = { rec_dot, nullptr, (size_t) n_embd * 4, (size_t) n_embd * 4 };
+            L.down = { rec_dot, nullptr, (size_t) n_ff * 4,   (size_t) n_ff * 4 };
+            for (int i = 0; i < L.n; ++i) {
+                L.w_up[i]   = (const char *) w[3 * ex[i]].data();
+                L.w_gate[i] = (const char *) w[3 * ex[i] + 1].data();
+                L.w_down[i] = (const char *) w[3 * ex[i] + 2].data();
+                L.out[i]    = o.data() + (size_t) i * n_embd;
+            }
+            own.clear();
+            pool.run(L);
+            return own;
+        };
+        const auto ab  = run_with({ 0, 1 });
+        const auto cba = run_with({ 2, 1, 0 });
+        size_t checked = 0;
+        for (const auto & kv : ab) { assert(cba.count(kv.first) && cba.at(kv.first) == kv.second); ++checked; }
+        assert(checked == 2 * (2 * (size_t) n_ff + (size_t) n_embd));   // every up, gate and down row of A and B
+    }
+    printf("ok: bell pool, 1/3/8 workers, 50 layers each, float and quantized input, wake after sleep, up and gate in one pass, down rows in pairs, clamped SwiGLU, SITU, a row's worker fixed\n");
     return 0;
 }

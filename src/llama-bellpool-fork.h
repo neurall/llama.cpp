@@ -62,18 +62,26 @@ static inline void bellpool_split(int64_t total, int n, int w, int64_t & lo, int
     hi = lo + base + (w < extra ? 1 : 0);
 }
 
+struct bellpool_pf {   // a layer's predicted misses: each worker reads its own rows of them into its caches before the layer's bell rings
+    int n = 0, n_embd = 0, n_ff = 0;
+    size_t up_row = 0, gate_row = 0, down_row = 0;   // bytes of one weight row
+    const char * w_up[16], * w_gate[16], * w_down[16];
+};
+
 struct bellpool {
     int n_workers = 1;   // worker 0 is the caller
     int64_t spin_us = 20000;
     std::vector<std::thread> th;
     std::atomic<uint64_t> gen{0};
     std::atomic<int> arrived{0};
-    std::atomic<int> phase_done[3];   // [1] unused
+    std::atomic<int> phase_done[3];   // [1]: a prefetch's workers done
     std::atomic<bool> stop{false};
     std::mutex mtx;
     std::condition_variable cv;
     std::atomic<int> sleeping{0};
+    std::atomic<int> kind{0};                  // the job of the last gen: 0 run (a layer's rows), 1 prefetch
     const bellpool_layer * job = nullptr;
+    const bellpool_pf *    pf  = nullptr;
     std::vector<uint8_t> qx_up, qx_gate;       // quantized inputs
     bool same_q = false;                       // gate reads qx_up
     std::vector<std::vector<uint8_t>> qh;      // per worker: quantized hidden vectors
@@ -105,10 +113,10 @@ struct bellpool {
         const void * qu = L.up.quant ? (const void *) qx_up.data() : (const void *) L.x;
         const void * qg = L.gate.quant ? (const void *) (same_q ? qx_up.data() : qx_gate.data()) : (const void *) L.x;
         int64_t lo, hi;
-        bellpool_split((int64_t) L.n * L.n_ff, n_workers, w, lo, hi);
+        bellpool_split(L.n_ff, n_workers, w, lo, hi);   // the same rows of every missing expert: a row's worker never depends on the other misses (prefetch)
         const bool two = L.upgate2 != nullptr && qu == qg;
-        for (int64_t t = lo; t < hi; ++t) {
-            const int e = (int) (t / L.n_ff), r = (int) (t % L.n_ff);
+        for (int e = 0; e < L.n; ++e) for (int64_t r = lo; r < hi; ++r) {
+            const int64_t t = (int64_t) e * L.n_ff + r;
             float u = 0.0f, g = 0.0f;
             if (two) {
                 L.upgate2(L.n_embd, &u, &g, L.w_up[e] + (size_t) r * L.up.w_row, L.w_gate[e] + (size_t) r * L.gate.w_row, qu);
@@ -130,26 +138,41 @@ struct bellpool {
     void down(int w) {   // each worker quantizes the hidden vectors of the experts its rows touch, into its own buffer (n_ff values each: cheap)
         const bellpool_layer & L = *job;
         int64_t lo, hi;
-        bellpool_split((int64_t) L.n * L.n_embd, n_workers, w, lo, hi);
+        bellpool_split(L.n_embd, n_workers, w, lo, hi);   // as up_gate: the same rows of every missing expert
         if (lo >= hi) { return; }
         uint8_t * qb = L.down.quant ? qh[w].data() : nullptr;
         if (L.down.quant) {
-            for (int e = (int) (lo / L.n_embd); e <= (int) ((hi - 1) / L.n_embd); ++e) { L.down.quant(hu.data() + (size_t) e * L.n_ff, qb + (size_t) e * L.down.q_row, L.n_ff); }
+            for (int e = 0; e < L.n; ++e) { L.down.quant(hu.data() + (size_t) e * L.n_ff, qb + (size_t) e * L.down.q_row, L.n_ff); }
         }
-        for (int64_t t = lo; t < hi; ) {
-            const int e = (int) (t / L.n_embd), r = (int) (t % L.n_embd);
+        for (int e = 0; e < L.n; ++e) {
             const void * q = L.down.quant ? (const void *) (qb + (size_t) e * L.down.q_row) : (const void *) (hu.data() + (size_t) e * L.n_ff);
-            const char * wr = L.w_down[e] + (size_t) r * L.down.w_row;
-            if (L.down2 != nullptr && t + 1 < hi && r + 1 < L.n_embd) {   // the next row is this worker's and this expert's
-                L.down2(L.n_ff, &L.out[e][r], &L.out[e][r + 1], wr, wr + L.down.w_row, q);
-                t += 2;
-            } else {
-                float s = 0.0f;
-                L.down.dot(L.n_ff, &s, 0, wr, 0, q, 0, 1);
-                L.out[e][r] = s;
-                t += 1;
+            for (int64_t r = lo; r < hi; ) {
+                const char * wr = L.w_down[e] + (size_t) r * L.down.w_row;
+                if (L.down2 != nullptr && r + 1 < hi) {   // the next row is this worker's
+                    L.down2(L.n_ff, &L.out[e][r], &L.out[e][r + 1], wr, wr + L.down.w_row, q);
+                    r += 2;
+                } else {
+                    float s = 0.0f;
+                    L.down.dot(L.n_ff, &s, 0, wr, 0, q, 0, 1);
+                    L.out[e][r] = s;
+                    r += 1;
+                }
             }
         }
+    }
+
+    // a prefetch: worker w's rows of each predicted miss, the rows up_gate and down give it, into its caches (a run after it reads them from there)
+    static void pf_span(const char * p, size_t bytes) { for (size_t o = 0; o < bytes; o += 64) { __builtin_prefetch(p + o, 0, 3); } }
+    void prefetch_share(int w) {
+        const bellpool_pf & P = *pf;
+        int64_t lo, hi;
+        bellpool_split(P.n_ff, n_workers, w, lo, hi);
+        for (int e = 0; e < P.n; ++e) {
+            pf_span(P.w_up[e]   + (size_t) lo * P.up_row,   (size_t) (hi - lo) * P.up_row);
+            pf_span(P.w_gate[e] + (size_t) lo * P.gate_row, (size_t) (hi - lo) * P.gate_row);
+        }
+        bellpool_split(P.n_embd, n_workers, w, lo, hi);
+        for (int e = 0; e < P.n; ++e) { pf_span(P.w_down[e] + (size_t) lo * P.down_row, (size_t) (hi - lo) * P.down_row); }
     }
 
     void wait_phase(int k, int target) {
@@ -173,6 +196,12 @@ struct bellpool {
             }
             seen = g;
             if (stop) { return; }
+            if (kind.load(std::memory_order_acquire) == 1) {
+                prefetch_share(w);
+                phase_done[1].fetch_add(1, std::memory_order_acq_rel);
+                idle_from = std::chrono::steady_clock::now();
+                continue;
+            }
             up_gate(w);
             phase_done[0].fetch_add(1, std::memory_order_acq_rel);
             wait_phase(0, n_workers);
@@ -186,6 +215,23 @@ struct bellpool {
     struct phase_time { int64_t quant = 0, upg = 0, wait0 = 0, dn = 0, wait2 = 0; int64_t n = 0, experts = 0; } pt;
     static int64_t now_ns() { return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
+    // a layer's predicted misses into the workers' caches: returns when every worker has issued its share (the reads land behind it). Called between
+    // runs from the thread that calls run, so no worker is inside a run then
+    void prefetch(const bellpool_pf & P) {
+        if (P.n <= 0) { return; }
+        pf = &P;
+        phase_done[1].store(0, std::memory_order_relaxed);
+        kind.store(1, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            gen.fetch_add(1, std::memory_order_acq_rel);
+        }
+        if (sleeping.load() > 0) { cv.notify_all(); }
+        prefetch_share(0);
+        phase_done[1].fetch_add(1, std::memory_order_acq_rel);
+        wait_phase(1, n_workers);
+    }
+
     // one layer: returns when every out row is written
     void run(const bellpool_layer & L) {
         if (L.n <= 0) { return; }
@@ -198,6 +244,7 @@ struct bellpool {
         hu.resize((size_t) L.n * L.n_ff);
         if (L.down.quant) { qh.resize(n_workers); for (auto & b : qh) { if (b.size() < (size_t) L.n * L.down.q_row) { b.resize((size_t) L.n * L.down.q_row); } } }
         for (auto & p : phase_done) { p.store(0, std::memory_order_relaxed); }
+        kind.store(0, std::memory_order_relaxed);
         {
             std::lock_guard<std::mutex> lk(mtx);
             gen.fetch_add(1, std::memory_order_acq_rel);
