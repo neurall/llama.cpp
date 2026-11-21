@@ -7641,11 +7641,29 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         gs = [g for g in (gt, gp) if g]; body[-1]["gm"] = math.prod(gs) ** (1 / len(gs)) if gs else 0   # overall gain: geometric mean of decode and prompt gain
         body[-1]["old"] = [dict(name=r["name"], is_old=True, out="", id=str(orid), sid="", prompt=r.get("prompt") or "", time="", load="", fail=False, t=f(t, 2), p=f(p, 1), st="", sp="", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=False, gm=0, old=[],
                                 bt=f"b{n} {d[5:]} {b}", bts=f"b{n} {b}", st_=None, g=gpus_used(orid)) for b, n, d, t, p, gt, gp, orid in older_gainers(r.get("model"), r.get("test"), st["ob"], st, body[-1]["gm"])] if st and not live and not r.get("ref") else []
+    for x in body:   # older builds' lines carry the cell's stock numbers; a line with stock only takes the newest older run of ours in its place (user 2026-11-21)
+        for o in x.get("old", []): o["st"], o["sp"] = x["st"], x["sp"]
+        gm_ = lambda y: math.prod(g) ** (1 / len(g)) if (g := [v for v in (y.get("gtv"), y.get("gpv")) if v]) else (float(y["t"]) / 1e6 if y.get("t") else 0)
+        if x.get("old") and (not x["t"] or x.get("section")):   # `run status`: one line per cell, its best run (by gain over stock, else decode t/s)
+            o = max(x["old"], key=gm_)
+            if not x["t"] or gm_(o) > gm_(x): x.update({k: o[k] for k in ("t", "p", "gt", "gp", "gtv", "gpv", "bt", "bts", "id", "g") if k in o}); x["gm"] = gm_(x) if x.get("gtv") or x.get("gpv") else 0
+            if x.get("section"): x["old"] = []
+            else: x["old"].remove(o) if o in x["old"] and x["t"] == o["t"] else None
+    for x, r_ in zip(body, recs):   # `run status`, a cell with no run in the window, no stock and so no older lines: its best older run of ours, no gain (user 2026-11-21: k31-io, k31-o)
+        if x.get("section") and not x["t"] and not x.get("old") and r_.get("model") and r_.get("test"):
+            try:
+                import sqlite3
+                b_ = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select tps, pp, bno, start_ts, rowid from runs where model=? and test=? and build not like 'stock%' and build not like 'strata%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " order by tps desc limit 1", (os.path.basename(r_["model"]), ALIASES.get(r_["test"], r_["test"]))).fetchone()
+            except sqlite3.Error: b_ = None
+            if b_: x.update(t=f(b_[0], 2), p=f(b_[1], 1) if b_[1] else "", bt=f"b{int(b_[2]) if b_[2] else '?'} {str(b_[3])[5:10]}", bts=f"b{int(b_[2]) if b_[2] else '?'}", id=str(b_[4]), g=gpus_used(b_[4]), vp=f"b{int(b_[2]) if b_[2] else '?'} {str(b_[3])[:10]} best run, no stock")
     for x in body:   # a cell with no run in the window but older builds' runs (their gains below it): sorted among the done cells by its best older gain (user 2026-11-21)
         og = [math.prod(g) ** (1 / len(g)) for o in x.get("old", []) for g in [[v for v in (o.get("gtv"), o.get("gpv")) if v]] if g]
         if not x["gm"] and og:
             x["gm"] = max(og)
             if x.get("section") == "queued": x["section"] = None
+    if not any(x.get("section") == "running" for x in body):   # `run status` with no list running: a cell with values is a result, not a queue entry, and sorts by its gain (user 2026-11-21)
+        for x in body:
+            if x.get("section") == "queued" and x["t"]: x["section"] = None
     SEC = {"done": 0, "running": 1, "queued": 2}   # `run status`: the sections in this order, each sorted by gain / list order
     if not live: body.sort(key=lambda x: (SEC.get(x["section"], 0), -x["gm"] if x["section"] in (None, "done") else 0))   # biggest overall gainers first (cells without stock last, list order kept)
     allrows = [y for x in body for y in [x] + x.get("old", [])]
