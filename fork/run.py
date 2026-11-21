@@ -8617,7 +8617,7 @@ def run_list(name, argv):
     ap.add_argument("-draft", "--draft", dest="draft", type=int, metavar="N", help="speculative draft on OUR cells of every model that has a `draft =` file in models.ini (ds: the DSpark draft): depth N (--spec-draft-n-max N and --moe spec-depth=N, the tuner out of the loop); the row name gets -draftN; stock cells and models without a draft file run as before")
     ap.add_argument("-a", "--cell-args", default="", metavar="ARGS", help="extra cell arguments for OUR cells (not stock), e.g. -a \"moe:split-f16=1\" (one moe: word per --moe key); stored in the args column of the runs, so the rows stay apart from the defaults. -nrt matches by cell, not by arguments: leave it off for an A/B")
     ap.add_argument("-pt", "--prompt-type", dest="pt", metavar="LIST", help="only the cells of these prompt types (comma list): i = input-heavy (mimo-i), io = input+output-heavy (mimo-io), o = output-heavy (mimo-o); the last word of the row name")
-    ap.add_argument("-ps", "--prompt-size", dest="ps", action="append", metavar="TEST", help="run THESE sizes instead of the list's own, for the models the other filters leave (repeatable): 100k4k = the source cut at 100k tokens behind an instruction, 4000 answer tokens; 100k = prompt only (the list's answer length); tetrisc4k = that test with 4000 answer tokens; any other name is a test as it is")
+    ap.add_argument("-ps", "--prompt-size", dest="ps", action="append", metavar="TEST", help="run THESE sizes instead of the list's own, for the models the other filters leave (repeatable): 100k4k = the source cut at 100k tokens behind an instruction, 4000 answer tokens; 4k512 = 4k tokens, 512 answer tokens; 100k = prompt only (the list's answer length); tetrisc4k = that test with 4000 answer tokens; any other name is a test as it is")
     ap.add_argument("-ub", "--ubatch", dest="ub", metavar="LIST", help="micro-batch clamps, a comma list (4k,8k,16k; k = 1024): every selected cell once per size with the server argument -ub N, which clamps the largest micro-batch per card (the automatic one is never raised); rows are named <name>-ub<size>")
     ap.add_argument("-sim", dest="hog_gpu", help="VRAM left free on every GPU for OUR cells (the server reports only that free and refuses past it, nothing held: --moe sim-vram): -sim 16g = every card behaves like a 16 GiB card; a bare number is GiB, m = MiB")
     ap.add_argument("-simram", dest="hog_ram", help="RAM left free for OUR cells (--moe sim-ram): -simram 32g; a bare number is GiB, m = MiB")
@@ -8716,11 +8716,12 @@ def run_list(name, argv):
         for r in rows: _first.setdefault(r["model"], r)
         _known = {r["test"] for r in rows} | set(TESTS) | set(ALIASES) | set(ALIASES.values())
         def _ps(p, r):   # 100k4k = prompt of 100k tokens + 4000 answer tokens; 100k = prompt only (the list's answer length); tetrisc4k = that test, 4000 answer tokens
+            r = dict(r, extra=" ".join(re.sub(r"--env PERF_P(?:TOK|NAME)=\S+", "", r.get("extra") or "").split()))   # a best-prompt row's cut (PERF_PTOK) would run its own prompt size, not this one
             if (m := re.fullmatch(r"(\d+)m((?:\d+k)?)", p)): p = f"{int(m[1]) * 1024}k{m[2]}"   # 1m1k = 1024k1k
-            if (m := re.fullmatch(r"(\d+)k(?:(\d+)k)?", p)):   # the source cut at that many tokens behind an instruction (PS_INSTR); an instruct model needs its chat template
+            if (m := re.fullmatch(r"(\d+)k(?:(\d+)(k?))?", p)):   # the source cut at that many tokens behind an instruction (PS_INSTR); an instruct model needs its chat template. 4k512: 512 answer tokens (user 2026-11-21)
                 # --keep-loops: beyond the source's length the prompt repeats it, and an answer about a repeated text may loop; repeating the request (3 more
                 # full prompts: ~15 min ours, ~3.5 h stock at 200k) cannot change that. The row keeps loop=1 (out of every statistic), the prompt speed stands.
-                return dict(r, test=f"pf{m[1]}k", **({"tokens": str(int(m[2]) * 1000)} if m[2] else {}), extra=((r.get("extra") or "") + " --keep-loops --chat " + shlex.quote(PS_INSTR)).strip())
+                return dict(r, test=f"pf{m[1]}k", **({"tokens": str(int(m[2]) * (1000 if m[3] else 1))} if m[2] else {}), extra=((r.get("extra") or "") + " --keep-loops --chat " + shlex.quote(PS_INSTR)).strip())
             if (m := re.fullmatch(r"([a-z]\w*?)(\d+)k", p)) and m[1] in _known: return dict(r, test=m[1], tokens=str(int(m[2]) * 1000))
             return dict(r, test=p if p.startswith("pf") or p in _known else "pf" + p)
         rows = [dict(_ps(p, r), name=r["name"].split("-")[0] + "-" + p) for r in _first.values() for p in o.ps]
