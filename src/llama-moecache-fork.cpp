@@ -320,6 +320,7 @@ struct upload_job {
     bool    bg      = false; // refill of a free block after a prompt (reheat_free_blocks): the step does not wait for it, a worker takes it only when no other
                              // job waits on its link, and it does not count against the swap budget
     bool    refill  = false; // any refill after a prompt (both parts of reheat_free_blocks): no DDR gate (upload_gate_for)
+    ggml_backend_event_t after[2] = { nullptr, nullptr };   // --moe ring-early: the worker waits for both before it writes (compute done with the block, the ring's last copy landed)
 };
 
 struct moe_cache {
@@ -7869,7 +7870,7 @@ static bool fixed_on() { static const bool v = [] { const char * e = moe_opt("fi
 // --moe reheat-all=1: every refill job at normal priority, not only each layer's top k. The background part waited behind the decode steps' own misses: after a
 // 15.5k prompt on one card the refill of 2.7-6.5 GB took ~1.1 s (2.4-5.9 GB/s of a 26.6 GB/s link) and its 68 tokens ran at 16.1 ms against 12.6 (Qwen3.8 IQ3_S, 2026-11-20)
 static bool reheat_all() { static const bool v = [] { const char * e = moe_opt("reheat-all"); return e && atoi(e) != 0; }(); return v; }
-static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = false) {   // ini_only: by the lifetime counts alone (the state ini's hot map and this run's use), no recent window
+static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = false, ggml_backend_event_t after = nullptr, ggml_backend_event_t after_ring = nullptr) {   // ini_only: by the lifetime counts alone (the state ini's hot map and this run's use), no recent window; after/after_ring: --moe ring-early (upload_job::after)
     static const bool on = [] { const char * e = moe_opt("reheat"); return !e || atoi(e) != 0; }();
     if (!on) {
         return 0;
@@ -7923,6 +7924,7 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = fals
             upload_job j { c[i].li, c[i].e, slot };
             j.bg       = !(fixed_on() || (wait && (c[i].part == 1 || reheat_all())));   // part 1 at normal priority (wait), the rest behind decode's own misses
             j.refill   = true;
+            j.after[0] = after; j.after[1] = after_ring;
             j.t_queued = ggml_time_us();
             jobs.push_back(j);
             const double xb = (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]);
@@ -7942,7 +7944,7 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = fals
     }
     mc->wcv.notify_all();
     static int logged = 0;
-    if (logged++ < 16) {
+    if (!after && logged++ < 16) {   // ring-early's calls are summed in cs_end's line
         LLAMA_LOG_WARN("moe-cache: after the prompt: %zu experts (%.2f GB) queued to refill the blocks it borrowed, best score first: %zu (%.2f GB) at normal priority "
                 "(each layer's top %d by decode score the cache misses), the rest in the background\n", jobs.size(), bytes / 1e9, n1, bytes1 / 1e9, (int) k);
     }
@@ -11509,6 +11511,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     mc->in_flight_stream += j.stream || j.bg;
                 }
                 auto & ls = mc->layers[j.layer_idx];
+                // --moe ring-early: the block went home while the prompt's last pass ran; no write before its kernels read it and the ring's copies landed
+                for (ggml_backend_event_t ev : j.after) { if (ev) { ggml_backend_event_synchronize(ev); } }
                 // ponytail: unlocked reads of gpu_started / n_steps; a race only delays or keeps one stale job
                 if (j.stream && (j.step != mc->n_steps || mc->gpu_started >= (int64_t) j.layer_idx)) {
                     std::lock_guard<std::mutex> lk(mc->wmtx);
@@ -13759,6 +13763,42 @@ static void cs_mark_done(moe_cache * mc, int k, size_t q, ggml_backend_t cbe) { 
     mc->cs_done[k] = q;
 }
 
+// --moe ring-early=1 (default off): the call's last pass gives its computed entries' blocks back as cs_end does (cls_home, cs_shadow_drop) and queues their refill
+// while its last layers compute: after a 15.5k prompt on one card decode waited ~1.1 s for the refill queued at the call's end (~70 tokens at 16-17 ms against 12.2,
+// Qwen3.8 IQ3_S, 2026-11-21). Only once the ring queued every copy of the pass: until then its plan takes computed entries' blocks for the layers to come.
+// shortcut: one card, no k arm (an expert split's shadows and the late fix plan blocks at their own hooks); two cards would need a gate per card
+static bool ring_early_on() { static const bool on = [] { const char * e = moe_opt("ring-early"); return e && atoi(e) != 0; }(); return on; }
+static std::atomic<bool> g_pp_last{false};   // the pass being queued is its call's last (llama_moe_cache_pp_last_fork, from llama_context::decode)
+static size_t   g_re_upto = 0;               // the pass positions before this went home early
+static uint32_t g_re_pass = 0;               // the pass g_re_upto counts in
+static uint64_t g_re_ent = 0, g_re_blk = 0, g_re_job = 0;   // this call: entries, blocks made free, refill jobs queued early (cs_end logs and zeroes them)
+static bool cs_all_issued(moe_cache * mc, int k) {   // no cache lock: every copy of the pass is queued on card k's upload stream
+    if (!cs_async(mc)) { return mc->cs_next[k] >= mc->cs_order.size(); }   // the scheduler thread copied them itself (cs_issue)
+    std::lock_guard<std::mutex> lk(mc->wmtx);
+    return g_cs_issued[k] >= mc->cs_order.size();
+}
+static void cs_ring_early(moe_cache * mc, int k) {   // cache lock held, scheduler thread, behind a hook's cs_mark_done and cs_all_issued
+    if (mc->n_links != 1 || g_cs_k_pass > 0.0 || !g_prompt_call.load(std::memory_order_relaxed) || !g_pp_last.load(std::memory_order_relaxed)) { return; }
+    if (g_re_pass != mc->cs_pass) { g_re_pass = mc->cs_pass; g_re_upto = 0; }
+    const size_t to = mc->cs_done[k];
+    if (to <= g_re_upto || to > mc->cs_order.size()) { return; }
+    // an entry whose kernels are queued before the done event of position to - 1; a block still marked in flight (a hook that never came) is left to cs_end
+    auto gone = [&](int32_t, int32_t b, int32_t o) {
+        const int64_t lx = cs_li_of(mc, o);
+        const int32_t q  = lx >= 0 && (size_t) lx < mc->cs_pos.size() ? mc->cs_pos[(size_t) lx] : -1;
+        return q >= 0 && (size_t) q < to && !csl(mc, (size_t) lx).slot_in_flight[b];
+    };
+    auto evict = [&](int32_t, int32_t b, int32_t o) { cs_evict(mc, (size_t) cs_li_of(mc, o), b); if (o >= 0) { mc->layers[(size_t) o].n_own--; } };
+    size_t n_blk = 0;
+    for (auto & ap : mc->alias) { n_blk += poolx_home_early(ap.segs, mc->pool, gone, evict); }
+    g_re_ent += to - g_re_upto;
+    g_re_blk += n_blk;
+    g_re_upto = to;
+    if (n_blk == 0) { return; }
+    // the refill waits for the kernels of every entry before `to` and for the pass's last ring copy (the link's tail is idle then)
+    g_re_job += reheat_free_blocks(mc, fixed_on() || !reheat_bg(), false, csl(mc, mc->cs_order[to - 1]).cs_done_ev, csl(mc, mc->cs_order.back()).ring_ev);
+}
+
 // the split of cstream layer il is about to be queued on compute stream cbe (scheduler thread)
 static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, int shadow) {   // shadow: -1 the layer itself, else the index of its shadow (another card's part of an expert split, a further chunk)
     std::vector<cs_job> jobs;
@@ -13825,10 +13865,12 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, int shadow) {  
     layer_state & ls = csl(mc, li);
     if (async) { cs_wait_issued(mc, ls.link, (size_t) mc->cs_pos[li]); }
     ggml_backend_event_wait(cbe, ls.ring_ev);   // its experts and table before its kernels
+    const bool early = ring_early_on() && cs_all_issued(mc, ls.link);
     std::lock_guard<std::mutex> lock(mc->mtx);
     for (int32_t b : ls.ring_slots) { ls.slot_in_flight[b] = false; }
     ls.ring_slots.clear();
     ls.ring_pending = false;
+    if (early) { cs_ring_early(mc, ls.link); }
 }
 
 // The split behind an entry's three expert matmuls (the sum of its experts, "ffn_moe_cs_rel-<il>": llama-graph.cpp names it, the scheduler starts a split there): the
@@ -13837,9 +13879,9 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, int shadow) {  
 // tokens: 63 ms per layer where upload and compute each fit in 55).
 static void cs_release(moe_cache * mc, ggml_backend_t cbe) {
     std::vector<cs_job> jobs;
+    int k = -1;
     {
         std::lock_guard<std::mutex> lock(mc->mtx);
-        int k = -1;
         for (int c = 0; c < mc->n_links; ++c) { if (mc->link_dev[c] == ggml_backend_get_device(cbe)) { k = c; } }
         if (k < 0 || mc->cs_hooked[k] <= mc->cs_done[k] || mc->cs_hooked[k] > mc->cs_order.size()) { return; }
         cs_mark_done(mc, k, mc->cs_hooked[k], cbe);
@@ -13847,6 +13889,10 @@ static void cs_release(moe_cache * mc, ggml_backend_t cbe) {
         cs_ahead(mc, k, SIZE_MAX, jobs);
     }
     cs_issue(mc, jobs);
+    if (ring_early_on() && cs_all_issued(mc, k)) {   // the entry's done event is behind its expert matmuls: its blocks go home now
+        std::lock_guard<std::mutex> lock(mc->mtx);
+        cs_ring_early(mc, k);
+    }
 }
 
 static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id, int n_splits, uint64_t uid) {
@@ -13877,7 +13923,12 @@ static void cs_end(moe_cache * mc) {
             l.ring_pending = false;
         }
         cs_shadow_drop(mc);
-        cls_home(mc);
+        cls_home(mc);   // entries ring-early sent home are home already: their blocks are -4, free or a refill's, which neither pass touches again
+        if (g_re_ent > 0) {
+            LLAMA_LOG_WARN("moe-cache: cstream: ring-early: %llu of %zu entries of the call's last pass went home before its end: %llu blocks free, %llu refill jobs queued then\n",
+                    (unsigned long long) g_re_ent, mc->cs_order.size(), (unsigned long long) g_re_blk, (unsigned long long) g_re_job);
+            g_re_ent = g_re_blk = g_re_job = 0;
+        }
         if (mc->cs_masked) {   // device tables held only their pass's range of experts: every layer's goes out again from its host table
             mc->cs_masked = false;
             std::lock_guard<std::mutex> lk(g_tbl_mtx);
@@ -16343,6 +16394,7 @@ static bool cpu_gpu_shape_on() {
 }
 
 extern "C" { GGML_API void ggml_backend_set_link_rate_fork(ggml_backend_dev_t dev, double gbs); }   // ggml-backend.cpp (declared there, no shared header)
+void llama_moe_cache_pp_last_fork(bool last) { g_pp_last.store(last, std::memory_order_relaxed); }   // llama_context::decode, before each pass (--moe ring-early)
 void llama_moe_cache_prompt_call_fork(bool on) {
     if (!on && g_cache) { cs_end(g_cache); }
     if (!on && g_cache && g_cs_pick_held.exchange(false)) { cs_rest_set(g_cache); }   // the ring back to its smallest: the KV and the decode graphs get the pool
