@@ -1,7 +1,9 @@
 // test-poolv2-fork: pool v2's placement rules (src/llama-poolv2-fork.h): one byte heap in heat order, no size classes. No GPU, no model.
 //   build: g++ -std=c++17 -O2 -I src tests/test-poolv2-fork.cpp -o test-poolv2-fork
 //   run:   ./test-poolv2-fork                                  the rules against a brute-force search, plus a negative control
-//          ./test-poolv2-fork --sim [HOTDIR] [SERVERLOG] [SEED]  the rules replayed on recorded decode heat (Qwen3.8 IQ3_S, the pool of one RTX 3090)
+//          ./test-poolv2-fork --sim [HOTDIR] [SERVERLOG] [SEED] [--heat=own|prev|global]  the rules replayed on recorded decode heat (Qwen3.8 IQ3_S, the
+//          pool of one RTX 3090); --heat: what drives the placement during a prompt: the request's own decode heat (default), the previous request's, or
+//          the map a release ships (the engine cannot know the request's own until the switch, where the refill uses it)
 #include "../src/llama-poolv2-fork.h"
 #include "../src/llama-poolalloc-fork.h"   // poolx_block_class: today's block bytes, to name the types behind the log's size classes
 
@@ -246,12 +248,14 @@ static int unit_tests() {
 static const int    NL = 48, NE = 512;
 static const size_t MiB = 1048576;
 
-static bool read_heat(const std::string & path, std::vector<int64_t> & h) {
+static bool read_heat(const std::string & path, std::vector<int64_t> & h, bool * settled) {
     std::ifstream f(path);
     std::string line;
     int got = 0;
     h.assign((size_t) NL * NE, 0);
+    *settled = false;
     while (std::getline(f, line)) {
+        if (line.rfind("# meta ", 0) == 0) { *settled = line.find("\"settled\": true") != std::string::npos; continue; }
         if (line.rfind("hot.", 0) != 0) { continue; }
         const int l = atoi(line.c_str() + 4);
         const size_t eq = line.find('=');
@@ -261,6 +265,25 @@ static bool read_heat(const std::string & path, std::vector<int64_t> & h) {
         ++got;
     }
     return got == NL;
+}
+
+// the map a release ships for the model (fork/run.py _hot_seeds): the settled prompt maps (all of them when none is), each layer's counts as shares of
+// the layer, averaged over the maps, times 1e5
+static std::vector<int64_t> shipped_map(const std::vector<int64_t> * maps, const bool * settled, int n) {
+    std::vector<int> use;
+    for (int k = 0; k < n; ++k) { if (settled[k]) { use.push_back(k); } }
+    if (use.empty()) { for (int k = 0; k < n; ++k) { use.push_back(k); } }
+    std::vector<int64_t> g((size_t) NL * NE, 0);
+    for (int l = 0; l < NL; ++l) {
+        std::vector<double> acc(NE, 0.0);
+        for (int k : use) {
+            double t = 0;
+            for (int e = 0; e < NE; ++e) { t += (double) maps[k][(size_t) l * NE + e]; }
+            for (int e = 0; e < NE; ++e) { acc[e] += (double) maps[k][(size_t) l * NE + e] / (t > 0 ? t : 1); }
+        }
+        for (int e = 0; e < NE; ++e) { g[(size_t) l * NE + e] = std::llround(acc[e] * 1e5 / (double) use.size()); }
+    }
+    return g;
 }
 
 struct cls_t { int blocks, layers; double mib; };
@@ -345,17 +368,19 @@ static void fill(sim_t & S, const std::vector<int64_t> & h) {
     land_index(S);
 }
 
-// one prompt of `passes` passes over all layers, every layer routing all but `skip` of its experts, then the switch to decode
-static row_t prompt(sim_t & S, const std::vector<int64_t> & h, int passes = 2, int skip = 24) {
+// one prompt of `passes` passes over all layers, every layer routing all but `skip` of its experts, then the switch to decode. hp: the heat the placement
+// knows during the prompt; hd: the request's own decode heat, known at the switch: the refill and the coverage use it
+static row_t prompt(sim_t & S, const std::vector<int64_t> & hp, const std::vector<int64_t> & hd, int passes = 2, int skip = 24) {
     row_t row;
-    const auto dist = pv2_heat_dist(h, sizes(S));
-    for (auto & [s, r] : S.main.res) { r.heat = h[r.id]; }
+    const auto dist = pv2_heat_dist(hp, sizes(S));
+    for (auto & [s, r] : S.main.res) { r.heat = hp[r.id]; }
     for (auto & [s, r] : S.land.res) { r.heat = -1; r.pin = false; }   // the landing area stays free for the stream: what it holds is a leftover
     std::vector<char> was(S.where.size());
     for (size_t i = 0; i < was.size(); ++i) { was[i] = S.where[i] != 0; row.s0 += was[i]; }
-    for (size_t i = 0; i < h.size(); ++i) { if (h[i] > 0 && dist[i] + S.n_of((int32_t) i) <= S.H) { row.cov_ideal += (double) h[i]; } }
+    const auto dd = pv2_heat_dist(hd, sizes(S));
+    for (size_t i = 0; i < hd.size(); ++i) { if (hd[i] > 0 && dd[i] + S.n_of((int32_t) i) <= S.H) { row.cov_ideal += (double) hd[i]; } }
     double all = 0;
-    for (int64_t v : h) { all += (double) v; }
+    for (int64_t v : hd) { all += (double) v; }
     row.cov_ideal /= all;
     size_t cur = S.land.lo, land_live = 0;
     auto res_of = [&](int32_t id) -> pv2_res & { return (S.where[id] == 1 ? S.main : S.land).res.at(S.at[id]); };
@@ -392,13 +417,13 @@ static row_t prompt(sim_t & S, const std::vector<int64_t> & h, int passes = 2, i
                 row.streamed[pass]++;
                 row.sbytes[pass] += n;
                 std::vector<pv2_res> out;
-                pv2_pick p = pv2_place(S.main, pv2_target(0, S.M, dist[id], n), n, u, h[id], S.reach, true);
+                pv2_pick p = pv2_place(S.main, pv2_target(0, S.M, dist[id], n), n, u, hp[id], S.reach, true);
                 if (p.s != PV2_NONE) {
-                    pv2_commit(S.main, p, { id, n, h[id], true }, &out);
+                    pv2_commit(S.main, p, { id, n, hp[id], true }, &out);
                     gone(out);
                     S.where[id] = 1; S.at[id] = p.s;
                 } else {
-                    p = pv2_place(S.land, cur, n, u, h[id], S.H - S.M, false);   // the ring: nearest its cursor
+                    p = pv2_place(S.land, cur, n, u, hp[id], S.H - S.M, false);   // the ring: nearest its cursor
                     if (p.s == PV2_NONE) { row.overflow++; continue; }   // the stream would wait for the layer computing
                     pv2_commit(S.land, p, { id, n, -1, true }, &out);
                     gone(out);
@@ -414,11 +439,11 @@ static row_t prompt(sim_t & S, const std::vector<int64_t> & h, int passes = 2, i
         for (int l = 0; l < NL; ++l) { unpin(l); }
     }
     for (size_t i = 0; i < was.size(); ++i) { row.survive += was[i] && S.where[i]; }
-    row.cov_before = coverage(S, h);
-    for (auto & [s, r] : S.land.res) { r.heat = h[r.id]; }
-    for (const auto & c : pv2_refill(S.land, missing(S, h))) { row.refill++; row.rbytes += c.n; }
+    row.cov_before = coverage(S, hd);
+    for (auto & [s, r] : S.land.res) { r.heat = hd[r.id]; }
+    for (const auto & c : pv2_refill(S.land, missing(S, hd))) { row.refill++; row.rbytes += c.n; }
     land_index(S);
-    row.cov_after = coverage(S, h);
+    row.cov_after = coverage(S, hd);
     for (const auto & [s, g] : S.main.gaps) {
         row.free_b += g;
         row.largest = std::max(row.largest, g);
@@ -444,12 +469,20 @@ static void print_row(int i, const char * name, const row_t & r) {
            r.free_b / (double) MiB, r.largest / (double) MiB, r.unusable / (double) MiB);
 }
 
-static int run_sim(const std::string & dir, const std::string & log, uint64_t seed) {
+static int run_sim(const std::string & dir, const std::string & log, uint64_t seed, const std::string & mode) {
     const char * names[4] = { "pf1k", "pf4k", "pf12k", "pf14k" };
     std::vector<int64_t> heat[4];
+    bool settled[4];
     for (int k = 0; k < 4; ++k) {
-        if (!read_heat(dir + "/" + names[k] + ".ini", heat[k])) { fprintf(stderr, "sim: cannot read %s/%s.ini\n", dir.c_str(), names[k]); return 1; }
+        if (!read_heat(dir + "/" + names[k] + ".ini", heat[k], &settled[k])) { fprintf(stderr, "sim: cannot read %s/%s.ini\n", dir.c_str(), names[k]); return 1; }
     }
+    if (mode != "own" && mode != "prev" && mode != "global") { fprintf(stderr, "sim: --heat=%s: own, prev or global\n", mode.c_str()); return 1; }
+    const std::vector<int64_t> shipped = shipped_map(heat, settled, 4);
+    // the heat the placement knows during prompt i of the 50 (the first one's previous request made the pf14k start state)
+    auto known = [&](int i) -> const std::vector<int64_t> & { return mode == "global" ? shipped : mode == "prev" ? heat[i == 0 ? 3 : (i - 1) % 4] : heat[i % 4]; };
+    std::string used;
+    for (int k = 0; k < 4; ++k) { if (settled[k]) { used += (used.empty() ? "" : ", ") + std::string(names[k]); } }
+    printf("placement heat during a prompt: %s%s\n", mode.c_str(), mode == "global" ? (" (the shipped map: the settled " + used + " merged)").c_str() : "");
     std::vector<cls_t> cls;
     double pool_mib = 0;
     if (!read_pool(log, cls, pool_mib)) { fprintf(stderr, "sim: no block pool line in %s\n", log.c_str()); return 1; }
@@ -511,7 +544,7 @@ static int run_sim(const std::string & dir, const std::string & log, uint64_t se
         S.M = (S.H - (ahead + 1) * full) / MiB * MiB;
         S.rng.seed(seed);
         fill(S, heat[3]);
-        const size_t need = prompt(S, heat[3]).peak_land;
+        const size_t need = prompt(S, heat[3], heat[3]).peak_land;   // sized on the request's own heat in every mode
         S.M = (S.H - need - big) / MiB * MiB;
         printf("\nstream %d layer(s) ahead: landing area %.0f MiB (in flight at most %.0f MiB with %.0f MiB for it), main heap %.0f MiB\n", ahead,
                (S.H - S.M) / (double) MiB, need / (double) MiB, (ahead + 1) * full / (double) MiB, S.M / (double) MiB);
@@ -520,12 +553,12 @@ static int run_sim(const std::string & dir, const std::string & log, uint64_t se
         printf("decode state before the prompt: %zu experts resident, coverage of pf14k %.1f%%\n", (size_t) std::count_if(S.where.begin(), S.where.end(),
                [](int8_t w) { return w != 0; }), 100 * coverage(S, heat[3]));
         print_head();
-        print_row(0, "pf14k", prompt(S, heat[3]));
+        print_row(0, "pf14k", prompt(S, mode == "global" ? shipped : heat[3], heat[3]));
         printf("50 prompts, each with the next request's decode heat (pf1k, pf4k, pf12k, pf14k in turn), from the pf14k state:\n");
         S.rng.seed(seed);
         fill(S, heat[3]);
         print_head();
-        for (int i = 0; i < 50; ++i) { print_row(i + 1, names[i % 4], prompt(S, heat[i % 4])); }
+        for (int i = 0; i < 50; ++i) { print_row(i + 1, names[i % 4], prompt(S, known(i), heat[i % 4])); }
     }
     printf("%s: %d failure(s)\n", g_fail ? "FAIL" : "OK", g_fail);
     return g_fail ? 1 : 0;
@@ -533,9 +566,12 @@ static int run_sim(const std::string & dir, const std::string & log, uint64_t se
 
 int main(int argc, char ** argv) {
     if (argc > 1 && strcmp(argv[1], "--sim") == 0) {
-        const std::string dir = argc > 2 ? argv[2] : "/p/bw/data/hot/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf";
-        const std::string log = argc > 3 ? argv[3] : "/p/bw/data/q5h/ring_early_switch-q1-p14k-re0.server.log";
-        return run_sim(dir, log, argc > 4 ? strtoull(argv[4], nullptr, 10) : 1);
+        std::vector<std::string> pos;
+        std::string mode = "own";
+        for (int i = 2; i < argc; ++i) { if (strncmp(argv[i], "--heat=", 7) == 0) { mode = argv[i] + 7; } else { pos.push_back(argv[i]); } }
+        const std::string dir = pos.size() > 0 ? pos[0] : "/p/bw/data/hot/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf";
+        const std::string log = pos.size() > 1 ? pos[1] : "/p/bw/data/q5h/ring_early_switch-q1-p14k-re0.server.log";
+        return run_sim(dir, log, pos.size() > 2 ? strtoull(pos[2].c_str(), nullptr, 10) : 1, mode);
     }
     return unit_tests();
 }
