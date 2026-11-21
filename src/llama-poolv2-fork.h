@@ -555,8 +555,15 @@ static inline std::vector<pv2_step> pv2_sort_step(const pv2_heap & h0, const std
 struct pv2_zone { std::vector<pv2_step> steps; std::vector<int32_t> evicted; size_t bytes = 0; };
 static inline pv2_zone pv2_sort_range(const pv2_heap & h, size_t Z, size_t budget, int64_t min_heat) {
     pv2_zone z;
-    pv2_heap sub = pv2_make(std::min(Z, h.hi), h.hi);
-    for (const auto & [s, r] : h.res) { if (s >= Z) { pv2_add(sub, s, r); } }
+    pv2_heap sub = h;   // the heap as it is (the landing hole and every hold stay taken), cut at Z: nothing below Z is a destination
+    for (auto it = sub.res.begin(); it != sub.res.end(); ) { if (it->first < Z) { it = sub.res.erase(it); } else { ++it; } }
+    for (auto it = sub.gaps.begin(); it != sub.gaps.end(); ) {
+        const size_t g = it->first, e = it->first + it->second;
+        if (e <= Z) { it = sub.gaps.erase(it); }
+        else if (g < Z) { const size_t len = e - Z; it = sub.gaps.erase(it); sub.gaps[Z] = len; ++it; }
+        else { ++it; }
+    }
+    sub.lo = std::min(Z, h.hi);
     for (const auto & [s, r] : h.res) { if (s < Z && s + r.n > Z) { pv2_add(sub, Z, { PV2_HOLD, s + r.n - Z, 0, true, 1 }); } }   // the resident across Z still covers its bytes above it until it moves
     std::vector<size_t> cand;
     for (const auto & [s, r] : h.res) { if (s < Z && !r.pin && r.id != PV2_HOLD && r.heat > min_heat) { cand.push_back(s); } }

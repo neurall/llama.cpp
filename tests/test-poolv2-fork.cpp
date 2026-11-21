@@ -569,6 +569,15 @@ static int unit_tests() {
             check("zone sort: the colder resident above the zone is evicted for the hot one", fz.steps.size() == 2 && fz.steps[0].id == 3 && fz.steps[0].to == PV2_NONE && fz.steps[1].id == 1 && fz.evicted.size() == 1 && fz.evicted[0] == 3);
             const pv2_zone bz = pv2_sort_range(f, 200, 50, 0);   // a budget below one expert: nothing moves
             check("zone sort: the byte budget stops the moves", bz.steps.empty() && bz.evicted.empty());
+            // the landing hole (pv2_hold, no resident entry) is never a destination
+            pv2_heap q = pv2_make(0, 400);
+            pv2_add(q, 0, { 1, 100, 100, false, 1 });
+            pv2_add(q, 100, { 2, 100, 5, false, 1 });
+            pv2_hold(q, 200, 400);
+            const pv2_zone qz = pv2_sort_range(q, 100, SIZE_MAX, 0);
+            bool in_hole = false;
+            for (const auto & st : qz.steps) { in_hole = in_hole || (st.to != PV2_NONE && st.to + 100 > 200); }
+            check("zone sort: the landing hole is no destination", !in_hole);
             // pinned residents and holds stay
             pv2_heap p = pv2_make(0, 400);
             pv2_add(p, 0, { 1, 100, 100, true, 1 });
