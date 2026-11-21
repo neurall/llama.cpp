@@ -1464,6 +1464,7 @@ static void optime_report(const char * what, int64_t wall_us) {
     if (any) { LLAMA_LOG_WARN("moe-cache: optime %s (wall %.1f ms):%s\n", what, wall_us / 1e3, line.c_str()); }
 }
 static int64_t g_optime_call_t0 = 0, g_optime_dec_t0 = 0;
+static std::atomic<uint64_t> g_pv2_fallback { 0 }, g_pv2_refused { 0 };
 static void (*g_cs_hook_next)(ggml_backend_t, struct ggml_cgraph *, int, int, uint64_t) = nullptr;   // the ledger's or the guard's hook, behind cs_split_cb
 static bool              g_pp_mix_built = false; // the same for the graph that runs: the staging fill leaves out what such a layer's home card holds
 static std::atomic<double>  g_pp_up_us{0.0};     // upload time of the misses of the prompt chain's passes since the last report: the pass's time without it is its compute
@@ -16362,7 +16363,7 @@ void llama_moe_cache_step_fork() {
         return;
     }
     resdump_step(mc);
-    { static int ns = 0; if (g_optime_dec_t0 && ++ns % 128 == 0) { optime_report("128 decode steps", ggml_time_us() - g_optime_dec_t0); g_optime_dec_t0 = ggml_time_us(); } }
+    { static int ns = 0; if (g_optime_dec_t0 && ++ns % 128 == 0) { optime_report("128 decode steps", ggml_time_us() - g_optime_dec_t0); if (g_cache && g_cache->v2.on) { LLAMA_LOG_WARN("moe-cache: pool-v2: 128 decode steps: %llu swaps admitted by the global coldest fallback, %llu refused\n", (unsigned long long) g_pv2_fallback.exchange(0), (unsigned long long) g_pv2_refused.exchange(0)); } g_optime_dec_t0 = ggml_time_us(); } }
     // dev: LLAMA_STEP_TIME=1 splits the step's time by section (llama-context.cpp logs the whole step)
     static const bool st_on = getenv("LLAMA_STEP_TIME") != nullptr;
     static int64_t st_sum[8] = {0};
@@ -16948,19 +16949,46 @@ void llama_moe_cache_step_fork() {
                 const int64_t hx = pv2_heat(mc, ls, id, false, 0.0);
                 optime_t _os(OP_SWAP);
                 const pv2_pick pk = pv2_pick_main(mc, li, id, std::llround(1e6 * (xscore(mc, ls, id) - pay_back(link_margin[ls.link]))), mc->v2.reach, ls.v2n + ls.v2u <= mc->v2.max_gap ? SIZE_MAX : 2 * mc->v2.reach);   // decode: free windows only near the target (a scan of every gap cost 40% of the main thread per token)
-                if (pk.s == PV2_NONE) {
-                    mc->pr[7] += ls.pending.end() - it;
-                    break;   // candidates are sorted: nothing colder in reach for a colder one either
+                pv2_pick pkf = pk;
+                if (pkf.s == PV2_NONE) {   // nothing colder near its heat target: the coldest resident of the same size anywhere in the heap (as the classes take the class's coldest);
+                    // the table points anywhere, so the swap is exact and correct; keeping the heap sorted is background work (user 2026-11-22: a swap is never refused for placement)
+                    static std::map<std::pair<size_t, size_t>, std::vector<std::pair<int64_t, size_t>>> cold;   // (bytes, unit) -> (decode score, start), coldest first
+                    static std::map<std::pair<size_t, size_t>, size_t> cur;
+                    static uint64_t cold_step = UINT64_MAX;
+                    if (cold_step != mc->n_steps) {
+                        cold.clear(); cur.clear(); cold_step = mc->n_steps;
+                        for (const auto & [x, r] : mc->v2.main.res) {
+                            if (r.id < 0 || r.pin) { continue; }
+                            const layer_state & lq = mc->layers[(size_t) (r.id / mc->v2.E)];
+                            const int32_t eq = r.id % mc->v2.E;
+                            if (lq.slot_in_flight[(size_t) eq] || lq.queued[eq]) { continue; }
+                            cold[{ lq.v2n, lq.v2u }].push_back({ std::llround(1e6 * xscore(mc, lq, eq)), x });
+                        }
+                        for (auto & [k, v] : cold) { std::sort(v.begin(), v.end()); }
+                    }
+                    auto ci = cold.find({ ls.v2n, ls.v2u });
+                    size_t & cx = cur[{ ls.v2n, ls.v2u }];
+                    const int64_t need = std::llround(1e6 * (xscore(mc, ls, id) - pay_back(link_margin[ls.link])));
+                    while (ci != cold.end() && cx < ci->second.size() && !mc->v2.main.res.count(ci->second[cx].second)) { ++cx; }   // taken earlier this step
+                    if (ci != cold.end() && cx < ci->second.size() && ci->second[cx].first < need) {
+                        pkf.s = ci->second[cx].second; pkf.evict = { pkf.s }; ++cx;
+                        g_pv2_fallback++;   // admitted by the global fallback
+                    }
                 }
-                if (!pk.evict.empty()) {
+                if (pkf.s == PV2_NONE) {
+                    g_pv2_refused++;
+                    mc->pr[7] += ls.pending.end() - it;
+                    break;   // candidates are sorted: nothing colder anywhere for a colder one either
+                }
+                if (!pkf.evict.empty()) {
                     if (budget-- <= 0) {
                         mc->pr[8] += ls.pending.end() - it;
                         break;
                     }
                     mc->pr[5]++;
                 }
-                mc->pr[4] += pk.evict.empty();
-                pv2_take(mc, mc->v2.main, pk, li, id, hx, true);
+                mc->pr[4] += pkf.evict.empty();
+                pv2_take(mc, mc->v2.main, pkf, li, id, hx, true);
                 ls.slot_in_flight[id] = true;
                 ls.queued[id]         = 1;
                 std::lock_guard<std::mutex> wlk(mc->wmtx);
