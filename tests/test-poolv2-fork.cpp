@@ -169,12 +169,20 @@ static int unit_tests() {
         check("fit: clamped to the first start", pv2_fit(100, 1000, 100, 64, 0) == 128);
         check("fit: too small after alignment", pv2_fit(100, 200, 100, 64, 0) == PV2_NONE);
     }
-    {   // the real expert bytes (Qwen3.8 IQ3_S up/gate, IQ4_NL down): slices, the down slice's alignment worst case, the 216 bytes read past the last row
-        const size_t len[3] = { 704000, 704000, 921600 }, ts[3] = { 110, 110, 18 };
-        size_t u = 0;
-        const size_t b = pv2_expert_bytes(len, ts, 216, &u);
-        check("expert bytes: unit lcm(256, 110)", u == 14080);
-        check("expert bytes: 2 x 704000 + 2048 + 921600 + 216", b == 2331864);
+    {   // the real expert (Qwen3.8 IQ3_S up/gate, IQ4_NL down rows of 640 values): one table for its three slices, so one unit for all three views
+        const poolx_slice sl[3] = { { 704000, 110, 256, 2560 }, { 704000, 110, 256, 2560 }, { 921600, 18, 32, 640 } };
+        const pv2_shape sh = pv2_shape_of(sl);
+        check("shape: unit lcm(16, 110, 110, 18)", sh.u == 7920);
+        check("shape: slices at today's block offsets", sh.off[0] == 0 && sh.off[1] == 704000 && sh.off[2] == 1408000);
+        check("shape: extent = down's end + the 216 bytes read past its last row", sh.n == 1408000 + 921600 + 216);
+        check("shape: no more than today's block", sh.n <= poolx_block_class(sl).B);
+        // the kernels step a view by nb[2] / block bytes: exact for every slice type; a slice starts on 16 bytes wherever its expert starts on the unit
+        bool al = sh.u % 16 == 0;
+        for (int k = 0; k < 3; ++k) { al = al && sh.u % sl[k].ts == 0 && sh.off[k] % 16 == 0; }
+        check("shape: the unit steps every slice exactly, slices on 16 bytes", al);
+        const poolx_slice ol[3] = { { 1179648, 144, 256, 2048 }, { 1179648, 144, 256, 2048 }, { 1720320, 210, 256, 1024 } };   // OLMoE Q4_K up/gate, Q6_K down
+        const pv2_shape so = pv2_shape_of(ol);
+        check("shape: OLMoE Q6_K down: unit 5040, nothing read past", so.u == 5040 && so.n == 2 * 1179648 + 1720320);
     }
     {   // free first: a colder resident at the target, a free window farther: the free one, nothing evicted
         pv2_heap h = pv2_make(0, 1000);
@@ -503,8 +511,8 @@ static int run_sim(const std::string & dir, const std::string & log, uint64_t se
                 const poolx_slice sl[3] = { { ugb, a.ts, a.blck, n_embd }, { ugb, a.ts, a.blck, n_embd }, { dnb, d.ts, d.blck, n_ff } };
                 const poolx_block pb = poolx_block_class(sl);
                 if (std::llround(pb.B / (double) MiB * 100) != std::llround(c.mib * 100)) { continue; }
-                const size_t len[3] = { ugb, ugb, dnb }, ts[3] = { a.ts, a.ts, d.ts };
-                ly.n = pv2_expert_bytes(len, ts, std::max({ pb.past[0], pb.past[1], pb.past[2] }), &ly.u);
+                const pv2_shape sh = pv2_shape_of(sl);
+                ly.n = sh.n; ly.u = sh.u;
                 ly.today = pb.B; ly.ug = a.name; ly.dn = d.name;
                 hits++;
             }

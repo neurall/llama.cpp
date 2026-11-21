@@ -1,6 +1,6 @@
-// Pool v2 (user 2026-11-14, 2026-11-21): a card's experts in one byte heap, no size classes; every layer's expert table holds a byte offset.
-//   allocation  an expert takes its up+gate+down bytes plus its layer's pad (the down slice's alignment, the bytes a matmul reads past the last row), at a start
-//               aligned to its layer's unit, lcm(256, the up slice's quant block bytes): pv2_expert_bytes
+// Pool v2 (user 2026-11-14, 2026-11-21): a card's experts in one byte heap, no size classes; every layer's expert table holds the expert's start in units.
+//   allocation  an expert takes its up+gate+down slices at today's block offsets plus the bytes a matmul reads past down's last row, at a start that is a
+//               multiple of its layer's unit: pv2_shape_of
 //   heat order  coldest at the heap's low end (the KV edge), hottest at its top (next to the landing area); an expert's target start is where it would sit if
 //               every hotter expert were packed above it: pv2_heat_dist, pv2_target
 //   placement   within reach of the target: the nearest free window, else the coldest colder resident not in flight whose hole holds it (it leaves),
@@ -10,6 +10,8 @@
 //               leftovers, heat -1, once their layer is computed); at the switch to decode it is refilled with the hottest experts no heap holds: pv2_refill
 // tests/test-poolv2-fork.cpp holds the rules and replays them on recorded decode heat (--sim).
 #pragma once
+#include "llama-poolalloc-fork.h"   // poolx_block_class: the slice offsets and the read past a row, one rule for both pools
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -21,18 +23,18 @@
 
 static constexpr size_t PV2_NONE = SIZE_MAX;
 
-// bytes of one expert whose slices (bytes len, quant block bytes ts) lie back to back from a start that is a multiple of *unit = lcm(256, ts[0]); a later
-// slice starts at a multiple of its own lcm(256, ts): when that does not divide the unit the start's remainder is unknown, so the worst case is held
-static inline size_t pv2_expert_bytes(const size_t len[3], const size_t ts[3], size_t past, size_t * unit) {
-    const size_t u = std::lcm<size_t>(256, ts[0]);
-    size_t b = len[0];
-    for (int k = 1; k < 3; ++k) {
-        const size_t uk = std::lcm<size_t>(256, ts[k]);
-        b = u % uk == 0 ? (b + uk - 1) / uk * uk : (b + 255) / 256 * 256 + uk - 256;
-        b += len[k];
-    }
-    *unit = u;
-    return b + past;
+// One expert of a layer in the heap. The graph gives up, gate and down the same ids (one table per layer), so the three views share one nb[2], the unit u:
+// a multiple of each slice type's block bytes (the kernels step a view by nb[2] / block bytes) and of 16 (vector loads; test-backend-ops MUL_MAT_ID unit
+// cases pass on CUDA and Vulkan at units of whole blocks). The slices keep today's offsets in a block (each at a multiple of 128 from the expert's start);
+// n ends behind down's slice and the largest read past a row (poolx_block_class), without today's rounding of a block to lcm(128, block bytes).
+struct pv2_shape { size_t n = 0, u = 0, off[3] = { 0, 0, 0 }; };
+static inline pv2_shape pv2_shape_of(const poolx_slice s[3]) {
+    const poolx_block b = poolx_block_class(s);
+    pv2_shape sh;
+    sh.u = 16;
+    for (int k = 0; k < 3; ++k) { sh.u = std::lcm(sh.u, s[k].ts); sh.off[k] = b.off[k]; }
+    sh.n = b.off[2] + poolx_up(b.len[2], 128) + std::max({ b.past[0], b.past[1], b.past[2] });
+    return sh;
 }
 
 struct pv2_res {
