@@ -401,70 +401,6 @@ static void test_grid_claims() {
     report("negative control: a lend or zone that keeps the claimant breaks the check", bad_neg > 0, first_neg.empty() ? "no violation found" : first_neg.substr(0, 90));
 }
 
-// --moe ring-early (2026-11-21): the last pass of a prompt call sends its computed entries home while the others still hold claimed bytes (poolx_home_early). After
-// it no byte is held twice, a home block stays -4 while a claim of an entry still running lies over it, and cls_home at the call's end (poolx_home_pass) leaves the
-// same owners and free blocks as without the early step (no block freed twice, none lost). Negative control: freeing every home -4 block at once (poolx_home_pass's
-// pass 1 while claims stand) must break the byte check, or the check proves nothing.
-static void test_regress_ring_early() {
-    printf("Testing [ring-early] computed entries go home before the call's end, the rest keep their claims, cls_home after it changes nothing:\n");
-    std::mt19937_64 rng(g_seed + 21);
-    auto R = [&](size_t lo, size_t hi) { return lo + (size_t) (rng() % (hi - lo + 1)); };
-    long bad = 0, n_freed = 0, n_kept = 0, n_neg = 0; std::string first, first_neg;
-    for (long it = 0; it < g_iters / 20 && !bad; ++it) {
-        tpool p = make_pool(rng, false, true);
-        if (p.segs.size() < 2) { continue; }
-        auto gn = [&](int32_t q) { return (int32_t) p.ps[q].owner.size(); };
-        auto evict = [](int32_t, int32_t) {};
-        for (int st = 0; st < 60; ++st) {   // the pass so far: claims of grid blocks, entries 0..3 taking free blocks, an expert leaving
-            const size_t i = R(0, p.segs.size() - 1);
-            auto & ps = p.ps[i];
-            const int32_t b = (int32_t) R(0, ps.owner.size() - 1);
-            const int op = (int) R(0, 2);
-            if (op == 0 && ps.owner[b] == -4 && poolx_over(p.segs, gn, (int32_t) i, b, [](int32_t, int32_t) { return true; })) {
-                poolx_take_bytes(p.segs, p.ps, (int32_t) i, b, evict);
-                ps.owner[b] = -1; ps.free.push_back(b);
-            } else if (op == 1) {
-                poolx_claim_free(ps, (int32_t) R(0, 3));
-            } else if (op == 2 && ps.owner[b] >= 0 && R(0, 3) == 0) {
-                poolx_give_back(ps, b);
-            }
-        }
-        const unsigned done = (unsigned) R(0, 15);   // the entries computed so far (a bit per entry)
-        tpool a = p;
-        n_freed += (long) poolx_home_early(a.segs, a.ps, [&](int32_t, int32_t, int32_t o) { return o >= 0 && ((done >> o) & 1); }, [](int32_t, int32_t, int32_t) {});
-        std::string e = check_grid_pool(a);
-        for (size_t i = 0; e.empty() && i < a.segs.size(); ++i) {
-            const auto & ps = a.ps[i];
-            for (int32_t b = 0; e.empty() && b < (int32_t) ps.owner.size(); ++b) {
-                const bool home = b >= ps.home_lo && b < ps.home_hi;
-                const int32_t o = ps.owner[b];
-                if (!home && (o == -1 || (o >= 0 && ((done >> o) & 1)))) { e = fmt("class %zu block %d outside its home still owner %d", i, b, o); }
-                if (home && o == -4) {
-                    if (poolx_over(a.segs, [&](int32_t q) { return (int32_t) a.ps[q].owner.size(); }, (int32_t) i, b, [&](int32_t q, int32_t x) { return a.ps[q].owner[x] == -4; })) {
-                        e = fmt("class %zu home block %d left -4 with nothing over it", i, b);
-                    }
-                    n_kept++;
-                }
-            }
-        }
-        tpool c = p;
-        for (tpool * t : { &a, &c }) { for (int pass = 0; pass < 2; ++pass) { for (auto & ps : t->ps) { poolx_home_pass(ps, pass, evict); } } }
-        for (size_t i = 0; e.empty() && i < a.ps.size(); ++i) {
-            std::multiset<int32_t> fa(a.ps[i].free.begin(), a.ps[i].free.end()), fc(c.ps[i].free.begin(), c.ps[i].free.end());
-            if (a.ps[i].owner != c.ps[i].owner || fa != fc) { e = fmt("class %zu: cls_home after the early step differs from cls_home alone", i); }
-        }
-        if (e.empty()) { e = check_grid_pool(a); }
-        if (!e.empty() && bad++ == 0) { first = e; }
-        tpool n = p;   // negative control
-        for (auto & ps : n.ps) { poolx_home_pass(ps, 1, evict); }
-        const std::string en = check_grid_pool(n);
-        if (!en.empty() && n_neg++ == 0) { first_neg = en; }
-    }
-    report("no byte held twice, running claims kept, cls_home after it unchanged", bad == 0, first);
-    report("the runs freed home blocks early and kept some under running claims", n_freed > 100 && n_kept > 10, fmt("%ld freed, %ld kept", n_freed, n_kept));
-    report("negative control: home blocks freed under standing claims break the check", n_neg > 0, first_neg.empty() ? "no violation found" : first_neg.substr(0, 90));
-}
-
 // the detector itself: break the layout on purpose, the check must see it (otherwise a green run proves nothing)
 static void test_detectors() {
     printf("Testing that the checks catch a broken pool (negative controls):\n");
@@ -1400,7 +1336,6 @@ int main(int argc, char ** argv) {
     test_regress_room_graph_warmup();
     test_regress_room_own_calls();
     test_regress_ring_cold_order();
-    test_regress_ring_early();
     test_regress_room_give_back_chunks();
     test_regress_pool_buffer_limits();
     if (n_failed > 0) {

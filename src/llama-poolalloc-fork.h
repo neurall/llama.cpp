@@ -448,40 +448,6 @@ template <class PS, class F> static void poolx_home_pass(PS & ps, int pass, F ev
         }
     }
 }
-// --moe ring-early: the blocks of the entries gone(class, block, owner) says are done go home before the prompt call ends, while the others keep theirs. Pass 0
-// (every class of segs first): such a block, or a free one, outside its home is -4 again (evict(class, block, owner) for an entry's); in its home a layer's expert
-// stays cached and a one-pass shadow's block is free. Pass 1: a home block another class held is free once every block over its bytes is -4 (poolx_home_pass frees
-// each one: there every class is home). poolx_home_pass afterwards leaves what it would have left alone (tests/test-pool-fork.cpp). Returns the blocks made free.
-template <class SEGS, class PSV, class G, class F> static size_t poolx_home_early(const SEGS & segs, PSV & ps, G gone, F evict) {
-    size_t n = 0;
-    for (const auto & sg : segs) {
-        auto & qs = ps[sg.pcls];
-        for (int32_t b = 0; b < (int32_t) qs.owner.size(); ++b) {
-            const bool home = b >= qs.home_lo && b < qs.home_hi;
-            const int32_t o = qs.owner[b];
-            if (!home && o == -1) {
-                auto it = std::find(qs.free.begin(), qs.free.end(), b);
-                if (it != qs.free.end()) { qs.free.erase(it); }
-                qs.owner[b] = -4;
-            } else if ((o >= 0 || o <= POOLX_SHADOW0) && (!home || o < 0) && gone(sg.pcls, b, o)) {
-                evict(sg.pcls, b, o);
-                qs.owner[b] = home ? -1 : -4;
-                if (home) { qs.free.push_back(b); n++; }
-            }
-        }
-    }
-    auto gn = [&](int32_t q) { return (int32_t) ps[q].owner.size(); };
-    for (const auto & sg : segs) {
-        auto & qs = ps[sg.pcls];
-        for (int32_t b = qs.home_lo; b < std::min<int32_t>(qs.home_hi, (int32_t) qs.owner.size()); ++b) {
-            if (qs.owner[b] != -4 || !poolx_over(segs, gn, sg.pcls, b, [&](int32_t q, int32_t x) { return ps[q].owner[x] == -4; })) { continue; }
-            qs.owner[b] = -1;
-            qs.free.push_back(b);
-            n++;
-        }
-    }
-    return n;
-}
 
 // ---- region map and gate ----------------------------------------------------------------------------------------------------------------------
 template <class P> static size_t poolx_kv_end(const P & ap) { return ap.kv_h > 0 ? ap.kv_start + ap.kv_fixed + ap.kv_h * ap.kv_row : ap.kv_start; }

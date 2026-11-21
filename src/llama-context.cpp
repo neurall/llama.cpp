@@ -67,7 +67,6 @@ void llama_moe_token_time_fork(double ms);   // src/llama-moestate-fork.cpp
 void llama_moe_prompt_done_fork(uint32_t n_tokens, double ms);
 void llama_moe_prompt_begin_fork(uint32_t n_tokens, uint32_t ubatch);
 void llama_moe_cache_prompt_call_fork(bool on);   // llama-moecache-fork.cpp
-void llama_moe_cache_pp_last_fork(bool last);      // llama-moecache-fork.cpp: the pass about to run is its call's last (--moe ring-early)
 void     llama_dsplit_note_limit_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the one-card pass limit of this call
 void     llama_dsplit_note_card_max_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the context's card limit (what %limit is of)
 size_t   llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens);   // src/llama-moecache-fork.cpp: what a card's pool lends a prompt graph of n tokens
@@ -5023,7 +5022,6 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             thrb.last_tokens = ubatch.n_tokens > 1 ? ubatch.n_tokens : 0;
         }
 
-        if (cparams.moe_cache) { llama_moe_cache_pp_last_fork(n_tokens_all > 1 && (uint64_t) n_tokens_prev + ubatch.n_tokens >= n_tokens_all); }   // fork: the remaining tokens fit this pass
         const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
 
         // a call that is taken back and tried again is no measurement (see the out-of-memory path below)
