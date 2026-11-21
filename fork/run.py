@@ -8598,6 +8598,7 @@ def run_list(name, argv):
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
     ap.add_argument("-sa", "--stock-args", metavar="ARGS", help="server arguments for the stock cells only (-s, -sc, -nrt stock gap), both stock arms: -sa '-fitt 20000' leaves 20000 MiB free on every card, a restricted-VRAM stock (the rows keep them in their args column)")
     ap.add_argument("-rh", "--real-hold", action="store_true", help="-sim holds the VRAM for real (vramhog.py) for every cell, ours and stock alike, instead of our server faking the free memory: all arms of a comparison see the same cards")
+    ap.add_argument("-1s", "--one-server", dest="one_server", action="store_true", help="the cells of a model run as requests on one server per build: every cell of the model gets one -c (its largest cell's prompt + answer), so the kept server is reused; only the model's first cell starts cold (-cs and -gh still start one per cell: their state differs)")
     ap.add_argument("-scl", "--stock-clip", dest="stock_clip", action="store_true", help="stock cells as one shortened request instead of the clock box (the default): the prompt cut to what stock reads in our prompt time, the answer to what it writes in our answer time (rates from the model's newest stock row, 5 and 0.5 t/s when it has none), so the answer follows its own prompt as ours does; the row counts when its answer is within half and double of what it asked for")
     ap.add_argument("-so", "--stock-opt", action="store_true", help="stock optimized: stock cells get -c = prompt + answer rounded up to 1024 (what a user would set), rows <stock build>-so-<cell>")
     ap.add_argument("-som", "--stock-opt-moe", nargs="?", const="16000,0.95", metavar="MIB[,SHARE]", help="stock optimized + upstream's expert cache (default 16000,0.95): -so and -sm together, rows <stock build>-moe-so-<cell>")
@@ -8774,6 +8775,14 @@ def run_list(name, argv):
                 r["extra"] = " ".join((ex + f" --env PERF_PMARK=b{n}-o{m} --tokens {m}").split()); r["tokens"] = str(m)
                 continue
         r["extra"] = (r.get("extra") or "") + f" --env PERF_BOX={ot[0]:.1f},{ot[1]:.1f}"   # no line per cell (user 2026-11-21: "remove these unasked for rows")
+    if o.one_server:   # -1s (user 2026-11-21: "each cell in same model be just req"): a kept server serves only a cell with its own arguments, and each test brings its own -c; one -c per model and build, its largest cell's prompt + answer
+        def _need(r):
+            mt_, mk_ = re.search(r"PERF_PTOK=(\d+)", r.get("extra") or ""), re.fullmatch(r"pf(\d+)k", str(r.get("test")))
+            return (int(mt_[1]) if mt_ else int(mk_[1]) * 1024 if mk_ else 8192) + int(r.get("tokens") or 1024) + 256   # a chat test's prompt: 8k at most (edit4c is about 3.3k)
+        _cx = {}
+        for r in rows: _cx[(r["model"], r["_b"])] = max(_cx.get((r["model"], r["_b"]), 0), _need(r))
+        for r in rows:
+            if "--ctx" not in (r.get("extra") or ""): r["extra"] = f"{r.get('extra') or ''} --ctx {-(-_cx[(r['model'], r['_b'])] // 1024) * 1024}".strip()
     if o.hog_gpu and not o.dry and o.nrts is None and rows and (o.real_hold or all(str(r["_b"]).startswith("stock") for r in rows)):   # -sim on a list of stock cells: stock cannot fake free memory (no --moe sim-vram), so the VRAM is really held, on every card, until the list ends
         v = str(o.hog_gpu).lower().rstrip("ib").rstrip("b"); free_mib = int(float(v[:-1]) if v.endswith("m") else float(v[:-1] if v.endswith("g") else v) * (1 if v.endswith("m") else 1024))
         import atexit   # (run_list imports it further down for simjoe: without this line the name is a local there and unbound here)
