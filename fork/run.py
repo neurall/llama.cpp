@@ -8687,6 +8687,7 @@ def run_list(name, argv):
                        name=stock_prefix(r) + r["name"], el=time.time() - run_since if run_ and run_since else None, est=None if run_ else ex, exp=ex if run_ else None, lt="", rc=0, res=[], st=None, stock_row=r["_b"].startswith("stock"))
             rec.update(last_run_rec(r, HW))   # the values of its last run, with the gain over stock: what it is expected to beat
             if not run_: rec["res"] = []   # a cell that has not run shows no speed: the last run of the same model and test is another cell's number
+            if rec["stock_row"] and not run_: continue   # a queued stock cell has no line of its own: our line of the cell shows its stock numbers (user 2026-11-21)
             CELL_REC.append(rec)
         for rec in CELL_REC:   # the running cell: its earlier rows (done today) and its expected time give the progress in percent
             if rec.get("section") == "running" and run_since: rec["el"] = time.time() - run_since   # elapsed since the cell process started, not the time of an earlier run of it
