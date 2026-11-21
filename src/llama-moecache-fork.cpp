@@ -16789,7 +16789,7 @@ void llama_moe_cache_step_fork() {
                 continue;
             }
             if (ls.v2u) {   // pool-v2: a window of the heap near its heat target, free first, else over residents colder than it by the pay-back margin
-                if (mc->v2.heat_step != mc->n_steps) { pv2_heat_now(mc); mc->v2.heat_step = mc->n_steps; }
+                if (pv2_dist_due(mc->n_steps, mc->v2.heat_step)) { pv2_refresh(mc, false); mc->v2.heat_step = mc->n_steps; }   // the targets and every resident's heat: the first step and every 64 (a per-step pass over every resident cost decode time)
                 const int64_t hx = pv2_heat(mc, ls, id, false, 0.0);
                 const pv2_pick pk = pv2_pick_main(mc, li, id, std::llround(1e6 * (xscore(mc, ls, id) - pay_back(link_margin[ls.link]))), mc->v2.reach);
                 if (pk.s == PV2_NONE) {
