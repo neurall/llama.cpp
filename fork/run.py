@@ -7195,6 +7195,8 @@ def best_ref(model, test):
         except Exception: _BEST_REF[key] = None
     return _BEST_REF[key]
 CELL_REC = []       # structured twin of CELL_LINES: the final table is built from it
+RELAX_STOCK = [False]  # display only (`run status`, the skipped cells of -nrt/-nrts): a stock run of another answer length / before the machine change / another test stands in when none fits; a live run never uses it (store_gains writes its gain into runs.db)
+STATUS_FMT = [False]  # -nrts: the skipped cells show in the `run status` format: one line, the best run, stock gains (user 2026-11-21)
 STOCK_REC = [None]  # set by stock_gain: the stock numbers behind its text
 CELL_LINES = []     # one summary line per finished cell, printed when the list ends
 
@@ -7637,6 +7639,7 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         if not r.get("ref") and not r.get("stock_row") and res and not str(r.get("build") or "").startswith("stock"):   # no earlier run of ours: "first", not an empty cell that looks broken
             if bb is None and t: body[-1].update(vt="first")
         body[-1]["section"] = r.get("section")   # `run status`: done / running / queued
+        body[-1]["stfmt"] = bool(r.get("section") or (STATUS_FMT[0] and r.get("skipped")))   # this line in the status format (a cell that ran now keeps its own result)
         body[-1]["bt"] = (f"b{st['ob']} {st['od'][5:]} vs b{st['sb']} {st['sd'][5:]}" if st["ob"] else f"stock b{st['sb']} {st['sd'][5:]}") if st else ""; body[-1]["bts"] = (f"b{st['ob']} vs b{st['sb']}" if st["ob"] else f"stock b{st['sb']}") if st else ""
         gs = [g for g in (gt, gp) if g]; body[-1]["gm"] = math.prod(gs) ** (1 / len(gs)) if gs else 0   # overall gain: geometric mean of decode and prompt gain
         body[-1]["old"] = [dict(name=r["name"], is_old=True, out="", id=str(orid), sid="", prompt=r.get("prompt") or "", time="", load="", fail=False, t=f(t, 2), p=f(p, 1), st="", sp="", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=False, gm=0, old=[],
@@ -7644,18 +7647,22 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
     for x in body:   # older builds' lines carry the cell's stock numbers; a line with stock only takes the newest older run of ours in its place (user 2026-11-21)
         for o in x.get("old", []): o["st"], o["sp"] = x["st"], x["sp"]
         gm_ = lambda y: math.prod(g) ** (1 / len(g)) if (g := [v for v in (y.get("gtv"), y.get("gpv")) if v]) else (float(y["t"]) / 1e6 if y.get("t") else 0)
-        if x.get("old") and (not x["t"] or x.get("section")):   # `run status`: one line per cell, its best run (by gain over stock, else decode t/s)
+        if x.get("old") and (not x["t"] or x.get("stfmt")):   # `run status`: one line per cell, its best run (by gain over stock, else decode t/s)
             o = max(x["old"], key=gm_)
             if not x["t"] or gm_(o) > gm_(x): x.update({k: o[k] for k in ("t", "p", "gt", "gp", "gtv", "gpv", "bt", "bts", "id", "g") if k in o}); x["gm"] = gm_(x) if x.get("gtv") or x.get("gpv") else 0
-            if x.get("section"): x["old"] = []
+            if x.get("stfmt"): x["old"] = []
             else: x["old"].remove(o) if o in x["old"] and x["t"] == o["t"] else None
     for x, r_ in zip(body, recs):   # `run status`, a cell with no run in the window, no stock and so no older lines: its best older run of ours, no gain (user 2026-11-21: k31-io, k31-o)
-        if x.get("section") and not x["t"] and not x.get("old") and r_.get("model") and r_.get("test"):
+        if x.get("stfmt") and not x["t"] and not x.get("old") and r_.get("model") and r_.get("test"):
             try:
                 import sqlite3
                 b_ = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select tps, pp, bno, start_ts, rowid from runs where model=? and test=? and build not like 'stock%' and build not like 'strata%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " order by tps desc limit 1", (os.path.basename(r_["model"]), ALIASES.get(r_["test"], r_["test"]))).fetchone()
             except sqlite3.Error: b_ = None
             if b_: x.update(t=f(b_[0], 2), p=f(b_[1], 1) if b_[1] else "", bt=f"b{int(b_[2]) if b_[2] else '?'} {str(b_[3])[5:10]}", bts=f"b{int(b_[2]) if b_[2] else '?'}", id=str(b_[4]), g=gpus_used(b_[4]), keeptail=True)   # keeptail: the builds and id columns show though there is no stock
+            if b_ and x["st"]:   # the gain over the stock it has (decode only when the stock has no prompt rate)
+                x["gtv"] = float(b_[0]) / float(x["st"]); x["gt"] = f(x["gtv"], 2)
+                x["gpv"] = float(b_[1]) / float(x["sp"]) if b_[1] and x["sp"] else None; x["gp"] = f(x["gpv"], 2)
+                gs_ = [g for g in (x["gtv"], x["gpv"]) if g]; x["gm"] = math.prod(gs_) ** (1 / len(gs_))
     for x in body:   # a cell with no run in the window but older builds' runs (their gains below it): sorted among the done cells by its best older gain (user 2026-11-21)
         og = [math.prod(g) ** (1 / len(g)) for o in x.get("old", []) for g in [[v for v in (o.get("gtv"), o.get("gpv")) if v]] if g]
         if not x["gm"] and og:
@@ -7756,10 +7763,13 @@ def stock_gain(peek, res, build=None):
         q = "select tps, pp, build, bno, start_ts, rowid from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'{G} order by start_ts desc limit 12"
         qa = (os.path.basename(peek[0]), tst)
         rs = c.execute(q.replace("{G}", " and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), qa).fetchall()
-        if not rs and " and ts >= " in HWF[0]:   # no stock run since the machine changed (HW_SINCE): the newest one before it, its build and date show in the table (user 2026-11-21)
+        if not rs and RELAX_STOCK[0] and " and ts >= " in HWF[0]:   # no stock run since the machine changed (HW_SINCE): the newest one before it, its build and date show in the table (user 2026-11-21)
             rs = c.execute(q.replace(HWF[0], re.sub(r" and ts >= '[^']*'", "", HWF[0])).replace("{G}", " and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), qa).fetchall()
-        if not rs and gen:   # no stock run of about this answer length: a shorter one, stopped by the clock (stock K3.1: 357 tokens at 0.31 t/s; its decode rate stands, user 2026-11-21)
-            rs = c.execute(q.replace(HWF[0], re.sub(r" and ts >= '[^']*'", "", HWF[0])).replace("{G}", ""), qa).fetchall()   # the same prompt only: pf12k1k (instruction + 12k source, 1k answer) is stored as pf12k with about 1024 tokens; an old 12k run with a 64-token answer was another prompt
+        if not rs and RELAX_STOCK[0] and gen:   # no stock run of about this answer length: a shorter one, stopped by the clock (stock K3.1: 357 tokens at 0.31 t/s; its decode rate stands, user 2026-11-21)
+            rs = c.execute(q.replace(HWF[0], re.sub(r" and ts >= '[^']*'", "", HWF[0])).replace("{G}", ""), qa).fetchall()
+        if not rs and RELAX_STOCK[0]:   # shortcut: no stock run on this test at all (K3.1 edit4c, tetrisc): the model's newest stock decode rate on another test, of about this answer length when there is one; no stock prompt rate (another prompt). A stock run of this test replaces it (user 2026-11-21: k31 rows with values, sorted)
+            fb = lambda g: [(t_, None, b_, n_, ts_, id_) for t_, b_, n_, ts_, id_ in c.execute("select tps, build, bno, start_ts, rowid from runs where model=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + re.sub(r" and ts >= '[^']*'", "", HWF[0]) + " and coalesce(env,'') not like '%warmpass%'" + g + " order by start_ts desc limit 8", (qa[0],)).fetchall()]
+            rs = (gen and fb(" and n_gen between %d and %d" % (gen // 2, gen * 2))) or fb("")
         tm = max(x[0] for x in res) if res else 0
         if build and str(build).startswith("stock"): rs = [x for x in rs if abs(float(x[0]) - tm) > 0.002 * tm][:1]   # a stock cell is compared with the previous stock run (this run is already in the table)
         r = rs[0] if rs else None
@@ -8484,6 +8494,7 @@ def run_list(name, argv):
     ap.add_argument("-day", "--day", action="store_true", help="the day power limits (x4 card 220 W, x16 card 280 W) for the whole run, also at night (the schedule drops to 200/200 W from 23:50): same as -pl 220/280")
     ap.add_argument("--status", action="store_true", help="print the table of the cells run today (the -nrt table: t/s, pp, stock, gains) and the cells still to run; nothing is run, started or touched (the web view calls this)")
     ap.add_argument("-nrt", "--not-today", nargs="?", type=int, const=1, default=0, metavar="DAYS", help="skip cells (and so models) that already have their runs in runs.db from the last DAYS days (default 1 = today); a stock pulled within those days is not replaced by a newer release")
+    ap.add_argument("-nrts", nargs="?", type=int, const=1, default=None, metavar="DAYS", help="-nrt (skip the cells that already ran in the last DAYS days, default 1; the others run) with the --status table: every skipped cell on one line, its best run on any build, stock gains, sorted from best")
     ap.add_argument("-pin", dest="force_pin", action="store_true", help="force pinned RAM for every cell (-lm pin) instead of the default auto; `-nm` is the mmap counterpart. In a row's args column: -pin")
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
     ap.add_argument("-sa", "--stock-args", metavar="ARGS", help="server arguments for the stock cells only (-s, -sc, -nrt stock gap), both stock arms: -sa '-fitt 20000' leaves 20000 MiB free on every card, a restricted-VRAM stock (the rows keep them in their args column)")
@@ -8524,6 +8535,8 @@ def run_list(name, argv):
             o.cell_args = (o.cell_args + f" {key}={int(mib)}").strip()
     if o.dense_split: o.cell_args = (o.cell_args + " dense-split=" + {"on": "1", "off": "0"}.get(o.dense_split, o.dense_split)).strip()
     if o.status: o.not_today = o.not_today or 1; o.nodl = True
+    if o.nrts is not None: o.not_today = o.nrts or 1; STATUS_FMT[0] = True
+    RELAX_STOCK[0] = bool(o.status)   # -nrts: -nrt, the skipped cells in the status format
     if o.day and not o.power: o.power = "220/280"
     if o.no_pool is not None: os.environ["RUN_KEEP_POOL"] = "1"   # -nm: the cells never unmount the pool either (pool_sanity); a model bigger than the pool loads without it, the pool stays for the next ones
     if o.dbg: os.environ["RUN_DBG"] = "1"   # the cells and servers of the list see it
@@ -8680,6 +8693,7 @@ def run_list(name, argv):
             if k in done or r['_b'].startswith("stock"): return only(k, done.get(k, []))
             return next((only(c, v) for c, v in done.items() if c.endswith(f"-{r['name']}-{r['test']}") and not c.startswith("stock")), [])
         keep = [r for r in rows if len(today(r)) < (1 if o.status else int(r["n"] or 1))]   # --status: a cell with any run today has its line
+        RELAX_STOCK[0] = True
         for r in rows:   # the skipped cells keep their line, with the results of today's runs and the gain over stock, as if they had just run
             if r in keep: continue
             if r['_b'].startswith('stock') and any(q['name'] == r['name'] and q['test'] == r['test'] and not q['_b'].startswith('stock') for q in rows): continue   # our line shows the stock numbers
@@ -8693,6 +8707,7 @@ def run_list(name, argv):
                 if _b and _b[0]: STOCK_REC[0]["ob"] = int(_b[0]); STOCK_REC[0]["od"] = str(_b[1])[:10]
             CELL_REC.append(dict(skipped=True, tag=f"{r['_b']}-{r['name']}", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=ours_reference(r["model"], r["test"]) if r["_b"].startswith("stock") else None, sbno=own_build_no(r["_b"]), xfer="" if r["_b"].startswith("stock") else xfer_of(own_build_no(r["_b"]), r.get("args") or ""), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, r["_b"], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, r["_b"], "llama-server")) else "", rid=_rid, build=r["_b"], prompt=best_prompt_cell_label(r) or prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"], name=stock_prefix(r) + r["name"], el=_el, lt=_lt, rc=0, res=res, st=STOCK_REC[0], stock_row=r["_b"].startswith("stock")))
             CELL_LINES.append(col(1, f"{stock_prefix(r) + r['name']:<{NAMEW[0]}}") + "  " + "  ".join(speed_txt(t, p) for t, p, *_ in res) + gain + (f"  [{col(36, CELL_TEST[0])}]" if CELL_TEST[0] else ""))
+        RELAX_STOCK[0] = bool(o.status)
         if len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run in the last {o.not_today} day(s) skipped (they are in the table at the end)", flush=True)
         rows = keep
     if o.status:   # one table in the -nrt columns: the cells done today, the one running now, the cells queued next (the rest of the list, then the queue daemon's waiting tasks); nothing else happens
