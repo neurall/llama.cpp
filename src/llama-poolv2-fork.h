@@ -397,3 +397,18 @@ static inline std::vector<pv2_cand> pv2_refill(pv2_heap & h, const std::vector<p
     }
     return up;
 }
+
+// c2 boot fill (profile_preload on the heap): the experts hottest first (d: the bytes of all hotter ones, pv2_heat_dist), each takes the free window nearest its
+// target in the main heap [lo, hi) with the landing hole [M, H); one that finds no window is left out, no resident is replaced (the heap starts empty). The
+// placed ones are residents in flight (their upload follows), returned in placement order.
+struct pv2_boot_t { int32_t id; size_t n, u, d; int64_t heat; };
+struct pv2_put_t  { int32_t id; size_t s; };
+static inline std::vector<pv2_put_t> pv2_boot_fill(pv2_heap & h, const std::vector<pv2_boot_t> & ex, size_t M, size_t H) {
+    std::vector<pv2_put_t> put;
+    for (const pv2_boot_t & x : ex) {
+        const size_t t = pv2_target_main(h.lo, h.hi, M, H, x.d, x.n);
+        const pv2_pick p = pv2_pick_main(h, t, x.n, x.u, std::numeric_limits<int64_t>::min(), 0);
+        if (p.s != PV2_NONE && pv2_add(h, p.s, { x.id, x.n, x.heat, true })) { put.push_back({ x.id, p.s }); }
+    }
+    return put;
+}

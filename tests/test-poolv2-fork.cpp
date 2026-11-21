@@ -14,6 +14,7 @@
 #include <cstring>
 #include <fstream>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -324,6 +325,71 @@ static int unit_tests() {
             check("heap views: at least as far as the class's own views", ne2 >= pv2_view_ne2((int64_t) nblk, B, sh.u));
         }
         check("heap views: a pool smaller than one expert has no view", pv2_heap_ne2(100, 101, 16) == 0 && pv2_heap_ne2(100, 100, 16) == 1);
+    }
+    {   // c2 boot fill (profile_preload on the heap), one shape and no hole: the hottest experts pack down from the heap's top, each start a multiple of its unit
+        const poolx_slice c0[3] = { { 1179648, 144, 256, 2048 }, { 1179648, 144, 256, 2048 }, { 1179648, 144, 256, 1024 } };   // OLMoE Q4_K down
+        const pv2_shape sh = pv2_shape_of(c0);
+        const size_t lo = 1000, hi = lo + 10 * sh.n + 77;   // room for 9 or 10 (the starts are aligned to the unit)
+        std::vector<int64_t> heat(30);
+        std::vector<size_t>  nb(30, sh.n);
+        for (int i = 0; i < 30; ++i) { heat[i] = 100 - i; }
+        pv2_heap h = pv2_make(lo, hi);
+        const std::vector<size_t> d = pv2_heat_dist(heat, nb);
+        std::vector<pv2_boot_t> ex;
+        for (int32_t id : pv2_heat_order(heat)) { ex.push_back({ id, sh.n, sh.u, d[id], heat[id] }); }
+        const std::vector<pv2_put_t> put = pv2_boot_fill(h, ex, hi, hi);
+        bool packs = put.size() >= 9 && put.size() <= 10, hottest = !put.empty() && put[0].id == 0 && hi - (put[0].s + sh.n) < sh.u;
+        for (size_t i = 0; i < put.size(); ++i) {
+            packs = packs && put[i].id == (int32_t) i && put[i].s % sh.u == 0 && (i == 0 || (put[i].s < put[i - 1].s && put[i - 1].s - put[i].s - sh.n < sh.u));
+        }
+        check("boot fill: the hottest first, packed down from the top, nothing between them but the unit's slack", packs && hottest);
+        check("boot fill: the colder ones that no longer fit are left out", put.size() < 30 && pv2_pick_main(h, 0, sh.n, sh.u, std::numeric_limits<int64_t>::min(), 0).s == PV2_NONE);
+    }
+    {   // c2 boot fill, OLMoE's two shapes (even layers Q4_K down, odd Q6_K down; 16 layers x 64 experts) in a heap that holds about 60% of them with the landing
+        // hole in it: every expert goes, hottest first, into the free window nearest its heat target, until nothing fits
+        const poolx_slice c0[3] = { { 1179648, 144, 256, 2048 }, { 1179648, 144, 256, 2048 }, { 1179648, 144, 256, 1024 } };
+        const poolx_slice c1[3] = { { 1179648, 144, 256, 2048 }, { 1179648, 144, 256, 2048 }, { 1720320, 210, 256, 1024 } };
+        const pv2_shape sh[2] = { pv2_shape_of(c0), pv2_shape_of(c1) };
+        const int L = 16, E = 64;
+        std::mt19937_64 rng(11);
+        std::vector<int64_t> heat((size_t) L * E);
+        std::vector<size_t>  nb((size_t) L * E), ub((size_t) L * E), shape((size_t) L * E);
+        size_t total = 0;
+        for (int i = 0; i < L * E; ++i) {
+            shape[i] = (size_t) (i / E) % 2;
+            nb[i] = sh[shape[i]].n; ub[i] = sh[shape[i]].u; total += nb[i];
+            heat[i] = (int64_t) (1e9 / (1 + rng() % 200));   // a few hot experts, many cold, ties among them
+        }
+        const size_t lo = 1000, hi = lo + total * 6 / 10, M = lo + (hi - lo) / 2, H = M + (hi - lo) / 10;   // lo on no unit; the hole in the middle
+        pv2_heap h = pv2_make(lo, hi);
+        pv2_hold(h, M, H);
+        const std::vector<size_t> d = pv2_heat_dist(heat, nb);
+        std::vector<pv2_boot_t> ex;
+        for (int32_t id : pv2_heat_order(heat)) { ex.push_back({ id, nb[id], ub[id], d[id], heat[id] }); }
+        const std::vector<pv2_put_t> put = pv2_boot_fill(h, ex, M, H);
+        std::map<int32_t, size_t> uh = { { PV2_HOLD, 1 } };
+        for (int i = 0; i < L * E; ++i) { uh[i] = ub[i]; }
+        check("boot fill: the heap is sound (no overlap, units, nothing lost)", heap_ok(h, uh));
+        check("boot fill: a good part of the experts is placed, not all", put.size() > (size_t) L * E * 4 / 10 && put.size() < (size_t) L * E);
+        bool clear = true, pinned = true;
+        for (const auto & p : put) {
+            clear  = clear && (p.s + nb[p.id] <= M || p.s >= H);
+            pinned = pinned && h.res.count(p.s) && h.res.at(p.s).id == p.id && h.res.at(p.s).pin && h.res.at(p.s).heat == heat[p.id];
+        }
+        check("boot fill: nothing in the landing hole, and the hole is still held whole", clear && h.res.count(M) && h.res.at(M).id == PV2_HOLD && h.res.at(M).n == H - M);
+        check("boot fill: each is a pinned resident (its upload is on its way) with its heat", pinned);
+        check("boot fill: the hottest sits at the heap's top", h.hi - (put[0].s + nb[put[0].id]) < ub[put[0].id]);
+        // nothing is left out that still fits, and per shape the placed ones are the hottest: a prefix of the shape's heat order
+        std::set<int32_t> placed;
+        for (const auto & p : put) { placed.insert(p.id); }
+        bool fits = true, prefix = true, gone[2] = { false, false };
+        for (const auto & x : ex) {
+            if (placed.count(x.id)) { prefix = prefix && !gone[shape[x.id]]; continue; }
+            gone[shape[x.id]] = true;
+            fits = fits && pv2_pick_main(h, 0, x.n, x.u, std::numeric_limits<int64_t>::min(), 0).s == PV2_NONE;
+        }
+        check("boot fill: no expert left out would still fit a free window", fits);
+        check("boot fill: per shape the placed experts are the hottest (a prefix of its heat order)", prefix);
     }
     {   // the switch to decode: the hottest of residents and missing experts that fill the area stay or come in, cold leftovers leave
         pv2_heap h = pv2_make(0, 1000);
