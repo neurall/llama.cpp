@@ -13790,7 +13790,10 @@ static void pv2_pin_entry(moe_cache * mc, size_t q, bool pin) {   // cache lock 
 static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t & wait_at) {   // cache lock held
     auto & v = mc->v2;
     const size_t li = mc->cs_order[p];
-    GGML_ASSERT(li < mc->layers.size() && mc->layers[li].v2u && "pool-v2: a stream entry of a shadow, or of a layer outside the heap");
+    if (!(li < mc->layers.size() && mc->layers[li].v2u)) {
+        GGML_ABORT("pool-v2: a stream entry of a shadow, or of a layer outside the heap: entry %zu of %zu is layer %zu of %zu (v2u %zu)", p, mc->cs_order.size(), li, mc->layers.size(),
+                li < mc->layers.size() ? mc->layers[li].v2u : (size_t) 0);
+    }
     layer_state & ls = mc->layers[li];
     out.clear();
     wait_at = 0;
