@@ -9,7 +9,7 @@ Fork of llama.cpp with multi gpu acceleration possible even for models bigger th
 
 But even on single 5090 20x pp and 2x t gains 
 so the gains you see bellow are not just from multigpu 
-but mostly just from more efficient vram mmgmt
+but mostly just from more efficient vram mgmt
 
 ```sh
 llama-server -m MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf
