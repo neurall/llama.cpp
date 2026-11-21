@@ -311,6 +311,20 @@ static int unit_tests() {
         printf("pick main: %d free windows, %d over victims, %d none\n", seen[0], seen[1], seen[2]);
         check("pick main: every outcome is exercised", seen[0] > 100 && seen[1] > 100 && seen[2] > 100);
     }
+    {   // c2 views: every layer's views reach every start the heap can give an expert (a multiple of the unit up to span - n); the backend checks that the last
+        // view's slice (ne[2] - 1) x u + bytes ends inside the buffer
+        const poolx_slice c0[3] = { { 1179648, 144, 256, 2048 }, { 1179648, 144, 256, 2048 }, { 1179648, 144, 256, 1024 } };   // OLMoE: Q4_K down
+        const poolx_slice c1[3] = { { 1179648, 144, 256, 2048 }, { 1179648, 144, 256, 2048 }, { 1720320, 210, 256, 1024 } };   // Q6_K down
+        for (const poolx_slice * sl : { c0, c1 }) {
+            const pv2_shape sh = pv2_shape_of(sl);
+            const size_t B = poolx_block_class(sl).B, nblk = 700, span = nblk * B;   // the pool's experts: 700 blocks of the class
+            const int64_t ne2 = pv2_heap_ne2(span, sh.n, sh.u);
+            check("heap views: the last start's slices end inside the pool", (size_t) (ne2 - 1) * sh.u + sh.n <= span);
+            check("heap views: no later start fits", (size_t) ne2 * sh.u + sh.n > span);
+            check("heap views: at least as far as the class's own views", ne2 >= pv2_view_ne2((int64_t) nblk, B, sh.u));
+        }
+        check("heap views: a pool smaller than one expert has no view", pv2_heap_ne2(100, 101, 16) == 0 && pv2_heap_ne2(100, 100, 16) == 1);
+    }
     {   // the switch to decode: the hottest of residents and missing experts that fill the area stay or come in, cold leftovers leave
         pv2_heap h = pv2_make(0, 1000);
         pv2_add(h, 0,   { 1, 200, 5, false });

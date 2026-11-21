@@ -42,6 +42,9 @@ static inline pv2_shape pv2_shape_of(const poolx_slice s[3]) {
 // table entry is b x B / u; the views reach the last block's slices (the backend checks (ne[2] - 1) x u + a slice's bytes); u = B gives today's views and tables.
 static inline int64_t pv2_view_ne2(int64_t n, size_t B, size_t u) { return n > 0 ? (n - 1) * (int64_t) (B / u) + 1 : 0; }
 static inline int32_t pv2_block_entry(int32_t b, size_t B, size_t u) { return b * (int32_t) (B / u); }
+// stage 2 (the heap): every layer's views cover the whole pool, an expert of n bytes may start at any multiple of u up to span - n; the backend checks that the
+// last view's slice, (ne[2] - 1) x u + bytes, ends inside the buffer
+static inline int64_t pv2_heap_ne2(size_t span, size_t n, size_t u) { return span >= n ? (int64_t) ((span - n) / u) + 1 : 0; }
 
 struct pv2_res {
     int32_t id   = -1;      // the caller's expert id
