@@ -12258,7 +12258,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
     // a classless expert pool (no size classes): can the expert kernels read a view whose nb[2] is one unit of about 4 KiB, smaller than an expert, with unit offsets as ids (and the table)
-    for (ggml_type type_a : {GGML_TYPE_IQ3_S, GGML_TYPE_Q4_K, GGML_TYPE_IQ4_XS, GGML_TYPE_Q8_0, GGML_TYPE_F16}) {
+    for (ggml_type type_a : {GGML_TYPE_IQ3_S, GGML_TYPE_Q4_K, GGML_TYPE_IQ4_XS, GGML_TYPE_Q8_0, GGML_TYPE_F16,
+                              GGML_TYPE_Q6_K, GGML_TYPE_IQ4_NL, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_Q2_0}) {   // the second row: the other types of OLMoE and Qwen3.8 IQ3_S experts
         for (bool b : {true, false}) {
             for (int64_t n : {1, 8, 512}) {
                 for (bool with_table : {false, true}) {

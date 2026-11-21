@@ -10251,6 +10251,13 @@ static void ggml_backend_cuda_mmvq_tune_fork(const ggml_tensor * w) {
     }
 }
 
+// fork: the expert kernels read a view whose nb[2] is a unit smaller than an expert, with unit offsets as ids: MMVQ steps by nb[2] / block bytes, and for
+// several tokens MMQ and the sorted path take the logical ids and the table (src[3], src[4]) and size their grid by the table's experts, not by ne[2]
+// (test-backend-ops MUL_MAT_ID unit cases). The expert pool may then use unit views (--moe pool-v2, fork/docs/pool-v2.md); float experts keep block views (mmf)
+static bool ggml_backend_cuda_unit_views_fork(void) {
+    return true;
+}
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     // fork: the core asks for hooks by the neutral name ggml_backend_fork_<x> (src/llama-backend-fork.h); here they are the ggml_backend_cuda_<x> functions
     if (strncmp(name, "ggml_backend_fork_", 18) == 0) {
@@ -10274,6 +10281,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_kernels_bytes_fork") == 0) {
         return (void *)ggml_backend_cuda_kernels_bytes_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_unit_views_fork") == 0) {
+        return (void *)ggml_backend_cuda_unit_views_fork;
     }
 #if defined(__linux__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)   // its definition's guard: the deferred pins exist on Linux CUDA only (the caller reads none)
     if (strcmp(name, "ggml_backend_cuda_pins_pending_fork") == 0) {

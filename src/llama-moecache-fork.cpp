@@ -52,6 +52,7 @@
 #include <unordered_set>
 #include <vector>
 #include "llama-poolalloc-fork.h"
+#include "llama-poolv2-fork.h"   // pool v2 (fork/docs/pool-v2.md): the unit of an expert's views (pv2_shape_of)
 #include "llama-moetopic-fork.h"
 #include "llama-passplan-fork.h"
 #include "llama-kvtier-fork.h"
@@ -254,6 +255,7 @@ struct layer_state {
     int                   link = 0;       // upload link (GPU) of this layer's cache: 0 = the offload / fastest GPU, 1.. the others
     int32_t               n_cache = 0;    // cache slots (the rest stream predicted experts); block pool: this layer's nominal share, used only by heuristics (hot set, adopt limit)
     int32_t               pcls    = -1;   // block pool: the size class this layer's experts are cached in (index into moe_cache::pool), -1 = own tensors (--moe pool=0)
+    int32_t               tbl_mul = 1;    // --moe pool-v2: units of the views' nb[2] in one block (slot_off, the device tables); 1 = the block is nb[2]
     int32_t               n_own   = 0;    // block pool: blocks of the class this layer owns now
     std::vector<uint8_t>  is_stream;      // slot -> holds streamed (predicted) experts, not the cache
     std::unique_ptr<std::atomic<const char *>[]> pin_ptr[3];   // tensor (up, gate, down) -> expert -> its pinned copy (--moe pinr), nullptr = not pinned
@@ -359,6 +361,9 @@ struct moe_cache {
         int32_t               ring_hi = INT32_MAX;   // the ring's blocks end here: the tail area (CUDA's room) holds cached experts only, no upload of the stream lands there
     };
     std::vector<pool_state> pool;
+    // --moe pool-v2=1 (fork/docs/pool-v2.md, stage 1): the views of a class step by its unit (pv2_shape_of) instead of its block, the device tables hold a block as
+    // block x B / unit. Classes, owners, ring, lend, KV and room are unchanged: the same placement through unit views
+    bool pv2 = false;
     int64_t  n_expert_used = 0;   // experts per token (the compute alias sizes the CUDA scratch from it)
     uint64_t gmax_all = 1;
     // compute alias (--moe alias=1): per pool buffer, the first size class can lend its first blocks to the scheduler's compute buffer.
@@ -2356,6 +2361,11 @@ inline double prompt_victim_rank(const moe_cache * mc, const layer_state & lo, s
     static const bool on = [] { const char * e = moe_opt("prompt-victim"); return e && atoi(e) != 0; }();
     return poolx_victim_rank(on, all, o, jli, mc->layers.size(), victim_score(mc, lo, x, on));
 }
+
+// a slot's bytes from the start of one of its layer's cache views (up_c, gate_c or down_c), and its device table entry: a block is tbl_mul steps of the views'
+// nb[2] (1 today; --moe pool-v2: the class unit, fork/docs/pool-v2.md). Every write into a block and every table entry goes through these two
+inline size_t  slot_off(const ggml_tensor * view, const layer_state & ls, int32_t slot) { return (size_t) slot * view->nb[2] * (size_t) ls.tbl_mul; }
+inline int32_t slot_tbl(const layer_state & ls, int32_t slot) { return slot * ls.tbl_mul; }
 
 // ---- block pool runtime ----------------------------------------------------------------------------------------------------------------------------
 // With the block pool the slot index used everywhere (tables, upload offsets, the slot arrays of a layer) is a block of the layer's size class.
@@ -4758,7 +4768,7 @@ bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t 
     layer_state & ls = mc->layers[it->second.first];
     const int kind = it->second.second;
     ggml_tensor * c = kind == 0 ? ls.pub.up_c : kind == 1 ? ls.pub.gate_c : ls.pub.down_c;
-    if (!c || !c->buffer || c->nb[2] < weight->nb[2] || c->nb[1] != weight->nb[1] ||
+    if (!c || !c->buffer || slot_off(c, ls, 1) < weight->nb[2] || c->nb[1] != weight->nb[1] ||
         ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
         return false;
     }
@@ -4804,12 +4814,12 @@ bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t 
         ls.adopted.push_back(expert);
     }
     ls.adopt_mask[expert] |= (uint8_t) (1 << kind);
-    *data   = (uint8_t *) c->data + (size_t) slot*c->nb[2];
+    *data   = (uint8_t *) c->data + slot_off(c, ls, slot);
     *buffer = c->buffer;
     {   // the caller copies the slice, device to device; what a matmul reads behind it comes from the host
         const char * from = nullptr;
         if (const size_t pb = expert_past(mc, ls, kind, expert, weight, from)) {
-            ggml_tensor z = expert_past_view(c, (size_t) slot*c->nb[2] + (size_t) weight->nb[2], pb);
+            ggml_tensor z = expert_past_view(c, slot_off(c, ls, slot) + (size_t) weight->nb[2], pb);
             // fork: the next expert's bytes from the pool's block (it carries them) or an O_DIRECT read, not the mapping (DS forced stream k x1: map-guard caught this read, 2026-11-10)
             const size_t sz = (size_t) weight->nb[2];
             const bool past_next = from == (const char *) weight->data + (size_t) (expert + 1)*sz;
@@ -4852,14 +4862,14 @@ void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, boo
 #endif
 }
 
-void upload_slice(ggml_tensor * dst_c, const ggml_tensor * src, int32_t expert, int32_t slot) {
+void upload_slice(ggml_tensor * dst_c, const ggml_tensor * src, int32_t expert, int32_t slot, size_t off) {   // off: the slot's bytes in dst_c (slot_off)
     const size_t sz = src->nb[2];
-    if ((size_t) slot*dst_c->nb[2] + sz > ggml_nbytes(dst_c) || (size_t) expert*sz + sz > ggml_nbytes(src)) {
-        LLAMA_LOG_ERROR("moe-cache: bad upload %s <- %s expert=%d slot=%d sz=%zu dst_nb2=%zu dst_bytes=%zu src_bytes=%zu\n",
-                dst_c->name, src->name, expert, slot, sz, dst_c->nb[2], ggml_nbytes(dst_c), ggml_nbytes(src));
+    if (off + sz > ggml_nbytes(dst_c) || (size_t) expert*sz + sz > ggml_nbytes(src)) {
+        LLAMA_LOG_ERROR("moe-cache: bad upload %s <- %s expert=%d slot=%d off=%zu sz=%zu dst_nb2=%zu dst_bytes=%zu src_bytes=%zu\n",
+                dst_c->name, src->name, expert, slot, off, sz, dst_c->nb[2], ggml_nbytes(dst_c), ggml_nbytes(src));
         return;
     }
-    ggml_backend_tensor_set(dst_c, (const char *) src->data + (size_t) expert*sz, (size_t) slot*dst_c->nb[2], sz);
+    ggml_backend_tensor_set(dst_c, (const char *) src->data + (size_t) expert*sz, off, sz);
 }
 
 // The CUDA backend's copy without the stream synchronisation (see ggml_backend_cuda_set_tensor_nosync_fork in ggml-cuda.cu for why: one sync per expert slice
@@ -4914,6 +4924,15 @@ void set_table_entry(llama_moe_cache_layer_fork & pub, int32_t expert, int32_t s
 }
 
 
+// --moe pool-v2: the tbl_mul of the layer or stream shadow whose table pub is (1 without it)
+static int32_t tbl_mul_of(const llama_moe_cache_layer_fork * pub) {
+    const moe_cache * mc = g_cache;
+    if (!mc || !mc->pv2) { return 1; }
+    for (const auto & l : mc->layers)  { if (&l.pub == pub) { return l.tbl_mul; } }
+    for (const auto & l : mc->shadows) { if (&l.pub == pub) { return l.tbl_mul; } }
+    GGML_ABORT("moe-cache: pool-v2: a device table of no layer and no shadow (layer %d)", pub->il);
+}
+
 void flush_tables() {
     // cstream: a table written beside the compute stream changes what a layer still to run reads (the host is layers ahead of the GPU); cs_end flushes after a sync
     if (g_cs_live.load(std::memory_order_relaxed)) { return; }
@@ -4925,16 +4944,18 @@ void flush_tables() {
     // every table of this flush in one transfer (ggml_backend_tensor_set_batch_begin_fork: the bytes are copied at each call). One blocking transfer a
     // table was 116 us a decode token after the graph, while the card waits for the next one (perf, Qwen3.8, 8 to 12 tables a step, 2026-11-19)
     struct one_batch { one_batch() { ggml_backend_tensor_set_batch_begin_fork(); } ~one_batch() { ggml_backend_tensor_set_batch_end_fork(); } } batch;
-    std::vector<int32_t> v;
+    std::vector<int32_t> v, u;
     for (auto * pub : d) {
         const int32_t * h = (const int32_t *) pub->host_table->data;
         v.assign(h, h + ggml_nelements(pub->dev_table));
         for (auto & x : v) {
             x = x >= pub->n_slots ? -1 : x;   // uncached (n_slots) and JIT pool experts (n_slots + 1): -1, which every kernel skips (no zero block is read)
         }
-        ggml_backend_tensor_set(pub->dev_table, v.data(), 0, v.size()*sizeof(int32_t));
+        const int32_t mul = tbl_mul_of(pub);
+        if (mul != 1) { u = v; for (auto & x : u) { x = x < 0 ? x : x * mul; } }   // --moe pool-v2: a block is mul units of the views' nb[2]
+        ggml_backend_tensor_set(pub->dev_table, (mul != 1 ? u : v).data(), 0, v.size()*sizeof(int32_t));
         led_line("?", "table", 0, v.size()*sizeof(int32_t), tr_fmt("L%d device table", pub->il));
-        if (guard_level() > 0) { std::lock_guard<std::mutex> lk(g_gtbl_mu); g_gtbl[pub] = v; }
+        if (guard_level() > 0) { std::lock_guard<std::mutex> lk(g_gtbl_mu); g_gtbl[pub] = v; }   // the guard reads its copies as slots
     }
     if (g_cache) {
         for (auto & l : g_cache->layers) {
@@ -5289,7 +5310,7 @@ static int moe_where_cb(const ggml_tensor * weight, int32_t lo, int32_t hi, ggml
             if (t[e] >= 0 && t[e] < ls.pub.n_slots) { data[e - lo] = GGML_MOE_ELSEWHERE; }
         }
     }
-    if (!c || !c->buffer || c->nb[2] < weight->nb[2] || c->nb[1] != weight->nb[1] ||
+    if (!c || !c->buffer || slot_off(c, ls, 1) < weight->nb[2] || c->nb[1] != weight->nb[1] ||
         ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
         moe_where_count(hi - lo, 0, 0, hi - lo);
         if (lk >= 0) { mc->pf_ask[lk] += hi - lo; mc->pf_wrong[lk] += hi - lo; }
@@ -5305,7 +5326,7 @@ static int moe_where_cb(const ggml_tensor * weight, int32_t lo, int32_t hi, ggml
             inflight++;
             continue;
         }
-        data[e - lo] = (const uint8_t *) c->data + (size_t) s*c->nb[2];
+        data[e - lo] = (const uint8_t *) c->data + slot_off(c, ls, s);
         ++n;
     }
     moe_where_count(hi - lo, n, inflight, 0);
@@ -5340,7 +5361,7 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
         return false;
     };
     ggml_tensor * c = it->second.second == 0 ? ls.pub.up_c : it->second.second == 1 ? ls.pub.gate_c : ls.pub.down_c;
-    if (!c || !c->buffer || c->nb[2] < weight->nb[2] || c->nb[1] != weight->nb[1] ||
+    if (!c || !c->buffer || slot_off(c, ls, 1) < weight->nb[2] || c->nb[1] != weight->nb[1] ||
         ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
         return streamed();
     }
@@ -5350,7 +5371,7 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
     }
     mc->n_src_hit++;
     mc->pf_hit_bytes += (int64_t) weight->nb[2];
-    *data   = (const uint8_t *) c->data + (size_t) ls.expert_slot[expert]*c->nb[2];
+    *data   = (const uint8_t *) c->data + slot_off(c, ls, ls.expert_slot[expert]);
     *buffer = c->buffer;
     return true;
 }
@@ -10038,6 +10059,19 @@ struct pool_layout_t {
 };
 
 
+// --moe pool-v2 (fork/docs/pool-v2.md): the step of a layer's views, its shape's unit (pv2_shape_of: lcm(16, the slices' block bytes)), which divides the
+// block B. A float expert type keeps the block: mmf sizes its tiles and its id helper's grid by ne[2] (mmf.cu, mmid.cu), which unit views make millions
+static size_t pv2_layer_unit(const llama_layer * l, size_t B) {
+    const ggml_tensor * t[3] = { l->ffn_up_exps, l->ffn_gate_exps, l->ffn_down_exps };
+    poolx_slice sl[3];
+    for (int k = 0; k < 3; ++k) {
+        if (!ggml_is_quantized(t[k]->type)) { return B; }
+        sl[k] = { t[k]->nb[2], ggml_type_size(t[k]->type), (size_t) ggml_blck_size(t[k]->type), (size_t) t[k]->ne[0] };
+    }
+    const size_t u = pv2_shape_of(sl).u;
+    return B % u == 0 ? u : B;
+}
+
 static pool_layout_t pool_layout(const std::vector<const llama_layer *> & ls) {
     pool_layout_t out;
     out.lay_cls.resize(ls.size());
@@ -10468,6 +10502,17 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         // slots for predicted uploads (no pool, so no compute alias: ggml's own compute buffers, user 2026-11-14 "disable any non pool allocs")
         static const bool pred_pool = [] { const char * e = moe_opt("pred-pool"); return !e || atoi(e) != 0; }();
         const bool pool_on = [] { const char * e = moe_opt("pool"); return !e || atoi(e) != 0; }() && (predict <= 0 || pred_pool);   // the predictor's stream slots are per layer
+        // --moe pool-v2=1 (fork/docs/pool-v2.md, stage 1: unit views over today's classes): one card (another card's shadows, the expert split and layer swaps
+        // keep block views), a backend whose expert kernels read unit views (it answers the hook; Vulkan sizes its expert loop by ne[2] and chunks views by it)
+        if (const char * e = moe_opt("pool-v2"); e && atoi(e) != 0) {
+            typedef bool (*unit_views_t)(void);
+            const ggml_backend_dev_t pd = ggml_backend_buft_get_device(groups.begin()->first);
+            const auto uv = (unit_views_t) llama_fork_proc_dev(pd, "ggml_backend_fork_unit_views_fork");
+            const char * why = !pool_on ? "no block pool" : groups.size() != 1 ? "the experts are cached on more than one card" :
+                               !(uv && uv()) ? "the backend's expert kernels do not read unit views" : nullptr;
+            mc->pv2 = why == nullptr;
+            if (why) { LLAMA_LOG_WARN("moe-cache: pool-v2=1 is off: %s\n", why); }
+        }
         const int32_t jit_pool = [] { const char * e = moe_opt("jit-pool"); return e ? std::max(0, atoi(e)) : 0; }();
         // LLAMA_MOE_CACHE_JIT_POOL_ALL=1: every layer gets a pool (JIT never evicts the main cache)
         const bool jit_pool_all = [] { const char * e = moe_opt("jit-pool-all"); return e && atoi(e) != 0; }();
@@ -10977,17 +11022,30 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     const size_t       ci = pl.lay_cls[i];
                     const pool_class & cl = pl.cls[ci];
                     const int32_t      n  = gn[ci];   // the class's grid (its blocks, and with a grid the neighbours' bytes before them)
+                    // --moe pool-v2: the views step by the layer's unit, a block is B / u steps; the last block's slices stay inside the view (the backend's
+                    // bounds check) and so does nothing past it
+                    const size_t       u  = mc->pv2 ? pv2_layer_unit(ll[i], cl.B) : cl.B;
+                    const int64_t      ne2 = pv2_view_ne2(n, cl.B, u);
                     ggml_tensor * t3[3] = { ls->pub.up_c, ls->pub.gate_c, ls->pub.down_c };
                     for (int k = 0; k < 3; ++k) {
-                        t3[k]->ne[2]  = n;   // the class's blocks: the tables hold 0 .. n - 1 or -1 (uncached, skipped)
-                        t3[k]->nb[2]  = cl.B;
-                        t3[k]->nb[3]  = cl.B * (size_t) n;
+                        t3[k]->ne[2]  = ne2;   // the class's blocks (pool-v2: their units): the tables hold 0 .. n - 1 (x B / u) or -1 (uncached, skipped)
+                        t3[k]->nb[2]  = u;
+                        t3[k]->nb[3]  = u * (size_t) ne2;
                         t3[k]->buffer = cbufs[ci];
                         t3[k]->data   = (uint8_t *) ggml_backend_buffer_get_base(cbufs[ci]) + gbase[ci] + cl.off[k];
                     }
                     ls->pub.n_slots = n;                      // the class's blocks; n marks "uncached" in the host tables (-1 in the device tables)
                     ls->pcls        = (int32_t) (pool0 + ci);
+                    ls->tbl_mul     = pv2_block_entry(1, cl.B, u);   // block b's entry b x B / u (slot_tbl)
                     ls->n_cache     = slots;                  // nominal share, for the heuristics only
+                }
+                if (mc->pv2) {   // one line per class: what its views step by
+                    std::string ut;
+                    for (size_t c = 0; c < pl.cls.size(); ++c) {
+                        const size_t u = pv2_layer_unit(ll[pl.cls[c].members[0]], pl.cls[c].B);
+                        ut += tr_fmt("%s%.2f MiB blocks: unit %zu B (%zu a block)", c ? ", " : "", pl.cls[c].B / 1048576.0, u, pl.cls[c].B / u);
+                    }
+                    LLAMA_LOG_WARN("moe-cache: pool-v2 on %s: the expert views step by a unit, the device tables hold units; %s\n", ggml_backend_buft_name(buft), ut.c_str());
                 }
                 LLAMA_LOG_WARN("moe-cache: block pool on %s: %zu layers, %.1f MiB, size classes: %s; no blocks reserved per layer\n", ggml_backend_buft_name(buft),
                         cands.size(), total / 1048576.0, cls_txt.c_str());
@@ -11593,10 +11651,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     const int64_t tr = ggml_time_us();
                     if (ls.rp_tab[k]) {   // --moe rampool: the pool's block (read in now if the pool admits it), held until the copy is done
                         if (const char * pc = ggml_rampool_take_fork(srcs[k], j.expert)) {
-                            ggml_backend_tensor_set(dsts[k], pc, (size_t) j.slot*dsts[k]->nb[2], sz);
+                            ggml_backend_tensor_set(dsts[k], pc, slot_off(dsts[k], ls, j.slot), sz);
                             const char * pc_from = nullptr;
                             if (const size_t pb = expert_past(mc, ls, k, j.expert, srcs[k], pc_from)) {   // the block carries the bytes read past the slice
-                                ggml_tensor z = expert_past_view(dsts[k], (size_t) j.slot * dsts[k]->nb[2] + sz, pb);
+                                ggml_tensor z = expert_past_view(dsts[k], slot_off(dsts[k], ls, j.slot) + sz, pb);
                                 ggml_backend_tensor_set(&z, pc + sz, 0, pb);
                             }
                             ggml_rampool_drop_fork(srcs[k], j.expert);
@@ -11608,9 +11666,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         const char * pc_from = nullptr;
                         const size_t pb = pc > (const char *) 1 ? expert_past(mc, ls, k, j.expert, srcs[k], pc_from) : 0;
                         if (pc > (const char *) 1 && (pb == 0 || j.expert + 1 < srcs[k]->ne[2])) {   // the preheat read the past bytes along (the last expert is never preheated)
-                            ggml_backend_tensor_set(dsts[k], pc, (size_t) j.slot*dsts[k]->nb[2], sz);
+                            ggml_backend_tensor_set(dsts[k], pc, slot_off(dsts[k], ls, j.slot), sz);
                             if (pb > 0) {
-                                ggml_tensor z = expert_past_view(dsts[k], (size_t) j.slot * dsts[k]->nb[2] + sz, pb);
+                                ggml_tensor z = expert_past_view(dsts[k], slot_off(dsts[k], ls, j.slot) + sz, pb);
                                 ggml_backend_tensor_set(&z, pc + sz, 0, pb);
                             }
                             continue;
@@ -11625,9 +11683,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         if (const char * got = read_direct(ls.src_dfd[k], rd_ptr, mc->rd_size - 4096, off, sz + (past_in_file ? pb : 0))) {
                             const int64_t dr = ggml_time_us() - tr;
                             t_read += dr;
-                            ggml_backend_tensor_set(dsts[k], got, (size_t) j.slot*dsts[k]->nb[2], sz);
+                            ggml_backend_tensor_set(dsts[k], got, slot_off(dsts[k], ls, j.slot), sz);
                             if (pb > 0) {
-                                ggml_tensor z = expert_past_view(dsts[k], (size_t) j.slot * dsts[k]->nb[2] + sz, pb);
+                                ggml_tensor z = expert_past_view(dsts[k], slot_off(dsts[k], ls, j.slot) + sz, pb);
                                 ggml_backend_tensor_set(&z, past_in_file ? got + sz : past, 0, pb);
                             }
                             continue;
@@ -11637,11 +11695,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     if (staging_ptr && mc->bounce_bytes == 0 && ls.src_fd[k] >= 0 &&
                             pread_full(ls.src_fd[k], staging_ptr, sz, ls.src_offs[k] + (size_t) j.expert*sz)) {
                         t_read += ggml_time_us() - tr;
-                        ggml_backend_tensor_set(dsts[k], staging_ptr, (size_t) j.slot*dsts[k]->nb[2], sz);
+                        ggml_backend_tensor_set(dsts[k], staging_ptr, slot_off(dsts[k], ls, j.slot), sz);
                     } else if (mc->bounce_bytes > 0 && staging_ptr && ggml_backend_buffer_is_host(srcs[k]->buffer)) {
                         // BOUNCE: the mmap'd slice goes through this worker's pinned staging buffer: the DMA then runs from pinned memory
                         const char * bsrc = (const char *) srcs[k]->data + (size_t) j.expert*sz;
-                        const size_t bdst = (size_t) j.slot*dsts[k]->nb[2];
+                        const size_t bdst = slot_off(dsts[k], ls, j.slot);
                         for (size_t off = 0; off < sz; off += mc->bounce_bytes) {
                             const size_t n = std::min(mc->bounce_bytes, sz - off);
                             memcpy(staging_ptr, bsrc + off, n);
@@ -11659,16 +11717,16 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                             // job syncs once after its three tensors (nosync_used) instead of after each of them
                             const cuda_set_nosync_t ns = cuda_set_nosync_for(dsts[k]->buffer);
                             if (ns) {
-                                const size_t doff = (size_t) j.slot*dsts[k]->nb[2];
+                                const size_t doff = slot_off(dsts[k], ls, j.slot);
                                 ns(dsts[k], pinned ? pinned : (const char *) srcs[k]->data + (size_t) j.expert*sz, doff, sz);
                                 nosync_used = true;
                             }
-                            else if (pinned) { ggml_backend_tensor_set(dsts[k], pinned, (size_t) j.slot*dsts[k]->nb[2], sz); }
-                            else        { upload_slice(dsts[k], srcs[k], j.expert, j.slot); }
+                            else if (pinned) { ggml_backend_tensor_set(dsts[k], pinned, slot_off(dsts[k], ls, j.slot), sz); }
+                            else        { upload_slice(dsts[k], srcs[k], j.expert, j.slot, slot_off(dsts[k], ls, j.slot)); }
                         } else {
                             // re-check the DDR budget per chunk: a CPU phase that started meanwhile makes the rest wait
                             const char * src = pinned ? pinned : (const char *) srcs[k]->data + (size_t) j.expert*sz;
-                            const size_t dst = (size_t) j.slot*dsts[k]->nb[2];
+                            const size_t dst = slot_off(dsts[k], ls, j.slot);
                             for (size_t off = 0; off < sz; off += ch) {
                                 const int64_t tw = ggml_time_us();
                                 while (mc->ddr_mbs > (int64_t) (knobs().ddr_gbs * 1e3) && ggml_time_us() - tw < (int64_t) (knobs().gate_max_us >= 0 ? knobs().gate_max_us : mean_layer_us(mc))) {
@@ -11691,7 +11749,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     // tensor's padding, zeros. Same stream as the slice, before the next slice (up's read region reaches into gate, which is written next).
                     const char * from = nullptr;
                     if (const size_t pb = expert_past(mc, ls, k, j.expert, srcs[k], from)) {
-                        ggml_tensor z = expert_past_view(dsts[k], (size_t) j.slot * dsts[k]->nb[2] + sz, pb);
+                        ggml_tensor z = expert_past_view(dsts[k], slot_off(dsts[k], ls, j.slot) + sz, pb);
                         const cuda_set_nosync_t ns = cuda_set_nosync_for(dsts[k]->buffer);
                         if (ns) { ns(&z, from, 0, pb); nosync_used = true; }
                         else    { ggml_backend_tensor_set(&z, from, 0, pb); }
@@ -12380,9 +12438,9 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
             std::unique_lock<std::mutex> jl(mc->jit_mu, std::defer_lock);
             if (!rp) { jl.lock(); }
             const char * dr = rp ? nullptr : jit_direct_src(mc, be, srcs[k], (size_t) id*sz, sz + (past_next ? pb : 0), (int) ids->ne[0]);   // else an O_DIRECT read into a pinned slot
-            ggml_backend_tensor_set_async(be, dsts[k], rp ? rp : dr ? dr : (const char *) srcs[k]->data + (size_t) id*sz, (size_t) slot*dsts[k]->nb[2], sz);
+            ggml_backend_tensor_set_async(be, dsts[k], rp ? rp : dr ? dr : (const char *) srcs[k]->data + (size_t) id*sz, slot_off(dsts[k], ls, slot), sz);
             if (pb) {
-                ggml_tensor z = expert_past_view(dsts[k], (size_t) slot*dsts[k]->nb[2] + sz, pb);
+                ggml_tensor z = expert_past_view(dsts[k], slot_off(dsts[k], ls, slot) + sz, pb);
                 ggml_backend_tensor_set_async(be, &z, rp ? rp + sz : dr && past_next ? dr + sz : from, 0, pb);   // the pool's block carries the past bytes
             }
             if (dr) { jit_direct_done(mc, be); }
@@ -12549,6 +12607,7 @@ const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_mo
             sh.link = k;
             sh.home_li = (int32_t) li;
             sh.pcls = twin ? twin->pcls : ftw->pcls;
+            sh.tbl_mul = twin ? twin->tbl_mul : 1;   // the views it borrows step as its twin's (a foreign class keeps nb[2] = its block)
             for (int t = 0; t < 3; ++t) { sh.src_fd[t] = L.src_fd[t]; sh.src_dfd[t] = L.src_dfd[t]; sh.src_offs[t] = L.src_offs[t]; sh.rp_tab[t] = L.rp_tab[t]; }
             const size_t nb = mc->pool[sh.pcls].owner.size();
             sh.slot_expert.assign(nb, -1); sh.slot_in_flight.assign(nb, false); sh.is_stream.assign(nb, 0); sh.slot_last_use.assign(nb, 0);
@@ -13442,7 +13501,7 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, s
         size_t n = 1;   // a run: consecutive experts into consecutive blocks (host weights are one array per tensor; the RAM pool's blocks are not)
         while (!rp && i + n < cps.size() && cps[i + n].e == cps[i].e + (int32_t) n && cps[i + n].b == cps[i].b + (int32_t) n) { ++n; }
         for (int k = 0; k < 3; ++k) {
-            const size_t sz = srcs[k]->nb[2], B = dsts[k]->nb[2];
+            const size_t sz = srcs[k]->nb[2], B = slot_off(dsts[k], ls, 1);   // a block (pool-v2: tbl_mul units of nb[2])
             const char * rpp = rp ? ggml_rampool_use_fork(srcs[k], cps[i].e) : nullptr;   // shortcut: the pool block is not held until the copy lands (no pool eviction while it fits in RAM)
             std::unique_lock<std::mutex> jl(mc->jit_mu, std::defer_lock);
             if (rp && !rpp) { jl.lock(); }
@@ -13496,9 +13555,14 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, s
     const int64_t   r1   = pq >= 0 && (size_t) pq < mc->cs_rng.size() ? mc->cs_rng[(size_t) pq].second : nt;
     const uint8_t mix = pq >= 0 && (size_t) pq < mc->cs_mix.size() ? mc->cs_mix[(size_t) pq] : 0;
     const layer_state * home = mix == 2 && ls.home_li >= 0 && (size_t) ls.home_li < mc->layers.size() ? &mc->layers[(size_t) ls.home_li] : nullptr;   // the mix's shadow: the home's held are the home's
-    for (int64_t i = 0; i < nt; ++i) { snap[i] = h[i] >= ls.pub.n_slots || i < r0 || i >= r1 || (home && home->expert_slot[i] >= 0) ? -1 : h[i]; }
+    for (int64_t i = 0; i < nt; ++i) { snap[i] = h[i] >= ls.pub.n_slots || i < r0 || i >= r1 || (home && home->expert_slot[i] >= 0) ? -1 : slot_tbl(ls, h[i]); }
     ggml_backend_tensor_set_async(rb, ls.pub.dev_table, snap, 0, (size_t) nt*sizeof(int32_t));
-    if (guard_level() > 0) { std::lock_guard<std::mutex> lk(g_gtbl_mu); g_gtbl[&ls.pub].assign(snap, snap + nt); }
+    if (guard_level() > 0) {   // the guard reads its copies as slots
+        std::lock_guard<std::mutex> lk(g_gtbl_mu);
+        auto & g = g_gtbl[&ls.pub];
+        g.assign(snap, snap + nt);
+        for (auto & x : g) { x = x < 0 ? x : x / ls.tbl_mul; }
+    }
     ggml_backend_event_record(ls.ring_ev, rb);
 }
 
@@ -13944,7 +14008,7 @@ void llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             for (int k = 0; k < 3; ++k) {
                 if (!srcs[k] || !dsts[k] || !ggml_backend_buffer_is_host(srcs[k]->buffer)) { continue; }
                 const size_t sz  = srcs[k]->nb[2];
-                const size_t off = (size_t) slot * dsts[k]->nb[2];
+                const size_t off = slot_off(dsts[k], ls, slot);
                 const char * from = nullptr;
                 const size_t pb  = expert_past(mc, ls, k, e, srcs[k], from);
                 const size_t n   = sz + pb;
@@ -14280,10 +14344,10 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
                 for (int k = 0; k < 3; ++k) {
                     const size_t sz = srcs[k]->nb[2];
                     const char * rp = mc->rp_on ? ggml_rampool_use_fork(srcs[k], id) : nullptr;   // the pool's pinned block (asked above), not the mapping; the block carries the past bytes too
-                    ggml_backend_tensor_set_async(be, dsts[k], rp ? rp : (const char *) srcs[k]->data + (size_t) id*sz, (size_t) slot*dsts[k]->nb[2], sz);
+                    ggml_backend_tensor_set_async(be, dsts[k], rp ? rp : (const char *) srcs[k]->data + (size_t) id*sz, slot_off(dsts[k], ls, slot), sz);
                     const char * from = nullptr;
                     if (const size_t pb = expert_past(mc, ls, k, id, srcs[k], from)) {
-                        ggml_tensor z = expert_past_view(dsts[k], (size_t) slot*dsts[k]->nb[2] + sz, pb);
+                        ggml_tensor z = expert_past_view(dsts[k], slot_off(dsts[k], ls, slot) + sz, pb);
                         ggml_backend_tensor_set_async(be, &z, rp ? rp + sz : from, 0, pb);
                     }
                 }
@@ -14374,10 +14438,10 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
             for (int k = 0; k < 3; ++k) {
                 const size_t sz = srcs[k]->nb[2];
                 const char * rp = mc->rp_on ? ggml_rampool_use_fork(srcs[k], a.e) : nullptr;   // shortcut: the pool block is not held until the copy lands (no pool eviction while it fits in RAM)
-                ggml_backend_tensor_set_async(rb, dsts[k], rp ? rp : (const char *) srcs[k]->data + (size_t) a.e*sz, (size_t) a.slot*dsts[k]->nb[2], sz);
+                ggml_backend_tensor_set_async(rb, dsts[k], rp ? rp : (const char *) srcs[k]->data + (size_t) a.e*sz, slot_off(dsts[k], *l, a.slot), sz);
                 const char * from = nullptr;
                 if (const size_t pb = expert_past(mc, *l, k, a.e, srcs[k], from)) {
-                    ggml_tensor z = expert_past_view(dsts[k], (size_t) a.slot*dsts[k]->nb[2] + sz, pb);
+                    ggml_tensor z = expert_past_view(dsts[k], slot_off(dsts[k], *l, a.slot) + sz, pb);
                     ggml_backend_tensor_set_async(rb, &z, rp ? rp + sz : from, 0, pb);
                 }
             }
@@ -15115,7 +15179,7 @@ bool llama_moe_cache_swap_layers_fork(int il_a, int il_b) {
             for (int k = 0; k < 3; ++k) {
                 const ggml_tensor * src = k == 0 ? L.pub.up_src : k == 1 ? L.pub.gate_src : L.pub.down_src;
                 m.data[k].resize(src->nb[2]);
-                ggml_backend_tensor_get(t3[k], m.data[k].data(), (size_t) p.second * t3[k]->nb[2], src->nb[2]);
+                ggml_backend_tensor_get(t3[k], m.data[k].data(), slot_off(t3[k], L, p.second), src->nb[2]);
             }
             out.push_back(std::move(m));
         }
@@ -15137,6 +15201,7 @@ bool llama_moe_cache_swap_layers_fork(int il_a, int il_b) {
     std::swap(A.pub.dev_table, B.pub.dev_table);
     std::swap(A.pub.n_slots, B.pub.n_slots);
     std::swap(A.pcls, B.pcls);
+    std::swap(A.tbl_mul, B.tbl_mul);   // it goes with the views
     std::swap(A.n_own, B.n_own);
     std::swap(A.link, B.link);
     std::swap(A.slow, B.slow);
@@ -15160,11 +15225,11 @@ bool llama_moe_cache_swap_layers_fork(int il_a, int il_b) {
             if (s < 0) { n_dropped++; continue; }
             pool_take(mc, li, s);
             for (int k = 0; k < 3; ++k) {
-                ggml_backend_tensor_set(t3[k], m.data[k].data(), (size_t) s * t3[k]->nb[2], m.data[k].size());
+                ggml_backend_tensor_set(t3[k], m.data[k].data(), slot_off(t3[k], L, s), m.data[k].size());
                 const ggml_tensor * s3[3] = { L.pub.up_src, L.pub.gate_src, L.pub.down_src };
                 const char * from = nullptr;
                 if (const size_t pb = expert_past(mc, L, k, m.e, s3[k], from)) {
-                    ggml_tensor z = expert_past_view(t3[k], (size_t) s * t3[k]->nb[2] + m.data[k].size(), pb);
+                    ggml_tensor z = expert_past_view(t3[k], slot_off(t3[k], L, s) + m.data[k].size(), pb);
                     ggml_backend_tensor_set(&z, from, 0, pb);
                 }
             }

@@ -7,6 +7,7 @@
 #include "../src/llama-poolv2-fork.h"
 #include "../src/llama-poolalloc-fork.h"   // poolx_block_class: today's block bytes, to name the types behind the log's size classes
 
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -183,6 +184,36 @@ static int unit_tests() {
         const poolx_slice ol[3] = { { 1179648, 144, 256, 2048 }, { 1179648, 144, 256, 2048 }, { 1720320, 210, 256, 1024 } };   // OLMoE Q4_K up/gate, Q6_K down
         const pv2_shape so = pv2_shape_of(ol);
         check("shape: OLMoE Q6_K down: unit 5040, nothing read past", so.u == 5040 && so.n == 2 * 1179648 + 1720320);
+    }
+    {   // stage 1, unit views over today's classes: every real class (Qwen3.8 IQ3_S's 7, OLMoE's 2) seen through views that step by its unit
+        struct ty { size_t ts, blck; };
+        const ty ug[] = { { 82, 256 }, { 98, 256 }, { 110, 256 }, { 136, 256 } }, dn[] = { { 18, 32 }, { 18, 64 } };   // iq2_s iq3_xxs iq3_s iq4_xs / iq4_nl q2_0
+        std::vector<std::array<poolx_slice, 3>> cls;
+        for (const auto & a : ug) {
+            for (const auto & d : dn) {
+                const size_t ugb = 640 * (2560 / a.blck) * a.ts, dnb = 2560 * (640 / d.blck) * d.ts;
+                cls.push_back({ poolx_slice{ ugb, a.ts, a.blck, 2560 }, poolx_slice{ ugb, a.ts, a.blck, 2560 }, poolx_slice{ dnb, d.ts, d.blck, 640 } });
+            }
+        }
+        cls.push_back({ poolx_slice{ 1179648, 144, 256, 2048 }, poolx_slice{ 1179648, 144, 256, 2048 }, poolx_slice{ 1179648, 144, 256, 1024 } });
+        cls.push_back({ poolx_slice{ 1179648, 144, 256, 2048 }, poolx_slice{ 1179648, 144, 256, 2048 }, poolx_slice{ 1720320, 210, 256, 1024 } });
+        bool ok = true;
+        for (const auto & c : cls) {
+            const size_t B = poolx_block_class(c.data()).B, u = pv2_shape_of(c.data()).u;
+            ok = ok && B % u == 0;
+            for (int64_t n : { 1, 2, 7, 5733 }) {
+                const int64_t ne2 = pv2_view_ne2(n, B, u);
+                for (int32_t b : { 0, 1, (int32_t) n / 2, (int32_t) n - 1 }) {
+                    if (b < 0 || b >= n) { continue; }
+                    const int32_t e = pv2_block_entry(b, B, u);
+                    // the kernels read block b at e x nb[2] = e x u, its last slice ends inside the view, the entry is one of the view's
+                    ok = ok && (size_t) e * u == (size_t) b * B && e < ne2 && (size_t) (ne2 - 1) * u + c[2].nb2 >= (size_t) b * B + c[2].nb2;
+                }
+                ok = ok && pv2_view_ne2(n, B, B) == n && pv2_block_entry((int32_t) n - 1, B, B) == (int32_t) n - 1;   // u = B: today's views and tables
+            }
+        }
+        check("stage 1: a block of every real class is whole units, its entry x unit is its offset, inside the view; u = B is today", ok);
+        check("stage 1: an empty class has an empty view", pv2_view_ne2(0, 2344320, 7920) == 0);
     }
     {   // free first: a colder resident at the target, a free window farther: the free one, nothing evicted
         pv2_heap h = pv2_make(0, 1000);

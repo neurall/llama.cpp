@@ -37,6 +37,11 @@ static inline pv2_shape pv2_shape_of(const poolx_slice s[3]) {
     return sh;
 }
 
+// Stage 1 (fork/docs/pool-v2.md: unit views over today's classes): a class of n blocks of B bytes seen through views that step by u (u divides B). Block b's
+// table entry is b x B / u; the views reach the last block's slices (the backend checks (ne[2] - 1) x u + a slice's bytes); u = B gives today's views and tables.
+static inline int64_t pv2_view_ne2(int64_t n, size_t B, size_t u) { return n > 0 ? (n - 1) * (int64_t) (B / u) + 1 : 0; }
+static inline int32_t pv2_block_entry(int32_t b, size_t B, size_t u) { return b * (int32_t) (B / u); }
+
 struct pv2_res {
     int32_t id   = -1;      // the caller's expert id
     size_t  n    = 0;       // bytes held
