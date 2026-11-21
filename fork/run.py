@@ -7183,7 +7183,9 @@ def peek_line(exp):
     _lr = live_rate_text(LIVE_RATE)
     if not n_dec and n_prompt: return col(33, "    now: ") + ld + col(32, _lr + (f"pass {min(LIVE_PASS[0] + 1, LIVE_PASS[1])}/{LIVE_PASS[1]}  " if LIVE_PASS[1] > 1 else "") + f"prompt {n_prompt}" + (f"/~{int(pn)} tok" + (f" ~{min(100, 100 * n_prompt // int(pn))}%" if pn and n_prompt <= pn else " +") if pn else " tok"))   # the phase colours of the bar: prompt green
     if n_dec: return col(33, "    now: ") + ld + col(96, _lr + f"{n_dec}" + (f"/~{int(gen)} tok " + (f"~{100 * n_dec // int(gen)}%" if n_dec <= gen else "+") if gen else " tok"))   # generation blue
-    return ""
+    # no batch done yet (stock K3.1: the first 512-token batch reads the model from SSD for minutes): the prompt's size and how long its first batch runs (user 2026-11-21)
+    t_w = LIVE_RATE.setdefault("first_batch_t", time.time())
+    return col(33, "    now: ") + ld + col(32, f"prompt 0/{int(pn) if pn else '?'} tok, first batch running {int(time.time() - t_w) // 60}m{int(time.time() - t_w) % 60:02d}s")
 
 
 def trace_lines(width=40):
