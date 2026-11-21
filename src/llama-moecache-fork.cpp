@@ -2544,13 +2544,13 @@ void pv2_take(moe_cache * mc, pv2_heap & h, const pv2_pick & p, size_t li, int32
 }
 // a main-heap window for expert e of layer li of heat `heat` near its heat target: the free window nearest it anywhere in the heap, else (heat above INT64_MIN)
 // residents colder than `heat` within reach (pv2_place). The target: its place in the heat order packed down from the top, the landing area skipped
-pv2_pick pv2_pick_main(moe_cache * mc, size_t li, int32_t e, int64_t heat, size_t reach) {
+pv2_pick pv2_pick_main(moe_cache * mc, size_t li, int32_t e, int64_t heat, size_t reach, size_t free_reach) {
     const layer_state & ls = mc->layers[li];
     auto & v = mc->v2;
     const size_t hole = v.H - v.M;
     size_t t = pv2_target(v.main.lo, v.main.hi - hole, v.dist.empty() ? 0 : v.dist[(size_t) pv2_id(mc, li, e)], ls.v2n);
     if (t >= v.M) { t += hole; }
-    pv2_pick p = pv2_place(v.main, t, ls.v2n, ls.v2u, std::numeric_limits<int64_t>::min(), v.main.hi - v.main.lo, true);
+    pv2_pick p = pv2_place(v.main, t, ls.v2n, ls.v2u, std::numeric_limits<int64_t>::min(), std::min(v.main.hi - v.main.lo, free_reach), true);
     if (p.s != PV2_NONE || heat == std::numeric_limits<int64_t>::min()) { return p; }
     return pv2_place(v.main, t, ls.v2n, ls.v2u, heat, reach, true);
 }
@@ -2856,7 +2856,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
             const int32_t e = id % mc->v2.E;
             layer_state & ls = mc->layers[il];
             if (ls.at[e] >= 0 || ls.queued[e]) { continue; }
-            const pv2_pick pk = pv2_pick_main(mc, il, e, std::numeric_limits<int64_t>::min(), 0);
+            const pv2_pick pk = pv2_pick_main(mc, il, e, std::numeric_limits<int64_t>::min(), 0, SIZE_MAX);
             if (pk.s == PV2_NONE) { continue; }   // a bigger expert's window may be gone where a smaller one's is not
             pv2_put(mc, mc->v2.main, il, e, pk.s, 0, true);
             ls.slot_in_flight[e] = true;
@@ -8378,7 +8378,7 @@ static size_t pv2_fill_free(moe_cache * mc, bool wait, bool ini_only) {
     for (const auto & c : pv2_missing(mc, ini_only)) {
         layer_state & ls = mc->layers[c.li];
         if (ls.v2n > gmax) { continue; }
-        const pv2_pick pk = pv2_pick_main(mc, c.li, c.e, std::numeric_limits<int64_t>::min(), 0);
+        const pv2_pick pk = pv2_pick_main(mc, c.li, c.e, std::numeric_limits<int64_t>::min(), 0, SIZE_MAX);
         if (pk.s == PV2_NONE) { continue; }
         pv2_put(mc, v.main, c.li, c.e, pk.s, std::llround(1e6 * c.sc), true);
         jobs.push_back(pv2_job(mc, c.li, c.e, wait, c.part));
@@ -13851,7 +13851,7 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
     size_t n_heat = 0, b_heat = 0, n_land = 0, n_ev = 0;
     for (int32_t e : want) {
         const int64_t hx = v.tiered ? v.hv[(size_t) pv2_id(mc, li, e)] : pv2_heat(mc, ls, e, false, lsum);
-        pv2_pick pk = pv2_pick_main(mc, li, e, hx, v.reach);
+        pv2_pick pk = pv2_pick_main(mc, li, e, hx, v.reach, SIZE_MAX);
         if (pk.s != PV2_NONE) {
             victim(v.main, pk);
             pv2_take(mc, v.main, pk, li, e, hx, true, &n_ev);
@@ -16815,7 +16815,7 @@ void llama_moe_cache_step_fork() {
             if (ls.v2u) {   // pool-v2: a window of the heap near its heat target, free first, else over residents colder than it by the pay-back margin
                 if (pv2_dist_due(mc->n_steps, mc->v2.heat_step)) { pv2_refresh(mc, false, false); mc->v2.heat_step = mc->n_steps; }   // the targets and every resident's heat: the first step and every 64 (a per-step pass over every resident cost decode time)
                 const int64_t hx = pv2_heat(mc, ls, id, false, 0.0);
-                const pv2_pick pk = pv2_pick_main(mc, li, id, std::llround(1e6 * (xscore(mc, ls, id) - pay_back(link_margin[ls.link]))), mc->v2.reach);
+                const pv2_pick pk = pv2_pick_main(mc, li, id, std::llround(1e6 * (xscore(mc, ls, id) - pay_back(link_margin[ls.link]))), mc->v2.reach, 2 * mc->v2.reach);   // decode: free windows only near the target (a scan of every gap cost 40% of the main thread per token)
                 if (pk.s == PV2_NONE) {
                     mc->pr[7] += ls.pending.end() - it;
                     break;   // candidates are sorted: nothing colder in reach for a colder one either
