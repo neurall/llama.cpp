@@ -7641,6 +7641,11 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         gs = [g for g in (gt, gp) if g]; body[-1]["gm"] = math.prod(gs) ** (1 / len(gs)) if gs else 0   # overall gain: geometric mean of decode and prompt gain
         body[-1]["old"] = [dict(name=r["name"], is_old=True, out="", id=str(orid), sid="", prompt=r.get("prompt") or "", time="", load="", fail=False, t=f(t, 2), p=f(p, 1), st="", sp="", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=False, gm=0, old=[],
                                 bt=f"b{n} {d[5:]} {b}", bts=f"b{n} {b}", st_=None, g=gpus_used(orid)) for b, n, d, t, p, gt, gp, orid in older_gainers(r.get("model"), r.get("test"), st["ob"], st, body[-1]["gm"])] if st and not live and not r.get("ref") else []
+    for x in body:   # a cell with no run in the window but older builds' runs (their gains below it): sorted among the done cells by its best older gain (user 2026-11-21)
+        og = [math.prod(g) ** (1 / len(g)) for o in x.get("old", []) for g in [[v for v in (o.get("gtv"), o.get("gpv")) if v]] if g]
+        if not x["gm"] and og:
+            x["gm"] = max(og)
+            if x.get("section") == "queued": x["section"] = None
     SEC = {"done": 0, "running": 1, "queued": 2}   # `run status`: the sections in this order, each sorted by gain / list order
     if not live: body.sort(key=lambda x: (SEC.get(x["section"], 0), -x["gm"] if x["section"] in (None, "done") else 0))   # biggest overall gainers first (cells without stock last, list order kept)
     allrows = [y for x in body for y in [x] + x.get("old", [])]
