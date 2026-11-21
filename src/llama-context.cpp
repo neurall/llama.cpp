@@ -3654,6 +3654,17 @@ uint64_t tokheat_key(int32_t a, int32_t b, int32_t c) {
     return ((uint64_t) (a + 1) << 42) | ((uint64_t) (b + 1) << 21) | (uint64_t) (c + 1);
 }
 
+// rows 0..n-1 of `row` bytes each at r*nb[1] stay inside the tensor; a node that does not (a view of another shape) is skipped and named once
+bool tokheat_rows_fit(const ggml_tensor * t, int64_t n, size_t row) {
+    if (n <= 0 || (size_t) (n - 1)*t->nb[1] + row <= ggml_nbytes(t)) { return true; }
+    static std::atomic<int> warned { 0 };
+    if (warned++ < 4) {
+        LLAMA_LOG_WARN("tokheat: %s skipped: %lld rows of %zu B at stride %zu pass its %zu B (ne %lld %lld %lld %lld, nb %zu %zu %zu %zu)\n", t->name, (long long) n, row,
+                (size_t) t->nb[1], ggml_nbytes(t), (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2], (long long) t->ne[3], t->nb[0], t->nb[1], t->nb[2], t->nb[3]);
+    }
+    return false;
+}
+
 void tokheat_collect(ggml_cgraph * gf, const llama_ubatch & ub, int n_expert) {
     if (ub.token == nullptr) { return; }
     std::vector<int32_t> ids;
@@ -3669,6 +3680,7 @@ void tokheat_collect(ggml_cgraph * gf, const llama_ubatch & ub, int n_expert) {
         int il = -1;
         if (g_tokheat.trace && sscanf(t->name, "moe_in-%d", &il) == 1 && t->type == GGML_TYPE_F32 && t->buffer != nullptr) {
             std::vector<float> row(t->ne[0]); std::vector<uint16_t> h(t->ne[0]);
+            if (!tokheat_rows_fit(t, std::min<int64_t>(t->ne[1], ub.n_tokens), row.size()*sizeof(float))) { continue; }
             auto & dst = g_tokheat.tr_x[il];
             for (int64_t r = 0; r < std::min<int64_t>(t->ne[1], ub.n_tokens); ++r) {
                 ggml_backend_tensor_get(t, row.data(), (size_t) r*t->nb[1], row.size()*sizeof(float));
@@ -3680,6 +3692,7 @@ void tokheat_collect(ggml_cgraph * gf, const llama_ubatch & ub, int n_expert) {
         }
         if (sscanf(t->name, "ffn_moe_topk-%d", &il) != 1 || il < 0 || t->type != GGML_TYPE_I32 || t->buffer == nullptr) { continue; }
         const int64_t k = t->ne[0], n = std::min<int64_t>(t->ne[1], ub.n_tokens);
+        if (!tokheat_rows_fit(t, n, (size_t) k*sizeof(int32_t))) { continue; }
         ids.resize((size_t) (k*n));
         for (int64_t r = 0; r < n; ++r) {   // rows may be strided (a view of the top-k)
             ggml_backend_tensor_get(t, ids.data() + r*k, (size_t) r*t->nb[1], (size_t) k*sizeof(int32_t));
