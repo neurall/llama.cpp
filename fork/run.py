@@ -8762,6 +8762,8 @@ def run_list(name, argv):
         else:
             ref = ours_reference(r["model"], r["test"]); pn0, og0, _x = run_tokens(ref["id"]) if ref and ref.get("id") else (None, None, "")
             ot = ((pn0 or 64) / ref["p"], out0 / ref["t"]) if ref and ref.get("p") and ref.get("t") else None
+        if not ot and (mk := re.fullmatch(r"pf(\d+)k", r["test"])) and (ra := ours_rates_any(r["model"])):   # a size we never ran (-ps 3k512, stock first): our newest rates on any test of the model, its prompt about N*1024 tokens
+            ot = (int(mk[1]) * 1024 / ra[0], out0 / ra[1])
         if not ot: continue
         if o.stock_clip:   # -scl: one shortened request instead (stock_scaled_request: what stock reads in our prompt time, what it writes in our answer time), so its answer follows its own prompt as ours does; the note marks it bp2=b<prompt>-o<answer>
             ptok = int(mt[1]) if mt else (pn0 or 0)
@@ -9163,6 +9165,15 @@ def stock_rates(model):
     import sqlite3
     try:
         r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select pp, tps from runs where model=? and build like 'stock%' and cast(ok as integer)=1 and pp is not null and tps is not null order by ts desc limit 1", (os.path.basename(model),)).fetchone()
+        return (float(r[0]), float(r[1])) if r else None
+    except sqlite3.Error: return None
+
+
+def ours_rates_any(model):
+    """(prompt t/s, decode t/s) of our newest run of this model on this machine's current hardware, any test; None without one"""
+    import sqlite3
+    try:
+        r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select pp, tps from runs where model=? and build not like 'stock%' and build not like 'strata%' and cast(ok as integer)=1 and pp > 0 and tps > 0" + HWF[0] + " order by ts desc limit 1", (os.path.basename(model),)).fetchone()
         return (float(r[0]), float(r[1])) if r else None
     except sqlite3.Error: return None
 
