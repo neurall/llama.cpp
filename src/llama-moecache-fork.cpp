@@ -14160,7 +14160,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
         const int32_t q = lj < mc->cs_pos.size() ? mc->cs_pos[lj] : -1;
         return !ahead && q >= 0 && (size_t) q >= p;
     };
-    static int64_t t_map = 0, t_send = 0, t_bank = 0, t_spin = 0, t_rest = 0, n_b = 0, n_r = 0;   // where a batch's host time goes (dev timing, logged per 256 batches)
+    static int64_t t_map = 0, t_send = 0, t_bank = 0, t_spin = 0, t_rest = 0, n_b = 0, n_r = 0;   // where a batch's host time goes (dev timing, logged per 16 batches)
     int64_t tq = ggml_time_us();
     auto lap = [&](int64_t & acc) { const int64_t t = ggml_time_us(); acc += t - tq; tq = t; };
     std::vector<pm_entry> m = pm_map_of(mc, busy);
@@ -14233,7 +14233,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     g_pm.apply(g_pm.be, rs_dev, k, base, g_pm.tbl_dev, v.E);
     ggml_backend_event_record(g_pm.bank_ev[bk], g_pm.be);
     lap(t_rest); n_r += k;
-    if (++n_b % 256 == 0) { LLAMA_LOG_WARN("pool-v2: gpu-alloc host time, %lld batches of %lld allocs: map %.1f ms, send %.1f ms, bank wait %.1f ms, report wait %.1f ms, replay+apply %.1f ms\n",
+    if (++n_b % 16 == 0) { LLAMA_LOG_WARN("pool-v2: gpu-alloc host time, %lld batches of %lld allocs: map %.1f ms, send %.1f ms, bank wait %.1f ms, report wait %.1f ms, replay+apply %.1f ms\n",
             (long long) n_b, (long long) n_r, t_map / 1e3, t_send / 1e3, t_bank / 1e3, t_spin / 1e3, t_rest / 1e3); }
     static const bool check = [] { const char * x = moe_opt("map-check"); return x && atoi(x) != 0; }();
     if (check) {
