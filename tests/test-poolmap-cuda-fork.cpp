@@ -20,7 +20,7 @@ static pv2_heap random_heap(std::mt19937 & rng, size_t slots) {
         const int c = (int) (rng() % 100);
         pv2_res r; r.n = n; r.heat = (int64_t) (rng() % 1000); r.u = 10;
         if (c < 15) { i += k; continue; }
-        if (c < 30) { r.id = PV2_HOLD; r.pin = true; r.mov = true; r.heat = 0; }
+        if (c < 30) { r.id = PV2_HOLD; r.pin = true; r.kv = true; r.heat = 0; }
         else if (c < 40) { r.id = PV2_HOLD; r.pin = true; r.heat = 0; }
         else { r.id = (int32_t) x; r.pin = (int) (rng() % 100) < 20; }
         pv2_add(h, x, r);
@@ -55,13 +55,14 @@ int main() {
         io(be, cnt_dev, &cnt, sizeof(cnt), 1);
         const uint64_t n = (1 + rng() % 4) * 10;
         const int32_t id = 1000000 + it;
+        const int kind = it % 3;   // expert, KV page, working buffer
         memset(res, 0, sizeof(pm_result));
         pa(be, v_dev, cnt_dev, cap, h.lo, h.hi, n, 10, id, 7, 1, (pm_result *) res_dev, nullptr, nullptr, 1);
         ggml_backend_synchronize(be);
         check("kernel reports done", res->done == 1);
         check("kernel no overflow", res->overflow == 0);
         pv2_heap ref = h;
-        const pv2_alloc_result rr = pv2_alloc_do(ref, n, 10, id, 7, true);
+        const pv2_alloc_result rr = pv2_alloc_do(ref, n, 10, id, 7, true, true, kind);
         const pv2_alloc_result kr = pm_report(*res);
         runs++;
         if (rr.s == PV2_NONE) { none++; }
@@ -81,7 +82,7 @@ int main() {
         check("card map equals reference map", same_map);
         check("card map canonical", pm_canonical(back, h.lo, h.hi));
         pv2_heap mirror = h;
-        check("mirror replays the card's report", pv2_alloc_apply(mirror, kr, n, 10, id, 7, true) && pm_same(pm_from_heap(mirror), back));
+        check("mirror replays the card's report", pv2_alloc_apply(mirror, kr, n, 10, id, 7, true, kind) && pm_same(pm_from_heap(mirror), back));
     }
     check("every report equals the reference", same_rep == runs);
     check("moves, frees and misses seen", moved > 100 && freed > 100 && none > 10);

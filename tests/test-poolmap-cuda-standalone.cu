@@ -11,7 +11,7 @@ static pv2_heap random_heap(std::mt19937 & rng, size_t slots) {
         const int c = (int) (rng() % 100);
         pv2_res r; r.n = n; r.heat = (int64_t) (rng() % 1000); r.u = 10;
         if (c < 15) { i += k; continue; }
-        if (c < 30) { r.id = PV2_HOLD; r.pin = true; r.mov = true; r.heat = 0; }
+        if (c < 30) { r.id = PV2_HOLD; r.pin = true; r.kv = true; r.heat = 0; }
         else if (c < 40) { r.id = PV2_HOLD; r.pin = true; r.heat = 0; }
         else { r.id = (int32_t) x; r.pin = (int) (rng() % 100) < 20; }
         pv2_add(h, x, r); i += k;
@@ -64,7 +64,7 @@ int main() {
             std::vector<pm_entry> v = pm_from_heap(h); uint32_t cnt = (uint32_t) v.size();
             cudaMemcpy(v_dev, v.data(), v.size() * sizeof(pm_entry), cudaMemcpyHostToDevice); cudaMemcpy(cnt_dev, &cnt, 4, cudaMemcpyHostToDevice);
             const uint32_t k = 1 + rng() % 16;
-            for (uint32_t j = 0; j < k; ++j) { rq[j] = { (1 + rng() % 4) * 10, 10, (int64_t) (rng() % 50), (int32_t) (2000000 + it * 16 + j), 1 }; }
+            for (uint32_t j = 0; j < k; ++j) { rq[j] = { (1 + rng() % 4) * 10, 10, (int64_t) (rng() % 50), (int32_t) (2000000 + it * 16 + j), 1, (int32_t) ((it + j) % 3) }; }   // expert, KV, work
             memset(rs, 0, 16 * sizeof(pm_result));
             cudaEventRecord(e0);
             ggml_cuda_poolmap_alloc_batch_fork(0, v_dev, cnt_dev, cap, h.lo, h.hi, rq_dev, k, rs_dev, nullptr, nullptr, 1);
@@ -73,12 +73,12 @@ int main() {
             if (slots == 2000) { float ms; cudaEventElapsedTime(&ms, e0, e1); bt += ms / k; btn++; }
             pv2_heap ref = h, mirror = h;
             for (uint32_t j = 0; j < k; ++j) {
-                const pv2_alloc_result rr = pv2_alloc_do(ref, rq[j].n, 10, rq[j].id, rq[j].hot, true);
+                const pv2_alloc_result rr = pv2_alloc_do(ref, rq[j].n, 10, rq[j].id, rq[j].hot, true, true, rq[j].kind);
                 const pv2_alloc_result kr = pm_report(rs[j]);
                 bool rep = rs[j].done == 1 && kr.s == rr.s && kr.moves.size() == rr.moves.size() && kr.freed.size() == rr.freed.size();
                 for (size_t q = 0; rep && q < kr.moves.size(); ++q) rep = kr.moves[q].from == rr.moves[q].from && kr.moves[q].to == rr.moves[q].to;
                 check("batch: report equals reference", rep);
-                check("batch: mirror replays", pv2_alloc_apply(mirror, kr, rq[j].n, 10, rq[j].id, rq[j].hot, true));
+                check("batch: mirror replays", pv2_alloc_apply(mirror, kr, rq[j].n, 10, rq[j].id, rq[j].hot, true, rq[j].kind));
             }
             nb += k;
             cudaMemcpy(&cnt, cnt_dev, 4, cudaMemcpyDeviceToHost); std::vector<pm_entry> back(cnt); cudaMemcpy(back.data(), v_dev, cnt * sizeof(pm_entry), cudaMemcpyDeviceToHost);

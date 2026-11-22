@@ -8,10 +8,15 @@
 #include <cstdint>
 #include <cstddef>
 #include <vector>
+#include <algorithm>
+#include <functional>
+#include <unordered_map>
 #include "llama-poolv2-fork.h"
 
 enum : uint8_t { PM_FREE = 0, PM_MOE = 1, PM_KV = 2, PM_WRK = 3 };
 enum : uint8_t { PM_PIN = 1, PM_MOV = 2 };
+// what an alloc is for (optional, default an expert): a KV page (never moved) or a working buffer (never moved in a pass), both held
+enum : int32_t { PM_ALLOC_MOE = 0, PM_ALLOC_KV = 1, PM_ALLOC_WRK = 2 };
 
 struct pm_entry {
     uint64_t off;
@@ -28,7 +33,7 @@ static_assert(sizeof(pm_entry) == 40, "pm_entry layout is shared with the kernel
 struct pm_mv { uint64_t from, to, n; int32_t id; uint32_t u; };   // u: the mover's unit (its table entry = to / u)
 struct pm_fr { uint64_t s, n; int32_t id; int32_t pad; };
 static constexpr int PM_MAX_MV = 64, PM_MAX_FR = 128;
-struct pm_req { uint64_t n, a; int64_t hot; int32_t id; int32_t pin; };   // one alloc of a batch (sizes may differ); pin bit 0: pinned, bit 1: movers to free bytes only
+struct pm_req { uint64_t n = 0, a = 1; int64_t hot = 0; int32_t id = -1; int32_t pin = 1; int32_t kind = PM_ALLOC_MOE; };   // one alloc of a batch (sizes may differ): { n } asks a size only; pin bit 0: pinned, bit 1: movers to free bytes only; kind optional
 struct pm_result {
     uint64_t s;          // the new area, UINT64_MAX: none
     uint32_t n_mv, n_fr;
@@ -49,7 +54,7 @@ static inline std::vector<pm_entry> pm_from_heap(const pv2_heap & h) {
         else if (ri != h.res.end() && ri->first == at) {
             const pv2_res & r = ri->second;
             e.size = r.n; e.hot = r.heat; e.u = (uint32_t) r.u;
-            if (r.id == PV2_HOLD) { e.type = r.mov ? PM_KV : PM_WRK; e.id = -1; e.flags = (uint8_t) (PM_PIN | (r.mov ? PM_MOV : 0)); }
+            if (r.id == PV2_HOLD) { e.type = r.kv ? PM_KV : PM_WRK; e.id = -1; e.flags = (uint8_t) (PM_PIN | (r.mov ? PM_MOV : 0)); }
             else { e.type = PM_MOE; e.id = r.id; e.flags = r.pin ? PM_PIN : 0; }
             ++ri;
         } else { return {}; }   // a hole: not a tiling heap
@@ -62,7 +67,7 @@ static inline pv2_heap pm_to_heap(const std::vector<pm_entry> & v, size_t lo, si
     pv2_heap h = pv2_make(lo, hi);
     for (const pm_entry & e : v) {
         if (e.type == PM_FREE) { continue; }
-        pv2_res r; r.n = e.size; r.heat = e.hot; r.u = e.u ? e.u : 1; r.pin = (e.flags & PM_PIN) != 0; r.mov = (e.flags & PM_MOV) != 0;
+        pv2_res r; r.n = e.size; r.heat = e.hot; r.u = e.u ? e.u : 1; r.pin = (e.flags & PM_PIN) != 0; r.mov = (e.flags & PM_MOV) != 0; r.kv = e.type == PM_KV;
         r.id = e.type == PM_MOE ? e.id : PV2_HOLD;
         pv2_add(h, e.off, r);
     }
@@ -88,6 +93,51 @@ static inline bool pm_canonical(const std::vector<pm_entry> & v, size_t lo, size
     }
     return at == hi;
 }
+// user 2026-11-22: alloc asks a size and gets a pointer. alloc(r) returns at once a fake pointer (PM_FAKE | its number); buffered = true leaves it
+// in the open batch, else the batch goes at once (submit: one launch for every queued request). place(p) gives the real offset (UINT64_MAX: no
+// place); it waits only when that request's report has not landed, then replays the reports in order on the host (mirror, tables, owners), every
+// finished one of the batch with it. The ring holds cap requests: a full ring first resolves its oldest
+static constexpr uint64_t PM_FAKE = 1ull << 63;
+struct pm_queue {
+    pm_req * rq = nullptr; pm_result * rs = nullptr; uint32_t cap = 0;   // ring slots (mapped memory: the card reads rq, writes rs)
+    std::function<void(uint32_t slot0, uint32_t n)> launch;              // one batch launch: slots [slot0, slot0 + n)
+    std::function<void(uint64_t h, const pm_req &, const pm_result &)> replay;   // a landed report, in request order
+    uint64_t next = 0, sent = 0, done = 0;   // requests [done, sent) on the card, [sent, next) queued
+    std::unordered_map<uint64_t, uint64_t> at;   // resolved: request number -> offset. shortcut: kept until forget(), callers forget once they hold the place
+    uint64_t alloc(const pm_req & r, bool buffered = false) {
+        if (next - done == cap) { reap(done + 1); }
+        const uint32_t k = (uint32_t) (next % cap);
+        rq[k] = r; rs[k].done = 0;
+        const uint64_t h = next++;
+        if (!buffered) { submit(); }
+        return PM_FAKE | h;
+    }
+    void submit() {
+        while (sent < next) {   // a batch that wraps the ring goes as two launches (the kernel takes contiguous slots)
+            const uint32_t s0 = (uint32_t) (sent % cap), n = (uint32_t) std::min<uint64_t>(next - sent, cap - s0);
+            launch(s0, n);
+            sent += n;
+        }
+    }
+    void reap(uint64_t upto) {   // requests below upto resolved (waits for them), then every later one already landed
+        if (upto > sent) { submit(); }
+        for (; done < sent; ++done) {
+            const uint32_t k = (uint32_t) (done % cap);
+            if (done >= upto && __atomic_load_n(&rs[k].done, __ATOMIC_ACQUIRE) == 0) { break; }
+            while (__atomic_load_n(&rs[k].done, __ATOMIC_ACQUIRE) == 0) { }
+            if (replay) { replay(done, rq[k], rs[k]); }
+            at[done] = rs[k].s;
+        }
+    }
+    uint64_t place(uint64_t p) {
+        if (!(p & PM_FAKE)) { return p; }
+        const uint64_t h = p & ~PM_FAKE;
+        if (h >= done) { reap(h + 1); }
+        return at.at(h);
+    }
+    void forget(uint64_t p) { at.erase(p & ~PM_FAKE); }
+};
+
 // the kernel's report as the host's pv2_alloc_result
 static inline pv2_alloc_result pm_report(const pm_result & r) {
     pv2_alloc_result o;

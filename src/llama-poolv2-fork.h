@@ -54,6 +54,7 @@ struct pv2_res {
     bool    pin  = false;   // in flight (its layer computes or waits to): never replaced
     size_t  u    = 1;       // its unit: the start is a multiple of it (a move keeps that)
     bool    mov  = false;   // a held block that may move (a KV page, a working block): pv2_defrag_plan
+    bool    kv   = false;   // a held KV page (else a working block): KV never moves, in a pass or between
 };
 struct pv2_heap {
     size_t lo = 0, hi = 0;
@@ -860,7 +861,13 @@ struct pv2_alloc_result { size_t s = PV2_NONE; std::vector<pv2_amove> moves; std
 // extent outside the window (first by address) or over the coldest takeable expert of its size outside the window that is colder than it (that one leaves);
 // the rest leave. A newcomer only partly covering an expert frees the expert's bytes outside the window.
 // over false: movers go to free bytes only (no colder expert is replaced: a kernel may still read it)
-static inline pv2_alloc_result pv2_alloc_do(pv2_heap & h, size_t n, size_t a, int32_t id, int64_t heat, bool pin, bool over = true) {
+// kind (optional): 0 an expert (id, heat, pin), 1 a KV page (never moved), 2 a working buffer (never moved in a pass)
+static inline pv2_res pv2_alloc_entry(size_t n, size_t a, int32_t id, int64_t heat, bool pin, int kind) {
+    pv2_res nr; nr.id = id; nr.n = n; nr.heat = heat; nr.pin = pin; nr.u = a;
+    if (kind == 1 || kind == 2) { nr.id = PV2_HOLD; nr.heat = 0; nr.pin = true; nr.mov = false; nr.kv = kind == 1; }   // KV never moves (in a pass or between), work never in a pass
+    return nr;
+}
+static inline pv2_alloc_result pv2_alloc_do(pv2_heap & h, size_t n, size_t a, int32_t id, int64_t heat, bool pin, bool over = true, int kind = 0) {
     pv2_alloc_result out;
     const size_t s = pv2_alloc_window(h, n, a);
     if (s == PV2_NONE) { return out; }
@@ -891,14 +898,13 @@ static inline pv2_alloc_result pv2_alloc_do(pv2_heap & h, size_t n, size_t a, in
         pv2_add(h, to, r);
         out.moves.push_back({ x, to, r.n, r.id });
     }
-    pv2_res nr; nr.id = id; nr.n = n; nr.heat = heat; nr.pin = pin; nr.u = a;
-    const bool ok = pv2_add(h, s, nr);
+    const bool ok = pv2_add(h, s, pv2_alloc_entry(n, a, id, heat, pin, kind));
     (void) ok;
     return out;
 }
 // the mirror's side, from the report alone: every freed expert leaves, every mover leaves its old place, then the movers and the newcomer land (the
 // destinations are disjoint and outside the window, so the order inside each step does not matter)
-static inline bool pv2_alloc_apply(pv2_heap & h, const pv2_alloc_result & r, size_t n, size_t a, int32_t id, int64_t heat, bool pin) {
+static inline bool pv2_alloc_apply(pv2_heap & h, const pv2_alloc_result & r, size_t n, size_t a, int32_t id, int64_t heat, bool pin, int kind = 0) {
     if (r.s == PV2_NONE) { return true; }
     for (const pv2_freed & f : r.freed) {
         const auto it = h.res.find(f.s);
@@ -912,8 +918,7 @@ static inline bool pv2_alloc_apply(pv2_heap & h, const pv2_alloc_result & r, siz
         mv.push_back(pv2_drop(h, m.from));
     }
     for (size_t k = 0; k < mv.size(); ++k) { if (!pv2_add(h, r.moves[k].to, mv[k])) { return false; } }
-    pv2_res nr; nr.id = id; nr.n = n; nr.heat = heat; nr.pin = pin; nr.u = a;
-    return pv2_add(h, r.s, nr);
+    return pv2_add(h, r.s, pv2_alloc_entry(n, a, id, heat, pin, kind));
 }
 
 // user 2026-11-22: no window of n bytes holds only free bytes and takeable experts (pv2_alloc_window found none): the window that needs the fewest moves of

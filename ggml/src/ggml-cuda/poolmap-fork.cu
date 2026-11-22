@@ -121,7 +121,7 @@ static __device__ bool pm_window_ok(const pm_ctx & c, uint32_t i0, uint64_t st, 
 }
 
 struct pm_shared { unsigned long long sh_best, sh_key; uint32_t sh_idx; uint64_t cov[PM_MAX_MV]; int64_t cov_hot[PM_MAX_MV]; uint32_t n_cov, n_mv, n_fr, ovf; };
-static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint64_t a, int32_t id, int64_t hot, int pin, pm_result * res) {
+static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint64_t a, int32_t id, int64_t hot, int pin, int kind, pm_result * res) {
     const bool over = (pin & 2) == 0;   // pin bit 1: movers to free bytes only
     pin &= 1;
     unsigned long long & sh_best = S.sh_best; unsigned long long & sh_key = S.sh_key; uint32_t & sh_idx = S.sh_idx;
@@ -228,6 +228,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
         __syncthreads();
     }
     pm_entry ne = {}; ne.size = n; ne.hot = hot; ne.id = id; ne.u = (uint32_t) a; ne.type = PM_MOE; ne.flags = pin ? PM_PIN : 0;
+    if (kind == PM_ALLOC_KV || kind == PM_ALLOC_WRK) { ne.type = kind == PM_ALLOC_KV ? PM_KV : PM_WRK; ne.id = -1; ne.hot = 0; ne.flags = PM_PIN; }   // held: KV never moves, work never in a pass
     if (!pm_place(c, s, ne, &sh_idx)) { if (threadIdx.x == 0) { ovf = 2; } __syncthreads(); }
     if (threadIdx.x == 0) {
         res->s = s; res->n_mv = n_mv; res->n_fr = n_fr; res->overflow = ovf;
@@ -243,7 +244,7 @@ static __global__ void __launch_bounds__(PM_T) k_pm_alloc(pm_entry * v, uint32_t
     pm_ctx c = { v, cnt, cap, lo, hi };
     for (uint32_t k = 0; k < n_rq; ++k) {
         const pm_req q = rq[k];
-        pm_alloc_one(c, S, q.n, q.a, q.id, q.hot, q.pin, res + k);
+        pm_alloc_one(c, S, q.n, q.a, q.id, q.hot, q.pin, q.kind, res + k);
     }
 }
 

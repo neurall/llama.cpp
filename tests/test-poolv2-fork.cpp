@@ -1288,6 +1288,48 @@ static void test_coldest() {
     size_t c2 = 0;
     check("coldest: a start off the newcomer's unit skipped", pv2_coldest(h, ord, c2, 100, 7, all).s == 0);
 }
+// user 2026-11-22: alloc asks a size (kind optional) and gets a fake pointer at once; buffered ones go in one submit; place() waits only for its own
+// report and replays the reports in order. A fake card runs pv2_alloc_do per slot; places and the mirror must equal one direct alloc after another
+static void test_pm_queue() {
+    pv2_heap card = pv2_make(0, 4000), mirror = card, direct = card;
+    for (int i = 0; i < 30; ++i) { pv2_res r; r.id = i; r.n = 100; r.heat = (i * 37) % 11; r.u = 100; pv2_add(card, (size_t) i * 100, r); }
+    mirror = card; direct = card;
+    std::vector<pm_req> rq(4); std::vector<pm_result> rs(4);
+    pm_queue q; q.rq = rq.data(); q.rs = rs.data(); q.cap = 4;
+    int launches = 0; size_t landed = 0;
+    std::vector<uint32_t> pending;   // slots launched but not yet landed: the fake card answers when the host waits (here: at once, after the launch)
+    q.launch = [&](uint32_t s0, uint32_t n) {
+        launches++;
+        for (uint32_t k = s0; k < s0 + n; ++k) {
+            const pm_req & r = rq[k];
+            const pv2_alloc_result a = pv2_alloc_do(card, r.n, r.a, r.id, r.hot, r.pin & 1, (r.pin & 2) == 0, r.kind);
+            pm_result & o = rs[k];
+            o.s = a.s == PV2_NONE ? UINT64_MAX : a.s; o.n_mv = (uint32_t) a.moves.size(); o.n_fr = (uint32_t) a.freed.size(); o.overflow = 0;
+            for (size_t m = 0; m < a.moves.size(); ++m) { o.mv[m] = { a.moves[m].from, a.moves[m].to, a.moves[m].n, a.moves[m].id, 100 }; }
+            for (size_t f = 0; f < a.freed.size(); ++f) { o.fr[f] = { a.freed[f].s, a.freed[f].n, a.freed[f].id, 0 }; }
+            o.done = 1;
+        }
+    };
+    q.replay = [&](uint64_t, const pm_req & r, const pm_result & o) { landed++; check("queue: mirror replays a report", pv2_alloc_apply(mirror, pm_report(o), r.n, r.a, r.id, r.hot, r.pin & 1, r.kind)); };
+    std::vector<uint64_t> ptrs, want;
+    for (int i = 0; i < 10; ++i) {
+        pm_req r; r.n = 100 * (1 + i % 2); r.a = 100; r.hot = 20 + i; r.id = 100 + i; r.kind = i % 3;
+        if (i % 3) { r.id = -1; r.hot = 0; }
+        const pv2_alloc_result d = pv2_alloc_do(direct, r.n, r.a, r.id, r.hot, true, true, r.kind);
+        want.push_back(d.s == PV2_NONE ? UINT64_MAX : d.s);
+        ptrs.push_back(q.alloc(r, i % 4 != 3));   // three buffered, then one that sends the batch
+        check("queue: a fake pointer at once", (ptrs.back() & PM_FAKE) != 0);
+    }
+    check("queue: nothing waited for yet beyond the ring", landed <= 10);
+    bool same = true;
+    for (size_t i = 0; i < ptrs.size(); ++i) { same = same && q.place(ptrs[i]) == want[i]; }
+    check("queue: places equal one direct alloc after another", same);
+    check("queue: every report replayed once", landed == 10);
+    check("queue: mirror equals the card", pm_same(pm_from_heap(mirror), pm_from_heap(card)));
+    check("queue: batches, not one launch per alloc", launches < 10);
+    check("queue: a real pointer passes through", q.place(1234) == 1234);
+}
+
 static void test_cold_window() {
     // [0,1000): A 0-100 h5, B 100-200 h1, C 200-350 h9, gap 350-450, D 450-550 h2, E 550-650 h3 pinned, gap 650-1000 (too far from any cold resident? no: anchored only)
     pv2_heap h = pv2_make(0, 1000);
@@ -1603,6 +1645,7 @@ int main(int argc, char ** argv) {
     test_eranges();
     test_coldest();
     test_cold_window();
+    test_pm_queue();
     if (argc > 1 && strcmp(argv[1], "--sim") == 0) {
         std::vector<std::string> pos;
         std::string mode = "own";
