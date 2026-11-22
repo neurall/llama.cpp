@@ -13962,23 +13962,29 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
             pv2_take(mc, v.main, pk, li, e, hx, true, &n_ev);
             n_heat++; b_heat += ls.v2n;
         } else if (v.H == v.M) {   // no landing area: the globally coldest resident of the same size not pinned, not uploading, not of a layer still ahead in this pass
-            static std::map<size_t, std::pair<std::vector<pv2_cold_t>, size_t>> cold;   // per expert size: the coldest first, its cursor (rebuilt each pass)
+            // first a resident no layer of this pass still needs, else (a full-stream pass: every layer is ahead at its start) the coldest of any layer, which that
+            // layer streams again at its turn (as the classes claim over an expert of a layer ahead)
+            static std::map<size_t, std::pair<std::vector<pv2_cold_t>, size_t>> cold[2];   // per expert size: the coldest first, its cursor (rebuilt each pass)
             static uint64_t ord_pass = UINT64_MAX;
-            auto ok = [&](int32_t id) {
-                const size_t lj = (size_t) (id / v.E);
+            auto ok_any = [&](int32_t id) {
+                const layer_state & lq = mc->layers[(size_t) (id / v.E)];
                 const int32_t x = id % v.E;
-                const layer_state & lq = mc->layers[lj];
-                if (lq.slot_in_flight[(size_t) x] || lq.queued[(size_t) x] || lq.at[(size_t) x] < 0) { return false; }
-                const int32_t q = lj < mc->cs_pos.size() ? mc->cs_pos[lj] : -1;
-                return q < 0 || (size_t) q < p;
+                return !lq.slot_in_flight[(size_t) x] && !lq.queued[(size_t) x] && lq.at[(size_t) x] >= 0;
             };
-            if (ord_pass != mc->cs_pass) { cold.clear(); ord_pass = mc->cs_pass; }
-            auto ci = cold.find(ls.v2n);
-            if (ci == cold.end()) { ci = cold.emplace(ls.v2n, std::make_pair(pv2_cold_order(v.main, ls.v2n), (size_t) 0)).first; }
-            pk = pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok);
-            if (pk.s == PV2_NONE) {   // residents skipped earlier (pinned, ahead) may be free now
-                ci->second = { pv2_cold_order(v.main, ls.v2n), 0 };
-                pk = pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok);
+            auto ok_done = [&](int32_t id) {
+                const size_t lj = (size_t) (id / v.E);
+                const int32_t q = lj < mc->cs_pos.size() ? mc->cs_pos[lj] : -1;
+                return ok_any(id) && (q < 0 || (size_t) q < p);
+            };
+            if (ord_pass != mc->cs_pass) { cold[0].clear(); cold[1].clear(); ord_pass = mc->cs_pass; }
+            for (int t = 0; t < 2 && pk.s == PV2_NONE; ++t) {
+                auto ci = cold[t].find(ls.v2n);
+                if (ci == cold[t].end()) { ci = cold[t].emplace(ls.v2n, std::make_pair(pv2_cold_order(v.main, ls.v2n), (size_t) 0)).first; }
+                pk = t == 0 ? pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_done) : pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_any);
+                if (pk.s == PV2_NONE) {   // residents skipped earlier (pinned, ahead, uploading) may be free now
+                    ci->second = { pv2_cold_order(v.main, ls.v2n), 0 };
+                    pk = t == 0 ? pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_done) : pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_any);
+                }
             }
             if (pk.s == PV2_NONE) {   // every resident of its size is pinned or ahead: the entry waits for the next split
                 for (int32_t x : placed) { pv2_out(mc, ls, x); }
