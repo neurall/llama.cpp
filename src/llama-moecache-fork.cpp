@@ -11812,8 +11812,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         auto & v = mc->v2;
                         // the landing area holds at least one layer's experts (user 2026-11-21: "one layer of moes sized area to upload to"): the stream's reserve
                         // below it can be smaller (a 39 MiB reserve against 250 MiB OLMoE layers aborted the second prompt's stream: main full of hotter experts)
+                        // one layer by default, as the classes' ring (cs_ring_floor: one entry of the largest class; the next layer's uploads take cache blocks).
+                        // --moe pv2-land-layers=2: the layer computing and the next one copying ahead (before 2026-11-22; user: a layer's worth not yet used is waste)
+                        static const int land_n = [] { const char * x = moe_opt("pv2-land-layers"); return x ? std::max(1, atoi(x)) : 1; }();
                         size_t lay = 0;
-                        for (const auto & l : mc->layers) { if (l.v2u) { lay = std::max(lay, 2 * l.at.size() * l.v2p);   /* the layer computing and the next one copying ahead */ } }
+                        for (const auto & l : mc->layers) { if (l.v2u) { lay = std::max(lay, (size_t) land_n * l.at.size() * l.v2p); } }
                         v.H = ap.tail_end;
                         // --moe pv2-land=0: no layer-sized landing area; the whole heap holds experts by heat, a streamed expert with no place near its target takes
                         // the place of the globally coldest resident (pv2_coldest). Off by default (user 2026-11-22, "range launches first"): a full-stream layer's

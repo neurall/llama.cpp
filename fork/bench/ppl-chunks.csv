@@ -4372,3 +4372,33 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3828
 2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3937
 2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3913
+2026-11-21 02:47:42,tree_key_last -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3681
+2026-11-21 02:47:42,tree_key_last -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4177
+2026-11-21 02:49:18,tree_key_last -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3633
+2026-11-21 02:49:18,tree_key_last -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.422
+2026-11-21 02:51:35,tree_key_last -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.453
+2026-11-21 02:51:35,tree_key_last -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5694
+2026-11-21 02:52:49,tree_key_last -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4509
+2026-11-21 02:52:49,tree_key_last -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5693
+2026-11-21 02:54:44,tree_key_last -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1338
+2026-11-21 02:54:44,tree_key_last -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1271
+2026-11-21 02:55:37,tree_key_last -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1374
+2026-11-21 02:55:37,tree_key_last -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1307
+2026-11-21 02:57:08,tree_key_last -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1312
+2026-11-21 02:57:08,tree_key_last -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1142
+2026-11-21 02:58:00,tree_key_last -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1273
+2026-11-21 02:58:00,tree_key_last -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1111
+2026-11-21 02:59:29,tree_key_last -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-21 02:59:29,tree_key_last -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-21 03:00:27,tree_key_last -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-21 03:00:27,tree_key_last -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-21 03:02:16,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6643
+2026-11-21 03:02:16,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5236
+2026-11-21 03:03:18,"tree_key_last -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9389
+2026-11-21 03:03:18,"tree_key_last -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9428
+2026-11-21 03:03:33,"tree_key_last -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.939
+2026-11-21 03:03:33,"tree_key_last -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9403
+2026-11-21 03:04:18,stock-b12600-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-21 03:04:18,stock-b12600-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-11-21 03:05:19,stock-b12600-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-21 03:05:19,stock-b12600-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
