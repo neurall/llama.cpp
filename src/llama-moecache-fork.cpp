@@ -14151,7 +14151,7 @@ static std::vector<pm_entry> pm_map_of(moe_cache * mc, BUSY busy) {
 }
 // one batch for want's experts of layer li; ahead: experts of layers still ahead in the pass may be taken
 static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t> & want, std::vector<int32_t> & placed, std::vector<int32_t> & left,
-                           size_t done, size_t & wait_at, size_t & n_ev, size_t p, bool ahead, const std::function<int64_t(int32_t)> & heat_of) {
+                           size_t done, size_t & wait_at, size_t & n_ev, size_t p, bool ahead, const std::function<int64_t(int32_t)> & heat_of, bool keep_dec = false) {
     auto & v = mc->v2;
     layer_state & ls = mc->layers[li];
     auto busy = [&](int32_t id) {
@@ -14184,7 +14184,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     const uint32_t k = (uint32_t) std::min<size_t>(want.size(), g_pm.max_rq);
     pm_result * const rs = g_pm.rs, * const rs_dev = g_pm.rs_dev;
     for (uint32_t j = 0; j < k; ++j) {
-        g_pm.rq[j] = { ls.v2n, ls.v2u, heat_of(want[j]), pv2_id(mc, li, want[j]), 3 };   // pinned, movers to free bytes only (a kernel may still read a colder one)
+        g_pm.rq[j] = { ls.v2n, ls.v2u, heat_of(want[j]), pv2_id(mc, li, want[j]), keep_dec ? 7 : 3 };   // bit 2: below the decode tier, take none of it   // pinned, movers to free bytes only (a kernel may still read a colder one)
         rs[j].done = 0;
     }
     char * base = (char *) ggml_backend_buffer_get_base(mc->alias[v.ap_idx].buf);
@@ -14356,7 +14356,10 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
         optime_t _og(OP_PLAN_MAIN);
         auto hx_of = [&](int32_t e) { return v.tiered ? v.hv[(size_t) pv2_id(mc, li, e)] : pv2_heat(mc, ls, e, false, lsum); };
         std::vector<int32_t> left, left2;
-        pm_place_batch(mc, li, want, placed, left, done, wait_at, n_ev, p, false, hx_of);
+        // --moe keep-dec=1 (user 2026-11-22, A/B): an entry planned ahead takes no decode-set expert for one outside it; refused, it waits for its turn
+        static const bool keep_dec = [] { const char * x = moe_opt("keep-dec"); return x && atoi(x) != 0; }();
+        pm_place_batch(mc, li, want, placed, left, done, wait_at, n_ev, p, false, hx_of, keep_dec && cheap && v.tiered);
+        if (keep_dec && cheap && v.tiered && !left.empty()) { for (int32_t x : placed) { pv2_out(mc, ls, x); } return false; }
         if (!left.empty() && !cheap) { pm_place_batch(mc, li, left, placed, left2, done, wait_at, n_ev, p, true, hx_of); left.swap(left2); }
         n_heat += placed.size(); b_heat += placed.size() * ls.v2n;
         want.swap(left);   // what the card found no place for goes through the host's picks below

@@ -135,6 +135,7 @@ static __device__ void pm_take_inplace(pm_ctx & c, uint32_t vi, uint64_t a, int3
 // user 2026-11-22: one heat-sorted list per size class (class = the first request of the batch with that size and align): the batch's takeable experts
 // of exactly a class's size at a multiple of its align, key (class << 54) | heat, INT64_MAX for none; value: start. Coldest first per class (ties: lowest
 // address), so an alloc pops its class's coldest from the list in O(1)
+static constexpr int64_t PM_TIER = 1000000000000000ll;   // the decode set's heat floor (pv2_refresh tiered: 1e15 + score)
 static constexpr int64_t PM_HEAT_MASK = (1ll << 54) - 1;
 static __device__ int64_t pm_heat54(int64_t h) { return h < 0 ? 0 : (h > PM_HEAT_MASK ? PM_HEAT_MASK : h); }
 struct pm_cands { const int64_t * key; const uint64_t * val; uint32_t n; };
@@ -173,6 +174,8 @@ static __global__ void k_pm_cands(const pm_entry * v, const uint32_t * cnt, uint
 }
 static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint64_t a, int32_t id, int64_t hot, int pin, int kind, pm_result * res, const pm_cands & cd) {
     const bool over = (pin & 2) == 0;   // pin bit 1: movers to free bytes only
+    // pin bit 2 (user 2026-11-22, an entry planned ahead): a newcomer below the decode tier takes no expert of it (heat >= PM_TIER) and opens no window
+    const int64_t cap_hot = (pin & 4) && hot < PM_TIER ? PM_TIER : INT64_MAX;
     pin &= 1;
     unsigned long long & sh_best = S.sh_best; unsigned long long & sh_key = S.sh_key; uint32_t & sh_idx = S.sh_idx;
     uint64_t * cov = S.cov; int64_t * cov_hot = S.cov_hot; uint32_t & n_cov = S.n_cov; uint32_t & n_mv = S.n_mv; uint32_t & n_fr = S.n_fr; uint32_t & ovf = S.ovf;
@@ -203,7 +206,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
                 const uint64_t o = cd.val[cu]; cu++;
                 uint32_t l = 0, h = nc;
                 while (l < h) { const uint32_t m = (l + h) / 2; if (v[m].off < o) { l = m + 1; } else { h = m; } }
-                const bool ok = l < nc && v[l].off == o && v[l].type == PM_MOE && !(v[l].flags & PM_PIN) && v[l].size == n && pm_heat54(v[l].hot) == (k & PM_HEAT_MASK);
+                const bool ok = l < nc && v[l].off == o && v[l].type == PM_MOE && !(v[l].flags & PM_PIN) && v[l].size == n && pm_heat54(v[l].hot) == (k & PM_HEAT_MASK) && v[l].hot < cap_hot;
                 if (ok) { S.pick = 1; S.pidx = l; break; }
             }
             if (S.pick == 1) { res->path = 1; pm_take_inplace(c, S.pidx, a, id, hot, pin, res); pm_class_check(S, cd, hot); }
@@ -228,7 +231,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
                 if (st + n <= off + sz && st < best) { best = st; }
             } else if (!left && ty == PM_MOE && !(fl & PM_PIN)) {
                 const uint64_t k = pm_key(v[i].hot, i);
-                if (sz == n && off % a == 0 && k < same) { same = k; }
+                if (sz == n && off % a == 0 && k < same && v[i].hot < cap_hot) { same = k; }
             }
         }
         if (threadIdx.x == 0) { S.sh_same = ~0ull; }
@@ -236,7 +239,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
         if (best != ~0ull) { atomicMin(&sh_best, best); }
         if (same != ~0ull) { atomicMin(&S.sh_same, same); }
         __syncthreads();
-        if (sh_best == ~0ull && S.sh_same == ~0ull && !left) {   // windows (a walk each) only when no free bytes and no same-size expert hold it
+        if (sh_best == ~0ull && S.sh_same == ~0ull && !left && cap_hot == INT64_MAX) {   // windows (a walk each) only when no free bytes and no same-size expert hold it
             for (uint32_t i = threadIdx.x; i < nc; i += PM_T) {
                 if (v[i].type != PM_MOE || (v[i].flags & PM_PIN)) { continue; }
                 const uint64_t k = pm_key(v[i].hot, i);
@@ -263,7 +266,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
                 return;
             }
         }
-        else {
+        else if (cap_hot == INT64_MAX) {   // an entry ahead below the tier opens no window (it may cover decode-set experts)
             // 3. a window starting in free bytes (lowest address)
             for (uint32_t i = threadIdx.x; i < *cnt; i += PM_T) {
                 const pm_entry & e = v[i];
