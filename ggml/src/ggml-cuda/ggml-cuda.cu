@@ -10205,6 +10205,31 @@ static bool ggml_backend_cuda_copy_slices_fork(ggml_backend_t backend, const voi
     return true;
 }
 
+// fork (pool v2, user 2026-11-22): one launch carries out what the heap decided for a new allocation: each move copies an expert (any size) to its new place in
+// the pool and then points the expert table at it; a move of 0 bytes only writes the table (an evicted victim goes to the miss entry). Kernels later on the
+// stream see the new table, nothing waits on the host. The heap's decision stays on the host (its copy of the map): graph tensor addresses are host pointers.
+struct pool_move_fork { const char * src; char * dst; size_t bytes; int32_t * tbl; int32_t idx; int32_t val; };
+static __global__ void k_pool_move_fork(const pool_move_fork * mv) {
+    const pool_move_fork m = mv[blockIdx.x];
+    if (((uintptr_t) m.src | (uintptr_t) m.dst | m.bytes) % 16 == 0) {
+        for (size_t i = threadIdx.x; i < m.bytes/16; i += blockDim.x) { ((uint4 *) m.dst)[i] = ((const uint4 *) m.src)[i]; }
+    } else {
+        for (size_t i = threadIdx.x; i < m.bytes; i += blockDim.x) { m.dst[i] = m.src[i]; }
+    }
+    __syncthreads();
+    if (threadIdx.x == 0 && m.tbl) { m.tbl[m.idx] = m.val; }
+}
+static bool ggml_backend_cuda_pool_move_fork(ggml_backend_t backend, const pool_move_fork * mv, size_t n) {
+    if (n == 0) { return true; }
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_set_device(ctx->device);
+    ggml_cuda_pool_alloc<pool_move_fork> d_mv(ctx->pool(), n);
+    CUDA_CHECK(cudaMemcpyAsync(d_mv.ptr, mv, n*sizeof(pool_move_fork), cudaMemcpyHostToDevice, ctx->stream()));   // pageable: staged before the call returns
+    k_pool_move_fork<<<(unsigned) n, 256, 0, ctx->stream()>>>(d_mv.ptr);
+    CUDA_CHECK(cudaGetLastError());
+    return true;
+}
+
 extern int ggml_cuda_fattn_force_fork;   // fattn.cu
 static void ggml_backend_cuda_fattn_force_set_fork(int kernel) { ggml_cuda_fattn_force_fork = kernel; }
 extern bool ggml_cuda_fattn_rows_fork;   // fattn.cu
@@ -10301,6 +10326,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_copy_slices_fork") == 0) {
         return (void *)ggml_backend_cuda_copy_slices_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_pool_move_fork") == 0) {
+        return (void *)ggml_backend_cuda_pool_move_fork;
     }
     if (strcmp(name, "ggml_backend_cuda_obs_prompt_init_fork") == 0) {
         return (void *)ggml_backend_cuda_obs_prompt_init_fork;
