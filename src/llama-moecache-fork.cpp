@@ -2898,6 +2898,28 @@ static bool pv2_sync(moe_cache * mc, bool locked, size_t * n_ev = nullptr) {
     for (const auto & r : u) { pv2_give_range(mc, x, r.first); x = std::max(x, r.second); }
     pv2_give_range(mc, x, v.main.hi);
     v.held = u;
+    static const bool v2chk = [] { const char * e = moe_opt("verify"); return e && atoi(e) > 0; }();
+    if (v2chk) {   // dev (GLM 3.5 heap NaN 2026-11-22): no cached expert may lie in a held stretch; name the ones that do and what the heap knows of them
+        static int said = 0;
+        for (size_t li = 0; li < mc->layers.size() && said < 16; ++li) {
+            const layer_state & ls = mc->layers[li];
+            if (!ls.v2u) { continue; }
+            for (int32_t e = 0; e < (int32_t) ls.at.size() && e < (int32_t) ls.expert_slot.size() && said < 16; ++e) {
+                if (ls.expert_slot[(size_t) e] < 0 || ls.at[(size_t) e] < 0) { continue; }
+                const size_t s0 = (size_t) ls.at[(size_t) e] * ls.v2u, s1 = s0 + ls.v2n;
+                for (const auto & r : u) {
+                    if (s0 < r.second && s1 > r.first) {
+                        const int32_t id = pv2_id(mc, li, e);
+                        auto in_heap = [&](const pv2_heap & h) { auto it = h.res.find(s0); return it != h.res.end() ? (it->second.id == id ? "resident" : "other id") : "absent"; };
+                        LLAMA_LOG_ERROR("pool-v2 check: L%zu e%d cached at [%zu, %zu) inside held [%zu, %zu): main %s, land %s, heap main [%zu, %zu) land [%zu, %zu)\n",
+                                li, e, s0, s1, r.first, r.second, in_heap(v.main), in_heap(v.land), v.main.lo, v.main.hi, v.M, v.H);
+                        said++;
+                        break;
+                    }
+                }
+            }
+        }
+    }
     return true;
 }
 
