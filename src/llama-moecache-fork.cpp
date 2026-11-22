@@ -2391,7 +2391,8 @@ void set_table_entry(llama_moe_cache_layer_fork & pub, int32_t expert, int32_t s
 void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, bool drop);
 void note_evict(moe_cache * mc, layer_state & ls, int32_t e);
 void pv2_out(moe_cache * mc, layer_state & ls, int32_t e);   // pool-v2: an expert leaves the card's heap (below the block pool runtime)
-static void pv2_log(const char * op, int32_t id, size_t from, size_t to, size_t n);   // the heap allocation log (--moe verify>0), below
+static void pv2_log(const char * op, int32_t id, size_t from, size_t to, size_t n);
+static void mapsync_card_wrote(const llama_moe_cache_layer_fork * pub, int32_t idx);   // a kernel wrote this card table entry (below)   // the heap allocation log (--moe verify>0), below
 double score(const layer_state & ls, int32_t id, uint64_t gmax);
 double score(const layer_state & ls, int32_t id);
 // score of an expert competing with experts of other layers for a block: one common scale (moe_cache::gmax_all) in the pool
@@ -2874,7 +2875,7 @@ static size_t pv2_zone_move_locked(moe_cache * mc, size_t a, size_t b, ggml_back
             evict_slot(mc, lv, vid % v.E);
             pv2_out(mc, lv, vid % v.E);
             lv.queued[vid % v.E] = 0;
-            if (mfn) { mvk.push_back({ nullptr, nullptr, 0, (int32_t *) lv.pub.dev_table->data, vid % v.E, -1 }); }   // the victim's entry: a miss
+            if (mfn) { mvk.push_back({ nullptr, nullptr, 0, (int32_t *) lv.pub.dev_table->data, vid % v.E, -1 }); mapsync_card_wrote(&lv.pub, vid % v.E); }   // the victim's entry: a miss
         }
         ggml_tensor ta = {}, tb = {};
         for (ggml_tensor * t : { &ta, &tb }) {
@@ -2893,6 +2894,7 @@ static size_t pv2_zone_move_locked(moe_cache * mc, size_t a, size_t b, ggml_back
             }
             mvr.push_back({ from, from + n }); mvr.push_back({ to, to + n });
             mvk.push_back({ (const char *) ta.data, (char *) tb.data, n, (int32_t *) lo.pub.dev_table->data, e, (int32_t) (to / u) });
+            mapsync_card_wrote(&lo.pub, e);
         }
         else { ggml_backend_tensor_copy(&ta, &tb); }
         const pv2_res r = pv2_drop(v.main, from);
@@ -5596,7 +5598,19 @@ static const layer_state * tbl_layer(const llama_moe_cache_layer_fork * pub) {
 // user 2026-11-22 ("make map sync cheap as our bell mech was"): pool-v2 tables reach the card through a ring in mapped pinned memory (src/llama-mapsync-fork.h):
 // the changed entries only, applied by one kernel on the compute stream, no copy call and no wait. --moe map-ring=0: the batched copies as before.
 // true: every table of d went this way (the guard's copies are kept here too)
+// what the ring believes each card table holds (mapsync_flush's diff base), and its lock. A kernel that writes a table entry on the card itself (the zone-move
+// kernel, the gpu-alloc moves) makes that belief stale: two changes between flushes that end on the old value pushed nothing and left the kernel's value on the
+// card (Qwen3.8 IQ4_XS NaN at token 0, 2026-11-22; map-ring=0 clean). mapsync_card_wrote marks such an entry unknown, so the next flush sends the host's value.
+static std::mutex g_ms_mu;
+static std::map<const llama_moe_cache_layer_fork *, std::pair<uint32_t, std::vector<int32_t>>> * g_ms_sent = nullptr;
+static void mapsync_card_wrote(const llama_moe_cache_layer_fork * pub, int32_t idx) {
+    std::lock_guard<std::mutex> lk(g_ms_mu);
+    if (!g_ms_sent) { return; }
+    auto it = g_ms_sent->find(pub);
+    if (it != g_ms_sent->end() && idx >= 0 && (size_t) idx < it->second.second.size()) { it->second.second[(size_t) idx] = INT32_MIN; }
+}
 static bool mapsync_flush(std::vector<llama_moe_cache_layer_fork *> & d) {
+    std::lock_guard<std::mutex> ms_lk(g_ms_mu);
     static const bool on = [] { const char * x = moe_opt("map-ring"); return !x || atoi(x) != 0; }();
     moe_cache * mc = g_cache;
     if (!on || !mc || !mc->v2.on || d.empty() || mc->v2.ap_idx >= mc->alias.size()) { return false; }
@@ -5609,6 +5623,7 @@ static bool mapsync_flush(std::vector<llama_moe_cache_layer_fork *> & d) {
         std::map<const llama_moe_cache_layer_fork *, std::pair<uint32_t, std::vector<int32_t>>> sent;   // table slot, what the card holds
     };
     static ms_state st;
+    g_ms_sent = &st.sent;
     const ggml_backend_dev_t dev = mc->alias[mc->v2.ap_idx].dev;
     if (!st.be) { for (int k = 0; k < MAX_LINKS; ++k) { if (mc->link_be[k] && mc->link_dev[k] == dev) { st.be = mc->link_be[k]; } } }
     if (!st.be) { return false; }
@@ -14329,6 +14344,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
             const int32_t id = r.fr[f].id;
             waits(id);
             layer_state & lo = mc->layers[(size_t) (id / v.E)];
+            mapsync_card_wrote(&lo.pub, id % v.E);   // the card's alloc kernel wrote -1 there
             evict_slot(mc, lo, id % v.E);
             pv2_out(mc, lo, id % v.E);
             n_ev++;
@@ -14337,6 +14353,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
             const pm_mv & mv = r.mv[q];
             waits(mv.id);
             layer_state & lo = mc->layers[(size_t) (mv.id / v.E)];
+            mapsync_card_wrote(&lo.pub, mv.id % v.E);   // the card's alloc kernel wrote the new place
             const pv2_res rr = pv2_drop(v.main, (size_t) mv.from);
             const bool ok = pv2_add(v.main, (size_t) mv.to, rr);
             GGML_ASSERT(ok && "pool-v2: gpu-alloc moved an expert onto bytes the host does not have free");
