@@ -849,6 +849,72 @@ static inline size_t pv2_alloc_window(const pv2_heap & h, size_t n, size_t a, si
     return PV2_NONE;
 }
 
+// user 2026-11-22: the alloc runs where the map lives (the card) and reports what it did; the host applies the report to its mirror, so both maps agree
+// without any other sync. The report: the new area, every expert that moved (bytes, from, to) and every expert that left (where, how big).
+// pv2_alloc_do is the reference (the kernel must give the same report for the same map); pv2_alloc_apply replays a report on a mirror.
+struct pv2_amove  { size_t from, to, n; int32_t id; };
+struct pv2_freed { size_t s, n; int32_t id; };
+struct pv2_alloc_result { size_t s = PV2_NONE; std::vector<pv2_amove> moves; std::vector<pv2_freed> freed; };
+
+// n bytes at a multiple of a for newcomer id (heat, pinned as asked): pv2_alloc_window picks the window; each expert in it, hottest first, moves to a free
+// extent outside the window (first by address) or over the coldest takeable expert of its size outside the window that is colder than it (that one leaves);
+// the rest leave. A newcomer only partly covering an expert frees the expert's bytes outside the window.
+static inline pv2_alloc_result pv2_alloc_do(pv2_heap & h, size_t n, size_t a, int32_t id, int64_t heat, bool pin) {
+    pv2_alloc_result out;
+    const size_t s = pv2_alloc_window(h, n, a);
+    if (s == PV2_NONE) { return out; }
+    out.s = s;
+    std::vector<size_t> in = pv2_overlap(h, s, s + n);
+    std::sort(in.begin(), in.end(), [&](size_t x, size_t y) { const auto & p = h.res.at(x), & q = h.res.at(y); return p.heat != q.heat ? p.heat > q.heat : x < y; });
+    for (size_t x : in) {
+        const pv2_res r = h.res.at(x);
+        const size_t u = std::max<size_t>(1, r.u);
+        size_t to = PV2_NONE;
+        for (const auto & [gs, gn] : h.gaps) {
+            const size_t st = (gs + u - 1) / u * u;
+            if (st + r.n <= gs + gn && (st >= s + n || st + r.n <= s)) { to = st; break; }
+        }
+        if (to == PV2_NONE) {   // the coldest same-size expert outside the window, colder than this one (lowest heat, then address)
+            int64_t best = r.heat;
+            for (const auto & [y, q] : h.res) {
+                if (q.id == PV2_HOLD || q.pin || q.n != r.n || y % u != 0 || (y < s + n && y + q.n > s)) { continue; }
+                if (q.heat < best) { best = q.heat; to = y; }
+            }
+            if (to != PV2_NONE) {
+                const pv2_res v = pv2_drop(h, to);
+                out.freed.push_back({ to, v.n, v.id });
+            }
+        }
+        pv2_drop(h, x);
+        if (to == PV2_NONE) { out.freed.push_back({ x, r.n, r.id }); continue; }
+        pv2_add(h, to, r);
+        out.moves.push_back({ x, to, r.n, r.id });
+    }
+    pv2_res nr; nr.id = id; nr.n = n; nr.heat = heat; nr.pin = pin; nr.u = a;
+    const bool ok = pv2_add(h, s, nr);
+    (void) ok;
+    return out;
+}
+// the mirror's side, from the report alone: every freed expert leaves, every mover leaves its old place, then the movers and the newcomer land (the
+// destinations are disjoint and outside the window, so the order inside each step does not matter)
+static inline bool pv2_alloc_apply(pv2_heap & h, const pv2_alloc_result & r, size_t n, size_t a, int32_t id, int64_t heat, bool pin) {
+    if (r.s == PV2_NONE) { return true; }
+    for (const pv2_freed & f : r.freed) {
+        const auto it = h.res.find(f.s);
+        if (it == h.res.end() || it->second.id != f.id || it->second.n != f.n) { return false; }
+        pv2_drop(h, f.s);
+    }
+    std::vector<pv2_res> mv;
+    for (const pv2_amove & m : r.moves) {
+        const auto it = h.res.find(m.from);
+        if (it == h.res.end() || it->second.id != m.id || it->second.n != m.n) { return false; }
+        mv.push_back(pv2_drop(h, m.from));
+    }
+    for (size_t k = 0; k < mv.size(); ++k) { if (!pv2_add(h, r.moves[k].to, mv[k])) { return false; } }
+    pv2_res nr; nr.id = id; nr.n = n; nr.heat = heat; nr.pin = pin; nr.u = a;
+    return pv2_add(h, r.s, nr);
+}
+
 // user 2026-11-22: no window of n bytes holds only free bytes and takeable experts (pv2_alloc_window found none): the window that needs the fewest moves of
 // movable held blocks (KV pages, working blocks; at most max_moves), each to a place outside it that pv2_alloc_window finds with the window held. Ties: the
 // coldest experts. moves: (from, to) per block; experts covered by the window or a destination leave (or move) as in pv2_alloc_window. s PV2_NONE: none

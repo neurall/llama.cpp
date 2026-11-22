@@ -1540,6 +1540,36 @@ static void test_defrag_random() {
     check("defrag random: plans seen", plans > 50);
 }
 
+static bool pv2t_same(const pv2_heap & a, const pv2_heap & b) {
+    if (a.gaps != b.gaps || a.res.size() != b.res.size()) { return false; }
+    for (const auto & [x, r] : a.res) {
+        const auto it = b.res.find(x);
+        if (it == b.res.end() || it->second.id != r.id || it->second.n != r.n || it->second.pin != r.pin) { return false; }
+    }
+    return true;
+}
+static void test_alloc_report() {
+    std::mt19937 rng(4242);
+    int bad = 0, done = 0, moved = 0, freed = 0;
+    for (int it = 0; it < 3000; ++it) {
+        pv2_heap h = pv2t_random(rng, 40, 15, 20, 15, 10);
+        pv2_heap mirror = h;
+        const size_t n = (1 + rng() % 3) * 10;
+        const int32_t id = 100000 + it;
+        const pv2_alloc_result r = pv2_alloc_do(h, n, 10, id, 5, true);
+        if (r.s == PV2_NONE) { if (!pv2t_same(h, mirror)) { bad++; } continue; }
+        done++; moved += (int) r.moves.size(); freed += (int) r.freed.size();
+        if (!pv2_alloc_apply(mirror, r, n, 10, id, 5, true)) { bad++; continue; }
+        if (!pv2t_same(h, mirror)) { bad++; continue; }
+        // the newcomer holds exactly its window; no held block or pinned expert moved or left
+        const auto nit = h.res.find(r.s);
+        if (nit == h.res.end() || nit->second.id != id || nit->second.n != n) { bad++; }
+        for (const auto & m : r.moves) { if (m.to < r.s + n && m.to + m.n > r.s) { bad++; } }
+    }
+    check("alloc report: mirror replays every report to the same map", bad == 0);
+    check("alloc report: moves and frees seen", done > 500 && moved > 50 && freed > 50);
+}
+
 int main(int argc, char ** argv) {
     test_first_fit();
     test_free_at();
@@ -1549,6 +1579,7 @@ int main(int argc, char ** argv) {
     test_alloc_random();
     test_defrag_cases();
     test_defrag_random();
+    test_alloc_report();
     test_upchunks();
     test_upring();
     test_eranges();
