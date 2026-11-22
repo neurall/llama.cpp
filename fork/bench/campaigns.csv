@@ -11225,3 +11225,4 @@ pv2_mapring_head-gb-noland-pf12k1k,2026-11-22 12:36:37,bench /m/gl/3/GLM-5.3-Fla
 pv2_mapring_head-gb-nomapring-pf12k1k,2026-11-22 12:39:30,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds pv2_mapring_head variants v test pf12k n=2,,
 pv2_mapring_head-gv-v2check-pf12k1k,2026-11-22 12:42:09,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds pv2_mapring_head variants v test pf12k n=2,,
 pv2_mapring_head-gv-ledger-pf12k1k,2026-11-22 12:46:21,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds pv2_mapring_head variants v test pf12k n=2,,
+pv2_heldcheck-rg-glm-ppl,2026-11-22 12:53:43,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds pv2_heldcheck variants v test ppl n=2,,
