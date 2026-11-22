@@ -53,6 +53,7 @@ struct pv2_res {
     int64_t heat = 0;       // decode use count; -1: a landing leftover any newcomer may replace
     bool    pin  = false;   // in flight (its layer computes or waits to): never replaced
     size_t  u    = 1;       // its unit: the start is a multiple of it (a move keeps that)
+    bool    mov  = false;   // a held block that may move (a KV page, a working block): pv2_defrag_plan
 };
 struct pv2_heap {
     size_t lo = 0, hi = 0;
@@ -836,6 +837,58 @@ static inline size_t pv2_alloc_window(const pv2_heap & h, size_t n, size_t a) {
         if (ok) { return s; }
     }
     return PV2_NONE;
+}
+
+// user 2026-11-22: no window of n bytes holds only free bytes and takeable experts (pv2_alloc_window found none): the window that needs the fewest moves of
+// movable held blocks (KV pages, working blocks; at most max_moves), each to a place outside it that pv2_alloc_window finds with the window held. Ties: the
+// coldest experts. moves: (from, to) per block; experts covered by the window or a destination leave (or move) as in pv2_alloc_window. s PV2_NONE: none
+struct pv2_defrag { size_t s = PV2_NONE; std::vector<std::pair<size_t, size_t>> moves; };
+static inline pv2_defrag pv2_defrag_plan(const pv2_heap & h, size_t n, size_t a, size_t max_moves = 3) {
+    a = std::max<size_t>(1, a);
+    struct cand { size_t k; int64_t heat; size_t s; std::vector<size_t> blk; };
+    std::vector<cand> cs;
+    std::vector<size_t> anchors;
+    for (const auto & [x, g] : h.gaps) { anchors.push_back(x); }
+    for (const auto & [x, r] : h.res) { anchors.push_back(x); anchors.push_back(x + r.n); }
+    for (size_t x0 : anchors) {
+        const size_t s0 = (x0 + a - 1) / a * a;
+        if (s0 < h.lo || s0 + n > h.hi) { continue; }
+        size_t at = s0, k = 0; int64_t heat = 0; bool ok = true; std::vector<size_t> blk;
+        while (ok && at < s0 + n) {
+            auto g = h.gaps.upper_bound(at);
+            if (g != h.gaps.begin() && std::prev(g)->first + std::prev(g)->second > at) { at = std::prev(g)->first + std::prev(g)->second; continue; }
+            auto r = h.res.upper_bound(at);
+            if (r == h.res.begin()) { ok = false; break; }
+            --r;
+            const pv2_res & q = r->second;
+            if (r->first + q.n <= at) { ok = false; break; }
+            if (q.id == PV2_HOLD) {
+                if (!q.mov || r->first < s0 || r->first + q.n > s0 + n || ++k > max_moves) { ok = false; break; }   // a block moves whole, never cut
+                blk.push_back(r->first);
+            } else if (q.pin) { ok = false; break; }
+            else { heat += q.heat; }
+            at = r->first + q.n;
+        }
+        if (ok && k > 0) { cs.push_back({ k, heat, s0, std::move(blk) }); }
+    }
+    std::sort(cs.begin(), cs.end(), [](const cand & x, const cand & y) { return x.k != y.k ? x.k < y.k : x.heat != y.heat ? x.heat < y.heat : x.s < y.s; });
+    for (const cand & c : cs) {
+        pv2_heap t = h;
+        for (size_t b : c.blk) { pv2_drop(t, b); }
+        for (size_t x : pv2_overlap(t, c.s, c.s + n)) { pv2_drop(t, x); }
+        pv2_hold(t, c.s, c.s + n);
+        pv2_defrag d; d.s = c.s;
+        for (size_t b : c.blk) {
+            const pv2_res & q = h.res.at(b);
+            const size_t to = pv2_alloc_window(t, q.n, q.u);
+            if (to == PV2_NONE) { d.s = PV2_NONE; break; }
+            for (size_t x : pv2_overlap(t, to, to + q.n)) { pv2_drop(t, x); }
+            pv2_hold(t, to, to + q.n);
+            d.moves.push_back({ b, to });
+        }
+        if (d.s != PV2_NONE) { return d; }
+    }
+    return {};
 }
 
 // the first free extent of h that holds n bytes at a multiple of u (insert without heat placement: free bytes first, else one coldest victim)

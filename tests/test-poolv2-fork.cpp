@@ -1354,10 +1354,36 @@ static void test_alloc_window() {
     check("alloc_window none", pv2_alloc_window(h, 200, 1) == PV2_NONE);
 }
 
+static void test_defrag_plan() {
+    // [0,10) kv page, [10,20) expert, [20,30) kv page, [30,40) pinned expert, [40,50) kv page, [50,60) kv page (fixed), [60,100) free
+    pv2_heap h = pv2_make(0, 100);
+    auto hold = [&](size_t s, size_t n, bool mov) { pv2_res r; r.id = PV2_HOLD; r.n = n; r.heat = INT64_MAX; r.pin = true; r.mov = mov; pv2_add(h, s, r); };
+    auto put = [&](size_t s, size_t n, int64_t heat, bool pin) { pv2_res r; r.id = (int32_t) s; r.n = n; r.heat = heat; r.pin = pin; pv2_add(h, s, r); };
+    hold(0, 10, true); put(10, 10, 5, false); hold(20, 10, true); put(30, 10, 9, true); hold(40, 10, true); hold(50, 10, false);
+    check("defrag: alloc finds the free tail", pv2_alloc_window(h, 30, 1) == 60);
+    hold(60, 40, false); pv2_heap f = h;                                             // fill the tail with an unmovable block
+    check("defrag: alloc finds nothing", pv2_alloc_window(f, 30, 1) == PV2_NONE);
+    pv2_defrag d = pv2_defrag_plan(f, 20, 1);
+    check("defrag: no room for the moved pages either", d.s == PV2_NONE);         // every byte is held or pinned: a page has nowhere to go
+    pv2_heap g = pv2_make(0, 100);
+    auto hold2 = [&](size_t s, size_t n, bool mov) { pv2_res r; r.id = PV2_HOLD; r.n = n; r.heat = INT64_MAX; r.pin = true; r.mov = mov; pv2_add(g, s, r); };
+    auto put2 = [&](size_t s, size_t n, int64_t heat) { pv2_res r; r.id = (int32_t) s; r.n = n; r.heat = heat; pv2_add(g, s, r); };
+    // experts of 10 between pages: x P x P x P | 5 free at the end, 5 cold expert bytes
+    put2(0, 10, 7); hold2(10, 10, true); put2(20, 10, 8); hold2(30, 10, true); put2(40, 10, 9); hold2(50, 10, true); put2(60, 10, 1); hold2(70, 25, false);
+    check("defrag: alloc of 30 finds no window", pv2_alloc_window(g, 30, 1) == PV2_NONE);
+    pv2_defrag e = pv2_defrag_plan(g, 30, 1);
+    check("defrag: one page moves", e.s != PV2_NONE && e.moves.size() == 1);
+    check("defrag: window over the page at 50", e.s != PV2_NONE && e.s <= 50 && e.s + 30 >= 60);
+    check("defrag: page goes outside the window", e.moves.size() == 1 && (e.moves[0].second + 10 <= e.s || e.moves[0].second >= e.s + 30));
+    pv2_defrag z = pv2_defrag_plan(g, 30, 1, 0);
+    check("defrag: max_moves 0 finds none", z.s == PV2_NONE);
+}
+
 int main(int argc, char ** argv) {
     test_first_fit();
     test_free_at();
     test_alloc_window();
+    test_defrag_plan();
     test_upchunks();
     test_upring();
     test_eranges();
