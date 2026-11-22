@@ -1248,8 +1248,16 @@ static void test_upchunks() {
     check("upchunks: chunks are full (next expert did not fit)", ch.size() > 1 && ch[0].bytes + ex[ch[0].mv.size()].bytes > 2000);
     check("upchunks: empty and oversize skipped", pv2_upchunks({ {1, 0, 0}, {2, 5000, 0} }, 2000).empty());
 }
+static void test_upring() {
+    auto r = pv2_upring(20, 8); bool ok = r.size() == 20;
+    for (const auto & o : r) { ok = ok && o.slot == o.chunk % 8 && o.wait_scatter == (o.chunk >= 8 ? (int64_t) o.chunk - 8 : -1); }
+    check("upring: slot = chunk mod slots, waits only on the scatter 'slots' chunks back", ok);
+    check("upring: the first 'slots' uploads wait for nothing", pv2_upring(3, 8)[2].wait_scatter == -1);
+    check("upring: no slots, no ops", pv2_upring(5, 0).empty());
+}
 int main(int argc, char ** argv) {
     test_upchunks();
+    test_upring();
     if (argc > 1 && strcmp(argv[1], "--sim") == 0) {
         std::vector<std::string> pos;
         std::string mode = "own";

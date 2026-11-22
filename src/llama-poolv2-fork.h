@@ -709,3 +709,14 @@ static inline std::vector<pv2_upchunk> pv2_upchunks(const std::vector<pv2_up_t> 
     }
     return r;
 }
+
+// The 32 MiB tail reserve as a ring of `slots` slots (user 2026-11-22: "on transfer end the tail is empty and ready for the next transfer, the link saturated
+// nonstop"): chunk c goes up into slot c % slots; its scatter (tail -> heat-placed heap starts) runs on a second stream as soon as its upload lands; the upload of
+// chunk c may start once the scatter of chunk c - slots is done (wait_scatter), so the link only idles when every slot is still being scattered.
+struct pv2_ring_op { size_t chunk, slot; int64_t wait_scatter; };   // wait_scatter: chunk whose scatter must be done first, -1 none
+static inline std::vector<pv2_ring_op> pv2_upring(size_t n_chunks, size_t slots) {
+    std::vector<pv2_ring_op> r;
+    if (slots == 0) { return r; }
+    for (size_t c = 0; c < n_chunks; ++c) { r.push_back({ c, c % slots, c >= slots ? (int64_t) (c - slots) : -1 }); }
+    return r;
+}
