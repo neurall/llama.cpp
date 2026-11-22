@@ -317,13 +317,24 @@ void ggml_cuda_poolmap_alloc_batch_fork(cudaStream_t st, pm_entry * v, uint32_t 
         CUDA_CHECK(cudaGetLastError());
     }
 }
-// the applies of a batch whose alloc recorded ev, on st (after what the caller queued there: the compute the freed and moved experts' layers wait for)
-void ggml_cuda_poolmap_apply_fork(cudaStream_t st, cudaEvent_t ev, const pm_result * res_dev, uint32_t n_rq, char * base, int32_t * const * tables, int32_t E) {
-    if (ev) { CUDA_CHECK(cudaStreamWaitEvent(st, ev, 0)); }
-    for (uint32_t k = 0; k < n_rq; ++k) {
-        k_pm_apply<<<dim3(PM_MAX_FR, 1), 256, 0, st>>>(res_dev + k, base, tables, E);
-        CUDA_CHECK(cudaGetLastError());
+// a batch's moves and frees as one flat list of independent ops (the host splits where one op depends on another): one block per op;
+// n > 0: copy n bytes from -> to and set the table entry to / u; n == 0: a freed expert, table entry -1
+static __global__ void k_pm_apply_ops(const pm_mv * ops, char * base, int32_t * const * tables, int32_t E) {
+    const pm_mv m = ops[blockIdx.x];
+    if (m.n) {
+        const char * src = base + m.from; char * dst = base + m.to;
+        if (((m.from | m.to | m.n) & 15) == 0) { for (uint64_t i = threadIdx.x; i < m.n / 16; i += blockDim.x) { ((uint4 *) dst)[i] = ((const uint4 *) src)[i]; } }
+        else { for (uint64_t i = threadIdx.x; i < m.n; i += blockDim.x) { dst[i] = src[i]; } }
+        __syncthreads();
     }
+    if (threadIdx.x == 0 && m.id >= 0) { tables[m.id / E][m.id % E] = m.n ? (int32_t) (m.to / (m.u ? m.u : 1)) : -1; }
+}
+// one segment of a batch's ops on st (after what the caller queued there: the compute the freed and moved experts' layers wait for); ev: the alloc's
+void ggml_cuda_poolmap_apply_fork(cudaStream_t st, cudaEvent_t ev, const pm_mv * ops_dev, uint32_t n_ops, char * base, int32_t * const * tables, int32_t E) {
+    if (ev) { CUDA_CHECK(cudaStreamWaitEvent(st, ev, 0)); }
+    if (n_ops == 0) { return; }
+    k_pm_apply_ops<<<n_ops, 256, 0, st>>>(ops_dev, base, tables, E);
+    CUDA_CHECK(cudaGetLastError());
 }
 void ggml_cuda_poolmap_alloc_fork(cudaStream_t st, pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, uint64_t n, uint64_t a,
                                   int32_t id, int64_t hot, int pin, pm_result * res_dev, char * base, int32_t * const * tables, int32_t E) {

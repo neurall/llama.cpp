@@ -14097,12 +14097,12 @@ struct pm_dev {
     ggml_backend_t be = nullptr;
     void (*batch)(ggml_backend_t, pm_entry *, uint32_t *, uint32_t, uint64_t, uint64_t, const pm_req *, uint32_t, pm_result *, char *, int32_t * const *, int32_t) = nullptr;
     void (*io)(ggml_backend_t, void *, void *, size_t, int) = nullptr;
-    void (*apply)(ggml_backend_t, const pm_result *, uint32_t, char *, int32_t * const *, int32_t) = nullptr;
+    void (*apply)(ggml_backend_t, const pm_mv *, uint32_t, char *, int32_t * const *, int32_t) = nullptr;
     ggml_backend_buffer_t buf = nullptr;   // the map vector + its count on the card
     pm_entry * v_dev = nullptr; uint32_t * cnt_dev = nullptr; uint32_t cap = 0;
     pm_req * rq = nullptr, * rq_dev = nullptr; pm_result * rs = nullptr, * rs_dev = nullptr; uint32_t max_rq = 0;
-    // the applies run on the ring behind compute, long after the host moved on: each batch's reports live in their own bank until its applies ran
-    static constexpr int NB = 4; int bank = 0; ggml_backend_event_t bank_ev[NB] = {};
+    // the applies run on the ring behind compute, long after the host moved on: each batch's ops (moves, frees) live in their own bank until they ran
+    static constexpr int NB = 4; static constexpr uint32_t NOPS = 16384; int bank = 0; ggml_backend_event_t bank_ev[NB] = {}; pm_mv * ops = nullptr, * ops_dev = nullptr;
     int32_t ** tbl = nullptr, ** tbl_dev = nullptr;
 };
 static pm_dev g_pm;
@@ -14127,9 +14127,10 @@ static bool pm_setup(moe_cache * mc) {
     g_pm.max_rq = 1024;
     void * d = nullptr;
     g_pm.rq = (pm_req *) al(g_pm.max_rq * sizeof(pm_req), &d); g_pm.rq_dev = (pm_req *) d;
-    g_pm.rs = g_pm.rq ? (pm_result *) al(pm_dev::NB * g_pm.max_rq * sizeof(pm_result), &d) : nullptr; g_pm.rs_dev = (pm_result *) d;
+    g_pm.rs = g_pm.rq ? (pm_result *) al(g_pm.max_rq * sizeof(pm_result), &d) : nullptr; g_pm.rs_dev = (pm_result *) d;
+    g_pm.ops = g_pm.rs ? (pm_mv *) al(pm_dev::NB * pm_dev::NOPS * sizeof(pm_mv), &d) : nullptr; g_pm.ops_dev = (pm_mv *) d;
     for (auto & e : g_pm.bank_ev) { e = ggml_backend_event_new(dev); }
-    g_pm.tbl = g_pm.rs ? (int32_t **) al(mc->layers.size() * sizeof(int32_t *), &d) : nullptr; g_pm.tbl_dev = (int32_t **) d;
+    g_pm.tbl = g_pm.ops ? (int32_t **) al(mc->layers.size() * sizeof(int32_t *), &d) : nullptr; g_pm.tbl_dev = (int32_t **) d;
     if (!g_pm.tbl) { LLAMA_LOG_WARN("moe-cache: pool-v2: gpu-alloc: no mapped memory: host picks\n"); return false; }
     for (size_t li = 0; li < mc->layers.size(); ++li) { g_pm.tbl[li] = mc->layers[li].pub.dev_table ? (int32_t *) mc->layers[li].pub.dev_table->data : nullptr; }
     LLAMA_LOG_WARN("moe-cache: pool-v2: gpu-alloc on: the card places stream experts (map of %u entries at most, %.1f MiB)\n", g_pm.cap, g_pm.cap * sizeof(pm_entry) / 1048576.0);
@@ -14181,10 +14182,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     g_pm.io(g_pm.be, g_pm.cnt_dev, &cnt, sizeof(cnt), 1);
     lap(t_send);
     const uint32_t k = (uint32_t) std::min<size_t>(want.size(), g_pm.max_rq);
-    const int bk = g_pm.bank; g_pm.bank = (bk + 1) % pm_dev::NB;
-    ggml_backend_event_synchronize(g_pm.bank_ev[bk]);   // this bank's last applies have read their reports
-    lap(t_bank);
-    pm_result * const rs = g_pm.rs + (size_t) bk * g_pm.max_rq, * const rs_dev = g_pm.rs_dev + (size_t) bk * g_pm.max_rq;
+    pm_result * const rs = g_pm.rs, * const rs_dev = g_pm.rs_dev;
     for (uint32_t j = 0; j < k; ++j) {
         g_pm.rq[j] = { ls.v2n, ls.v2u, heat_of(want[j]), pv2_id(mc, li, want[j]), 3 };   // pinned, movers to free bytes only (a kernel may still read a colder one)
         rs[j].done = 0;
@@ -14231,8 +14229,34 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     for (uint32_t j = k; j < want.size(); ++j) { left.push_back(want[j]); }
     // the applies wait on the ring for the compute of every layer whose experts they free or move (cs_done counts queued layers, not finished ones)
     if (wait_at > 0) { ggml_backend_event_wait(g_pm.be, csl(mc, mc->cs_order[wait_at - 1]).cs_done_ev); }
-    g_pm.apply(g_pm.be, rs_dev, k, base, g_pm.tbl_dev, v.E);
-    ggml_backend_event_record(g_pm.bank_ev[bk], g_pm.be);
+    {   // the batch's moves and frees as flat ops, one launch per run of independent ops (an op that touches an id or bytes an earlier op of the run touched starts a new run)
+        int bk = g_pm.bank; g_pm.bank = (bk + 1) % pm_dev::NB;
+        { const int64_t tb = ggml_time_us(); ggml_backend_event_synchronize(g_pm.bank_ev[bk]); t_bank += ggml_time_us() - tb; }   // this bank's last ops ran
+        pm_mv * ops = g_pm.ops + (size_t) bk * pm_dev::NOPS; const pm_mv * ops_dev = g_pm.ops_dev + (size_t) bk * pm_dev::NOPS;
+        uint32_t n0 = 0, n = 0;   // the open run: ops[n0, n)
+        std::set<int32_t> ids; std::vector<std::pair<uint64_t, uint64_t>> spans;   // what the open run touched
+        auto flush = [&]() { if (n > n0) { g_pm.apply(g_pm.be, ops_dev + n0, n - n0, base, g_pm.tbl_dev, v.E); } n0 = n; ids.clear(); spans.clear(); };
+        auto hits = [&](uint64_t a, uint64_t len) { for (const auto & sp : spans) { if (a < sp.first + sp.second && sp.first < a + len) { return true; } } return false; };
+        auto add = [&](const pm_mv & op) {
+            const bool dep = (op.id >= 0 && ids.count(op.id)) || (op.n && (hits(op.from, op.n) || hits(op.to, op.n)));
+            if (dep) { flush(); }
+            if (n == pm_dev::NOPS) {   // the bank is full: run what it holds, wait for it (rare: a batch of more than NOPS moves and frees)
+                flush(); ggml_backend_event_record(g_pm.bank_ev[bk], g_pm.be); ggml_backend_event_synchronize(g_pm.bank_ev[bk]); n0 = n = 0;
+            }
+            ops[n++] = op;
+            if (op.id >= 0) { ids.insert(op.id); }
+            if (op.n) { spans.push_back({ op.from, op.n }); spans.push_back({ op.to, op.n }); }
+        };
+        for (uint32_t j = 0; j < k; ++j) {
+            const pm_result & r = rs[j];
+            if (r.s == UINT64_MAX) { continue; }
+            for (uint32_t q = 0; q < r.n_mv; ++q) { add(r.mv[q]); }
+            for (uint32_t f = 0; f < r.n_fr; ++f) { if (r.fr[f].id >= 0) { add(pm_mv { r.fr[f].s, UINT64_MAX, 0, r.fr[f].id, 0 }); } }
+        }
+        flush();
+        if (n == 0) { g_pm.apply(g_pm.be, nullptr, 0, base, g_pm.tbl_dev, v.E); }   // no ops: the ring still waits for the alloc (the uploads land where it chose)
+        ggml_backend_event_record(g_pm.bank_ev[bk], g_pm.be);
+    }
     lap(t_rest); n_r += k;
     if (++n_b % 16 == 0) { LLAMA_LOG_WARN("pool-v2: gpu-alloc host time, %lld batches of %lld allocs: map %.1f ms, send %.1f ms, bank wait %.1f ms, report wait %.1f ms, replay+apply %.1f ms; %lld moves (%lld allocs with any), %lld frees, %lld allocs in free bytes, %lld refused, map %zu entries\n",
             (long long) n_b, (long long) n_r, t_map / 1e3, t_send / 1e3, t_bank / 1e3, t_spin / 1e3, t_rest / 1e3, (long long) n_mvs, (long long) n_withmv, (long long) n_frs,
