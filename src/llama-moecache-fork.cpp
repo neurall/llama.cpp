@@ -8483,7 +8483,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     }
     if (mc->v2.on) {   // pool-v2: the heap's experts in the lent bytes leave (their uploads dropped or awaited)
         size_t n_ev = 0;
-        if (!pv2_sync(mc, false, &n_ev)) {
+        if (!pv2_sync(mc, false, &n_ev, true)) {   // hot residents of the lent bytes move to colder places on the card first
             LLAMA_LOG_ERROR("moe-cache: compute alias: pool-v2: an upload into the lent bytes did not finish in 10 s, this pass is refused\n");
             if (g_alias_err.empty()) { g_alias_err = "compute alias: pool-v2: an upload into the lent bytes did not finish in 10 s"; }
         }
