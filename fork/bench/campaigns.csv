@@ -11128,3 +11128,7 @@ poolv2_swapland-pv2-q-vf-on-pf14k1k,2026-11-22 07:22:16,bench /m/q/1/Qwen3.8-Fla
 poolv2_swapland-pv2-ol-on-pf1k,2026-11-22 07:24:02,bench /m/o/4/OLMoE-1B-7B-0924-Q4_K_M.gguf builds poolv2_swapland variants v test pf1k n=2,,
 poolv2_swapland-pv2-ol-full-on-pf1k,2026-11-22 07:25:02,bench /m/o/4/OLMoE-1B-7B-0924-Q4_K_M.gguf builds poolv2_swapland variants v test pf1k n=2,,
 poolv2_swapland-pv2-glm35-on-pf12k1k,2026-11-22 07:26:43,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds poolv2_swapland variants v test pf12k n=4,,
+poolv2_swapland-pv2-q-on-pf14k1k,2026-11-22 07:33:39,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_swapland variants v test pf14k n=3,,
+poolv2_swapland-pv2-q-on-tr-pf14k1k,2026-11-22 07:35:47,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_swapland variants v test pf14k n=3,,
+poolv2_swapland-pv2-q-on-tailref-pf14k1k,2026-11-22 07:38:03,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_swapland variants v test pf14k n=3,,
+poolv2_swapland-pv2-q-on-zsort-pf14k1k,2026-11-22 07:40:20,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_swapland variants v test pf14k n=3,,
