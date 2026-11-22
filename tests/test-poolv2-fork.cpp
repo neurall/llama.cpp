@@ -1330,8 +1330,19 @@ static void test_first_fit() {
     check("first fit: no gap left for another 40", r[4] == PV2_NONE);
     check("first fit: a smaller size still uses what its own cursor finds (80 in the first)", r[5] == 80);
 }
+static void test_free_at() {
+    std::map<size_t, size_t> g = { { 3, 5 }, { 20, 30 }, { 100, 8 } };
+    check("free_at", pv2_free_at(g, 4, 4) == 4);     // [3,8) holds 4 only from 4: 4+4=8 fits
+    check("free_at", pv2_free_at(g, 5, 4) == 20);
+    check("free_at", pv2_free_at(g, 30, 1) == 20);
+    check("free_at", pv2_free_at(g, 31, 1) == PV2_NONE);
+    check("free_at", pv2_free_at(g, 2, 1) == 3);
+    check("free_at", pv2_free_at({}, 1, 1) == PV2_NONE);
+}
+
 int main(int argc, char ** argv) {
     test_first_fit();
+    test_free_at();
     test_upchunks();
     test_upring();
     test_eranges();

@@ -2755,6 +2755,85 @@ static void pv2_zone_sort(moe_cache * mc, size_t a, size_t b) {
         LLAMA_LOG_WARN("moe-cache: pool-v2: zone sort before [0, %.0f) MiB is taken: %zu experts moved up (%.2f GB), %zu colder ones out\n", b / 1048576.0, n_move, b_move / 1e9, n_evict);
     }
 }
+// user 2026-11-22: a stretch [a, b) the KV zone, a lend or CUDA's room is about to take: each expert there (hottest first) moves by one device copy over the coldest
+// colder resident of its size outside the stretch, or into a free gap outside it; that resident leaves. No heap sort: one cold order per size. What finds no colder
+// place leaves with the stretch (pv2_take_range). Cache lock taken here; the caller (pv2_sync, not locked) has no graph running. --moe zone-move=0: off
+static void pv2_zone_move(moe_cache * mc, size_t a, size_t b) {
+    auto & v = mc->v2;
+    static const bool on = [] { const char * e = moe_opt("zone-move"); return !e || atoi(e) != 0; }();
+    if (!on || v.ap_idx >= mc->alias.size()) { return; }
+    optime_t _ot(OP_ZONE_SORT);
+    std::lock_guard<std::mutex> lk(mc->mtx);
+    auto busy = [&](int32_t id) {
+        const layer_state & lq = mc->layers[(size_t) (id / v.E)];
+        return lq.slot_in_flight[(size_t) (id % v.E)] || lq.queued[(size_t) (id % v.E)] != 0 || lq.at[(size_t) (id % v.E)] < 0;
+    };
+    auto score = [&](int32_t id) { return std::llround(1e6 * xscore(mc, mc->layers[(size_t) (id / v.E)], id % v.E)); };
+    std::vector<std::pair<int64_t, size_t>> mv;                                   // (score, start) of the stretch's experts, hottest first
+    std::map<std::pair<size_t, size_t>, std::vector<std::pair<int64_t, size_t>>> cold;   // (bytes, unit) -> (score, start) outside the stretch, coldest first
+    for (const auto & [x, r] : v.main.res) {
+        if (r.id < 0 || r.pin || busy(r.id)) { continue; }
+        const layer_state & lq = mc->layers[(size_t) (r.id / v.E)];
+        if (x < b && x + r.n > a) { mv.push_back({ score(r.id), x }); }
+        else { cold[{ lq.v2n, lq.v2u }].push_back({ score(r.id), x }); }
+    }
+    if (mv.empty()) { return; }
+    std::sort(mv.begin(), mv.end(), [](const auto & p, const auto & q) { return p.first > q.first; });
+    for (auto & [k, c] : cold) { std::sort(c.begin(), c.end()); }
+    std::map<std::pair<size_t, size_t>, size_t> cur;
+    auto & ap = mc->alias[v.ap_idx];
+    uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf);
+    size_t n_move = 0, n_free = 0; double b_move = 0.0;
+    for (const auto & [sc, from] : mv) {
+        const pv2_res & rr = v.main.res.at(from);
+        const int32_t id = rr.id;
+        layer_state & lo = mc->layers[(size_t) (id / v.E)];
+        const int32_t e = id % v.E;
+        const size_t n = lo.v2n, u = std::max<size_t>(1, lo.v2u);
+        size_t to = PV2_NONE;
+        for (const auto & [gs, gn] : v.main.gaps) {   // a free gap outside the stretch first
+            const size_t st = (gs + u - 1) / u * u;
+            if (st + n <= gs + gn && (st >= b || st + n <= a)) { to = st; break; }
+        }
+        if (to != PV2_NONE) { n_free++; }
+        else {
+            auto ci = cold.find({ n, lo.v2u });
+            if (ci == cold.end()) { continue; }
+            size_t & cx = cur[{ n, lo.v2u }];
+            while (cx < ci->second.size()) {   // still there, still the same expert (an earlier move replaced none of the cold ones twice: each taken once)
+                const auto it = v.main.res.find(ci->second[cx].second);
+                if (it != v.main.res.end() && it->second.id >= 0 && !it->second.pin && !busy(it->second.id)) { break; }
+                ++cx;
+            }
+            if (cx >= ci->second.size() || ci->second[cx].first >= sc) { continue; }   // nothing colder of its size: it leaves with the stretch
+            to = ci->second[cx].second; ++cx;
+            const int32_t vid = v.main.res.at(to).id;
+            layer_state & lv = mc->layers[(size_t) (vid / v.E)];
+            evict_slot(mc, lv, vid % v.E);
+            pv2_out(mc, lv, vid % v.E);
+            lv.queued[vid % v.E] = 0;
+        }
+        ggml_tensor ta = {}, tb = {};
+        for (ggml_tensor * t : { &ta, &tb }) {
+            t->type = GGML_TYPE_I8; t->buffer = ap.buf;
+            t->ne[0] = (int64_t) n; t->ne[1] = t->ne[2] = t->ne[3] = 1;
+            t->nb[0] = 1; t->nb[1] = t->nb[2] = t->nb[3] = n;
+        }
+        ta.data = base + from; tb.data = base + to;
+        ggml_backend_tensor_copy(&ta, &tb);
+        const pv2_res r = pv2_drop(v.main, from);
+        const bool ok = pv2_add(v.main, to, r);
+        GGML_ASSERT(ok && "pool-v2: a zone move into bytes that are not free");
+        lo.at[(size_t) e] = (int32_t) (to / u);
+        set_table_entry(lo.pub, e, e);
+        n_move++; b_move += (double) n;
+    }
+    static int logged = 0;
+    if (logged++ < 24) {
+        LLAMA_LOG_WARN("moe-cache: pool-v2: zone move before [%.0f, %.0f) MiB is taken: %zu of %zu experts moved out (%.2f GB, %zu into free gaps, the rest over colder ones)\n",
+                a / 1048576.0, b / 1048576.0, n_move, mv.size(), b_move / 1e9, n_free);
+    }
+}
 // The heap's held stretches follow the blocks the lend, the KV zone and CUDA's room hold (owner -2, -3, ROOM, of any class; the blocks stay the lend's and the
 // zone's bookkeeping): residents in a newly held stretch leave first (their uploads dropped or awaited, pv2_take_range), bytes no longer held come back free.
 // locked (cache lock held): only gives back. false: an upload into a new stretch did not finish in 10 s. *n_ev: the residents that left
@@ -2785,6 +2864,7 @@ static bool pv2_sync(moe_cache * mc, bool locked, size_t * n_ev = nullptr) {
         if (old) { continue; }
         GGML_ASSERT(!locked && "pool-v2: a lend or zone grew where the heap is synced under the cache lock");
         pv2_zone_sort(mc, r.first, r.second);
+        pv2_zone_move(mc, r.first, r.second);
         if (!pv2_take_range(mc, r.first, r.second, n_ev)) { return false; }
     }
     std::unique_lock<std::mutex> lk(mc->mtx, std::defer_lock);
@@ -11848,7 +11928,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         // finds room only over other sizes (1.5 s of planning a 15.5k prompt, 2013 i/s, 74.6 o/s). The landing area stays until the matmul runs in
                         // expert ranges (pv2_expert_ranges) and the ring can be range-sized.
                         static const bool land = [] { const char * x = moe_opt("pv2-land"); return !x || atoi(x) != 0; }();
-                        v.M = land ? std::min<size_t>(ap.floor_end, v.H > lay ? v.H - lay : 0) : v.H;
+                        v.M = land ? (v.H > lay ? v.H - lay : 0) : v.H;   // not held below floor_end: the main heap above it is never lent, only the 32 MiB stay the landing area
                         v.ap_idx = mc->alias.size();
                         v.main = pv2_make(0, ap.tail_real);
                         pv2_hold(v.main, v.M, v.H);
@@ -13997,7 +14077,11 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
         pv2_pick pk;
         if (main_fails <= 0 || n_fail_run < main_fails) {
             optime_t _om(OP_PLAN_MAIN);
-            pk = pv2_pick_main(mc, li, e, cheap && v.H == v.M ? std::numeric_limits<int64_t>::min() : hx, v.reach, ls.v2n + ls.v2u <= max_gap ? SIZE_MAX : v.reach);
+            // user 2026-11-22: no heat placement (the heap was sorted only for the KV's growth; now its edge neighbour moves over the coldest): a free gap,
+            // else one coldest resident below. --moe pv2-heatplace=1: the heat-target window as before
+            static const bool heatplace = [] { const char * x = moe_opt("pv2-heatplace"); return x && atoi(x) != 0; }();
+            if (heatplace) { pk = pv2_pick_main(mc, li, e, cheap && v.H == v.M ? std::numeric_limits<int64_t>::min() : hx, v.reach, ls.v2n + ls.v2u <= max_gap ? SIZE_MAX : v.reach); }
+            else if (ls.v2n + ls.v2u <= max_gap) { pk.s = pv2_free_at(v.main.gaps, ls.v2n, ls.v2u); }
             n_fail_run = pk.s == PV2_NONE ? n_fail_run + 1 : 0;
         }
         if (pk.s != PV2_NONE) {
@@ -17088,7 +17172,10 @@ void llama_moe_cache_step_fork() {
                 if (pv2_dist_due(mc->n_steps, mc->v2.heat_step)) { pv2_refresh(mc, false, false); mc->v2.heat_step = mc->n_steps; }   // the targets and every resident's heat: the first step and every 64 (a per-step pass over every resident cost decode time)
                 const int64_t hx = pv2_heat(mc, ls, id, false, 0.0);
                 optime_t _os(OP_SWAP);
-                const pv2_pick pk = pv2_pick_main(mc, li, id, std::llround(1e6 * (xscore(mc, ls, id) - pay_back(link_margin[ls.link]))), mc->v2.reach, ls.v2n + ls.v2u <= mc->v2.max_gap ? SIZE_MAX : 2 * mc->v2.reach);   // decode: free windows only near the target (a scan of every gap cost 40% of the main thread per token)
+                static const bool heatplace = [] { const char * x = moe_opt("pv2-heatplace"); return x && atoi(x) != 0; }();   // as the stream: free gap, else the coldest (fallback below)
+                pv2_pick pk;
+                if (heatplace) { pk = pv2_pick_main(mc, li, id, std::llround(1e6 * (xscore(mc, ls, id) - pay_back(link_margin[ls.link]))), mc->v2.reach, ls.v2n + ls.v2u <= mc->v2.max_gap ? SIZE_MAX : 2 * mc->v2.reach); }
+                else if (ls.v2n + ls.v2u <= mc->v2.max_gap) { pk.s = pv2_free_at(mc->v2.main.gaps, ls.v2n, ls.v2u); }
                 pv2_pick pkf = pk;
                 bool in_land = false;   // the fallback's victim sits in the landing area
                 if (pkf.s == PV2_NONE) {   // nothing colder near its heat target: the coldest resident of the same size anywhere in the heap (as the classes take the class's coldest);

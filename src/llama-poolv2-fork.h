@@ -807,6 +807,16 @@ static inline pv2_pick pv2_cold_window(const pv2_heap & h, const std::vector<pv2
 // and the zone sort). gaps: (start, length) by address; want: each newcomer's bytes and unit. One cursor per (bytes, unit) over the gaps, which only shrink,
 // so the walk is linear: 2803 nearest-target picks held the cache lock 230 ms before a 15.5k prompt's first token (Qwen3.8 one card). PV2_NONE: no gap holds it.
 struct pv2_ff_t { size_t n, u; };
+// the first free extent of h that holds n bytes at a multiple of u (insert without heat placement: free bytes first, else one coldest victim)
+static inline size_t pv2_free_at(const std::map<size_t, size_t> & gaps, size_t n, size_t u) {
+    u = std::max<size_t>(1, u);
+    for (const auto & [gs, gn] : gaps) {
+        const size_t s = (gs + u - 1) / u * u;
+        if (s + n <= gs + gn) { return s; }
+    }
+    return PV2_NONE;
+}
+
 static inline std::vector<size_t> pv2_first_fit(std::vector<std::pair<size_t, size_t>> gaps, const std::vector<pv2_ff_t> & want) {
     std::vector<size_t> out(want.size(), PV2_NONE);
     std::map<std::pair<size_t, size_t>, size_t> cur;
