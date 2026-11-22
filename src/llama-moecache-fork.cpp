@@ -3306,6 +3306,11 @@ static void led_upload(moe_cache * mc, const char * kind, size_t li, int32_t exp
     const int32_t pcls = mc->layers[li].pcls;
     if (pcls < 0) { return; }
     size_t lo = 0, hi = 0;
+    if (mc->layers[li].v2u) {   // pool-v2: the expert's own place in the heap (the class grid's block of the same index is another layer's bytes)
+        const moe_cache::alias_pool * hp = slot_range(mc, mc->layers[li], slot, lo, hi);
+        if (hp) { led_line(led_card(*hp), kind, lo, hi, tr_fmt("L%zu e%d at %zu%s", li, expert, lo, bg ? " bg" : "")); }
+        return;
+    }
     const moe_cache::alias_pool * ap = led_block(mc, pcls, slot, lo, hi);
     if (!ap) { return; }
     const std::string who = tr_fmt("L%zu e%d block %d class %d%s", li, expert, slot, pcls, bg ? " bg" : "");
@@ -15383,7 +15388,7 @@ void llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                 const bool in_slice = first < sz;
                 (in_slice ? n_bad : n_bad_past)++;
                 size_t lo = 0, hi = 0;
-                const moe_cache::alias_pool * ap = ls.pcls >= 0 ? led_block(mc, ls.pcls, slot, lo, hi) : nullptr;
+                const moe_cache::alias_pool * ap = ls.v2u ? slot_range(mc, ls, slot, lo, hi) : ls.pcls >= 0 ? led_block(mc, ls.pcls, slot, lo, hi) : nullptr;   // pool-v2: the heap place
                 // what the card holds there, and the host: the bytes name their writer (floats of an activation, int ids, a KV row, a poison fill)
                 std::string hx_got, hx_want, fl;
                 for (size_t i = first; i < std::min(n, first + 32); ++i) {
