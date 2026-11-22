@@ -14222,15 +14222,24 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
             };
             optime_t _oc(OP_PLAN_COLD);
             bool from_win = false;
-            if (ord_pass != mc->cs_pass) { cold[0].clear(); cold[1].clear(); cold_all[0] = cold_all[1] = {}; ord_pass = mc->cs_pass; }
+            static std::map<size_t, std::vector<pv2_cold_t>> parked[2];   // per size: residents refused so far this pass (a layer ahead, uploading), heat order
+            if (ord_pass != mc->cs_pass) { cold[0].clear(); cold[1].clear(); parked[0].clear(); parked[1].clear(); cold_all[0] = cold_all[1] = {}; ord_pass = mc->cs_pass; }
             for (int t = 0; t < (cheap ? 1 : 2) && pk.s == PV2_NONE; ++t) {
                 auto ci = cold[t].find(ls.v2n);
                 if (ci == cold[t].end()) { ci = cold[t].emplace(ls.v2n, std::make_pair(pv2_cold_order(v.main, ls.v2n), (size_t) 0)).first; }
-                pk = t == 0 ? pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_done) : pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_any);
-                if (pk.s == PV2_NONE && !rebuilt.count({ t, ls.v2n })) {   // residents skipped earlier (pinned, ahead, uploading) may be free now: once a call
-                    rebuilt.insert({ t, ls.v2n });
+                auto & pq = parked[t][ls.v2n];
+                pk = t == 0 ? pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_done, &pq) : pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_any, &pq);
+                if (pk.s == PV2_NONE && !pq.empty() && !rebuilt.count({ t, ls.v2n })) {   // residents skipped earlier (ahead, uploading) may be takeable now: once a call,
+                    rebuilt.insert({ t, ls.v2n });                                          // only those (a full rebuild sorted every resident: 0.7 s of a 1.9 s Qwen3.8 call)
+                    ci->second = { std::move(pq), 0 };
+                    pq.clear();
+                    pk = t == 0 ? pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_done, &pq) : pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_any, &pq);
+                }
+                if (pk.s == PV2_NONE && !rebuilt.count({ t + 2, ls.v2n })) {   // still none: experts placed in this pass (computed layers' uploads) join, once a call
+                    rebuilt.insert({ t + 2, ls.v2n });
                     ci->second = { pv2_cold_order(v.main, ls.v2n), 0 };
-                    pk = t == 0 ? pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_done) : pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_any);
+                    pq.clear();
+                    pk = t == 0 ? pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_done, &pq) : pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_any, &pq);
                 }
                 static const bool win = [] { const char * x = moe_opt("pv2-win"); return !x || atoi(x) != 0; }();   // last resort only: same size first (user 2026-11-22: other sizes leave gaps); with the 32 MiB landing area a size almost no layer has (Qwen3.8 IQ3_S layer 17: 3 residents, all pinned, 15 GB of other sizes takeable) finds room nowhere else and the pass aborted. --moe pv2-win=0: off
                 if (pk.s == PV2_NONE && win && !win_failed[t]) {   // --moe pv2-win=1: a window over residents of other sizes, anchored at the coldest

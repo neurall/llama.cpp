@@ -748,11 +748,14 @@ static inline std::vector<pv2_cold_t> pv2_cold_order(const pv2_heap & h, size_t 
     return r;
 }
 template <typename OK>
-static inline pv2_pick pv2_coldest(const pv2_heap & h, const std::vector<pv2_cold_t> & ord, size_t & cur, size_t n, size_t u, OK ok) {
+// parked (optional): entries still there but refused by ok (a layer ahead, uploading) go there in heat order, for the caller to try again later without a
+// full rebuild of the order
+static inline pv2_pick pv2_coldest(const pv2_heap & h, const std::vector<pv2_cold_t> & ord, size_t & cur, size_t n, size_t u, OK ok, std::vector<pv2_cold_t> * parked = nullptr) {
     pv2_pick p;
     for (; cur < ord.size(); ++cur) {
         const auto it = h.res.find(ord[cur].s);
-        if (it == h.res.end() || it->second.id != ord[cur].id || it->second.pin || it->second.n != n || ord[cur].s % u != 0 || !ok(it->second.id)) { continue; }
+        if (it == h.res.end() || it->second.id != ord[cur].id || it->second.pin || it->second.n != n || ord[cur].s % u != 0) { continue; }
+        if (!ok(it->second.id)) { if (parked) { parked->push_back(ord[cur]); } continue; }
         p.s = ord[cur].s; p.evict = { ord[cur].s };
         ++cur;
         break;
