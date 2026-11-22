@@ -121,7 +121,8 @@ static __device__ bool pm_window_ok(const pm_ctx & c, uint32_t i0, uint64_t st, 
     return true;
 }
 
-struct pm_shared { uint32_t cur, nofree, pick, pidx; unsigned long long sh_best, sh_key, sh_same; uint32_t sh_idx; uint64_t cov[PM_MAX_MV]; int64_t cov_hot[PM_MAX_MV]; uint32_t n_cov, n_mv, n_fr, ovf; };
+static constexpr uint32_t PM_NCLS = 511;   // classes = the first request index of each (size, align); key bits 54..62 (511 = none)
+struct pm_shared { uint32_t cur, nofree, pick, pidx, cls, stale; uint32_t ccur[PM_NCLS]; unsigned long long sh_best, sh_key, sh_same; uint32_t sh_idx; uint64_t cov[PM_MAX_MV]; int64_t cov_hot[PM_MAX_MV]; uint32_t n_cov, n_mv, n_fr, ovf; };
 // thread 0: the coldest unpinned expert at w (index vi, exactly n bytes at a multiple of a) leaves and the newcomer takes its entry in place
 static __device__ void pm_take_inplace(pm_ctx & c, uint32_t vi, uint64_t a, int32_t id, int64_t hot, int pin, pm_result * res) {
     const pm_entry w = c.v[vi];
@@ -131,19 +132,41 @@ static __device__ void pm_take_inplace(pm_ctx & c, uint32_t vi, uint64_t a, int3
     __threadfence_system();
     res->done = 1;
 }
-// the batch's takeable experts (key: heat, INT64_MAX for none; value: start, top bit: a window, not an exact slot), sorted coldest first (ties: lowest address)
-struct pm_cands { const int64_t * key; const uint64_t * val; uint32_t n; uint64_t cn, ca; };
-static __global__ void k_pm_cands(const pm_entry * v, const uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, const pm_req * rq, int64_t * key, uint64_t * val) {
+// user 2026-11-22: one heat-sorted list per size class (class = the first request of the batch with that size and align): the batch's takeable experts
+// of exactly a class's size at a multiple of its align, key (class << 54) | heat, INT64_MAX for none; value: start. Coldest first per class (ties: lowest
+// address), so an alloc pops its class's coldest from the list in O(1)
+static constexpr int64_t PM_HEAT_MASK = (1ll << 54) - 1;
+static __device__ int64_t pm_heat54(int64_t h) { return h < 0 ? 0 : (h > PM_HEAT_MASK ? PM_HEAT_MASK : h); }
+struct pm_cands { const int64_t * key; const uint64_t * val; uint32_t n; };
+// thread 0: the index of class j's coldest entry not yet popped (located on first use)
+static __device__ uint32_t & pm_class_cur(pm_shared & S, const pm_cands & cd, uint32_t j) {
+    uint32_t & cu = S.ccur[j];
+    if (cu == UINT32_MAX) {
+        const int64_t lk = (int64_t) j << 54; uint32_t l = 0, h = cd.n;
+        while (l < h) { const uint32_t m = (l + h) / 2; if (cd.key[m] < lk) { l = m + 1; } else { h = m; } }
+        cu = l;
+    }
+    return cu;
+}
+// thread 0, after an in-place take: a newcomer colder than its class's next listed entry would be the reference's next pick but is not in the list
+static __device__ void pm_class_check(pm_shared & S, const pm_cands & cd, int64_t hot) {
+    if (!cd.key || S.cls >= PM_NCLS || S.stale) { return; }
+    const uint32_t cu = pm_class_cur(S, cd, S.cls);
+    if (cu < cd.n && (cd.key[cu] >> 54) == (int64_t) S.cls && pm_heat54(hot) < (cd.key[cu] & PM_HEAT_MASK)) { S.stale = 1; }
+}
+static __global__ void k_pm_cands(const pm_entry * v, const uint32_t * cnt, uint32_t cap, const pm_req * rq, uint32_t n_rq, int64_t * key, uint64_t * val) {
     const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= cap) { return; }
-    const uint32_t nc = *cnt; const uint64_t n = rq->n, a = rq->a ? rq->a : 1;
     int64_t k = INT64_MAX; uint64_t o = 0;
-    if (i < nc && rq->kind != PM_ALLOC_KV && rq->kind != PM_ALLOC_WRK) {
+    if (i < *cnt) {
         const pm_entry e = v[i];
         if (e.type == PM_MOE && !(e.flags & PM_PIN)) {
-            pm_ctx c = { (pm_entry *) v, (uint32_t *) cnt, cap, lo, hi };
-            if (e.size == n && e.off % a == 0) { k = e.hot; o = e.off; }
-            else if (pm_window_ok(c, i, pm_align(e.off, a), n)) { k = e.hot; o = e.off | (1ull << 63); }
+            const uint32_t m = n_rq < PM_NCLS ? n_rq : PM_NCLS;
+            for (uint32_t j = 0; j < m; ++j) {
+                const pm_req q = rq[j];
+                if (q.kind == PM_ALLOC_KV || q.kind == PM_ALLOC_WRK || q.n != e.size || e.off % (q.a ? q.a : 1) != 0) { continue; }
+                k = ((int64_t) j << 54) | pm_heat54(e.hot); o = e.off; break;
+            }
         }
     }
     key[i] = k; val[i] = o;
@@ -169,23 +192,21 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
     }
     // the stream's case, no scan: no free bytes hold n (the last request found none and changed no free bytes) and the batch's sorted takeable
     // experts are at hand: the coldest one still there leaves; an exact slot is taken in place, a window goes the long way below
-    if (!left && cd.key && S.nofree && n == cd.cn && a == cd.ca) {
+    if (!left && cd.key && S.nofree && !S.stale && S.cls < PM_NCLS) {
         if (threadIdx.x == 0) {
             S.pick = 0;
-            const uint32_t nc = *cnt;
-            while (S.cur < cd.n) {
-                const int64_t k = cd.key[S.cur];
-                if (k == INT64_MAX) { S.cur = cd.n; break; }
-                const uint64_t o = cd.val[S.cur] & ~(1ull << 63); const bool win = cd.val[S.cur] >> 63;
+            const uint32_t nc = *cnt, j = S.cls;
+            uint32_t & cu = pm_class_cur(S, cd, j);
+            while (cu < cd.n) {
+                const int64_t k = cd.key[cu];
+                if ((k >> 54) != (int64_t) j) { cu = cd.n; break; }   // the class is used up
+                const uint64_t o = cd.val[cu]; cu++;
                 uint32_t l = 0, h = nc;
                 while (l < h) { const uint32_t m = (l + h) / 2; if (v[m].off < o) { l = m + 1; } else { h = m; } }
-                const bool ok = l < nc && v[l].off == o && v[l].type == PM_MOE && !(v[l].flags & PM_PIN) && v[l].hot == k;
-                if (!ok) { S.cur++; continue; }
-                if (win) { S.pick = 2; break; }
-                S.pick = 1; S.pidx = l; S.cur++;
-                break;
+                const bool ok = l < nc && v[l].off == o && v[l].type == PM_MOE && !(v[l].flags & PM_PIN) && v[l].size == n && pm_heat54(v[l].hot) == (k & PM_HEAT_MASK);
+                if (ok) { S.pick = 1; S.pidx = l; break; }
             }
-            if (S.pick == 1) { res->path = 1; pm_take_inplace(c, S.pidx, a, id, hot, pin, res); }
+            if (S.pick == 1) { res->path = 1; pm_take_inplace(c, S.pidx, a, id, hot, pin, res); pm_class_check(S, cd, hot); }
         }
         __syncthreads();
         if (S.pick == 1) { return; }
@@ -237,7 +258,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
             const pm_entry w = v[vi];
             if (w.off == s && w.size == n) {
                 __syncthreads();
-                if (threadIdx.x == 0) { res->path = 2; pm_take_inplace(c, vi, a, id, hot, pin, res); S.nofree = 1; }   // !left: an expert (no free bytes changed)
+                if (threadIdx.x == 0) { res->path = 2; pm_take_inplace(c, vi, a, id, hot, pin, res); S.nofree = 1; pm_class_check(S, cd, hot); }   // !left: an expert (no free bytes changed)
                 __syncthreads();
                 return;
             }
@@ -325,7 +346,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
     if (kind == PM_ALLOC_KV || kind == PM_ALLOC_WRK) { ne.type = kind == PM_ALLOC_KV ? PM_KV : PM_WRK; ne.id = -1; ne.hot = 0; ne.flags = PM_PIN; }   // held: KV never moves, work never in a pass
     if (!pm_place(c, s, ne, &sh_idx)) { if (threadIdx.x == 0) { ovf = 2; } __syncthreads(); }
     if (threadIdx.x == 0) {
-        res->s = s; res->n_mv = n_mv; res->n_fr = n_fr; res->overflow = ovf; res->path = 3;
+        res->s = s; res->n_mv = n_mv; res->n_fr = n_fr; res->overflow = ovf; res->path = 3; S.stale = 1;   // moved or placed experts are not in the lists
         __threadfence_system();
         res->done = 1;
     }
@@ -337,11 +358,19 @@ static __global__ void __launch_bounds__(PM_T) k_pm_alloc(pm_entry * v, uint32_t
                                                          const int64_t * ckey, const uint64_t * cval) {
     __shared__ pm_shared S;
     pm_ctx c = { v, cnt, cap, lo, hi };
-    const pm_cands cd = { ckey, cval, cap, rq[0].n, rq[0].a ? rq[0].a : 1 };
-    if (threadIdx.x == 0) { S.cur = 0; S.nofree = 0; }
+    const pm_cands cd = { ckey, cval, cap };
+    if (threadIdx.x == 0) { S.cur = 0; S.nofree = 0; S.stale = 0; }
+    for (uint32_t j = threadIdx.x; j < PM_NCLS; j += PM_T) { S.ccur[j] = UINT32_MAX; }
     __syncthreads();
     for (uint32_t k = 0; k < n_rq; ++k) {
         const pm_req q = rq[k];
+        if (threadIdx.x == 0) { S.cls = PM_NCLS; }
+        __syncthreads();
+        if (cd.key && q.kind != PM_ALLOC_KV && q.kind != PM_ALLOC_WRK) {   // the class: the first request with this size and align
+            const uint32_t m = (k + 1) < PM_NCLS ? (k + 1) : PM_NCLS;
+            for (uint32_t j = threadIdx.x; j < m; j += PM_T) { if (rq[j].n == q.n && (rq[j].a ? rq[j].a : 1) == (q.a ? q.a : 1) && rq[j].kind != PM_ALLOC_KV && rq[j].kind != PM_ALLOC_WRK) { atomicMin(&S.cls, j); } }
+        }
+        __syncthreads();
         uint64_t t0 = 0; if (threadIdx.x == 0) { asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t0)); }
         pm_alloc_one(c, S, q.n, q.a, q.id, q.hot, q.pin, q.kind, res + k, cd);
         if (threadIdx.x == 0) { uint64_t t1; asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t1)); res[k].ns = t1 - t0; }
@@ -373,12 +402,12 @@ void ggml_cuda_poolmap_alloc_batch_fork(cudaStream_t st, pm_entry * v, uint32_t 
                                         void * scratch = nullptr) {
     if (n_rq == 0) { return; }
     int64_t * ckey = nullptr; uint64_t * cval = nullptr;
-    if (scratch && n_rq > 1) {   // scratch: pm_scratch_bytes(cap) bytes; the takeable experts for the first request's size, sorted by heat
+    if (scratch && n_rq > 1) {   // scratch: pm_scratch_bytes(cap) bytes; the takeable experts per size class, sorted by heat
         int64_t * k0 = (int64_t *) scratch; ckey = k0 + cap; uint64_t * v0 = (uint64_t *) (ckey + cap); cval = v0 + cap;
         void * tmp = cval + cap; size_t tb = 0;
         CUDA_CHECK(cub::DeviceRadixSort::SortPairs(nullptr, tb, k0, ckey, v0, cval, (int) cap, 0, 64, st));
         if (tb > ((size_t) 4 << 20)) { fprintf(stderr, "pool-map: the sort needs %zu bytes of scratch, %zu there\n", tb, (size_t) 4 << 20); abort(); }
-        k_pm_cands<<<(cap + 255) / 256, 256, 0, st>>>(v, cnt, cap, lo, hi, rq_dev, k0, v0);
+        k_pm_cands<<<(cap + 255) / 256, 256, 0, st>>>(v, cnt, cap, rq_dev, n_rq, k0, v0);
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cub::DeviceRadixSort::SortPairs(tmp, tb, k0, ckey, v0, cval, (int) cap, 0, 64, st));
     }
