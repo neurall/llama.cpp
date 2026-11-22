@@ -1681,6 +1681,7 @@ static double vis_next(const moe_cache * mc, const layer_state & ls, int32_t e) 
 // own rules. --moe rp-steer=0: neither (the A/B arm); rp-pre=0: not the prompt start's
 static bool rp_steer_on() { static const bool on = [] { const char * v = moe_opt("rp-steer"); return !v || atoi(v) != 0; }(); return on; }
 static bool rp_pre_on() { static const bool on = [] { const char * v = moe_opt("rp-pre"); return !v || atoi(v) != 0; }(); return on; }
+static std::atomic<int64_t> g_rf_n{0}, g_rf_b{0}, g_rf_busy{0}, g_rf_gw{0}, g_rf_t0{0}, g_rf_t1{0};
 static thread_local bool t_rp_fill = false;   // a preheat's reads ahead are being queued: the admission lets each take a resident's block (rp_admit)
 static double rp_next(const moe_cache * mc, const layer_state & ls, int32_t e) { return vis_next(mc, ls, e); }
 static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool reader's thread, the pool's lock held: never takes mc->mtx (racy reads of plain ints)
@@ -20175,7 +20176,6 @@ void llama_moe_cache_threads_searching_fork(bool on) { g_threads_searching.store
 bool llama_moe_cache_tuning_fork() { moe_cache * mc = g_cache; return mc && knobs().self_tune != 0 && mc->lv_k >= 0; }
 
 // dev: refill uploads since the last refill-phase line (jobs, bytes, worker busy us, graph-wait us, first start, last done)
-static std::atomic<int64_t> g_rf_n{0}, g_rf_b{0}, g_rf_busy{0}, g_rf_gw{0}, g_rf_t0{0}, g_rf_t1{0};
 std::string llama_moe_cache_refill_stats_fork() {
     const int64_t n = g_rf_n.exchange(0), b = g_rf_b.exchange(0), busy = g_rf_busy.exchange(0), gw = g_rf_gw.exchange(0), t0 = g_rf_t0.exchange(0), t1 = g_rf_t1.exchange(0);
     char x[200]; snprintf(x, sizeof x, "; refill uploads: %lld jobs, %.2f GB, wall %.0f ms (%.1f GB/s), worker busy %.0f ms, graph waits %.0f ms",
