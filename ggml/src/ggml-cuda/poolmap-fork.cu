@@ -120,12 +120,11 @@ static __device__ bool pm_window_ok(const pm_ctx & c, uint32_t i0, uint64_t st, 
     return true;
 }
 
-static __global__ void k_pm_alloc(pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, uint64_t n, uint64_t a, int32_t id, int64_t hot, int pin, pm_result * res) {
-    __shared__ unsigned long long sh_best, sh_key;
-    __shared__ uint32_t sh_idx;
-    __shared__ uint64_t cov[PM_MAX_MV]; __shared__ int64_t cov_hot[PM_MAX_MV]; __shared__ uint32_t n_cov;
-    __shared__ uint32_t n_mv, n_fr, ovf;
-    pm_ctx c = { v, cnt, cap, lo, hi };
+struct pm_shared { unsigned long long sh_best, sh_key; uint32_t sh_idx; uint64_t cov[PM_MAX_MV]; int64_t cov_hot[PM_MAX_MV]; uint32_t n_cov, n_mv, n_fr, ovf; };
+static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint64_t a, int32_t id, int64_t hot, int pin, pm_result * res) {
+    unsigned long long & sh_best = S.sh_best; unsigned long long & sh_key = S.sh_key; uint32_t & sh_idx = S.sh_idx;
+    uint64_t * cov = S.cov; int64_t * cov_hot = S.cov_hot; uint32_t & n_cov = S.n_cov; uint32_t & n_mv = S.n_mv; uint32_t & n_fr = S.n_fr; uint32_t & ovf = S.ovf;
+    pm_entry * v = c.v; uint32_t * cnt = c.cnt;
     if (a == 0) { a = 1; }
     if (threadIdx.x == 0) { sh_best = ~0ull; sh_key = ~0ull; n_cov = 0; n_mv = 0; n_fr = 0; ovf = 0; }
     __syncthreads();
@@ -162,6 +161,7 @@ static __global__ void k_pm_alloc(pm_entry * v, uint32_t * cnt, uint32_t cap, ui
     __syncthreads();
     if (s == ~0ull) {
         if (threadIdx.x == 0) { res->s = UINT64_MAX; res->n_mv = 0; res->n_fr = 0; res->overflow = 0; __threadfence_system(); res->done = 1; }
+        __syncthreads();
         return;
     }
     // the experts the window covers, hottest first (ties: lowest address)
@@ -232,10 +232,22 @@ static __global__ void k_pm_alloc(pm_entry * v, uint32_t * cnt, uint32_t cap, ui
         __threadfence_system();
         res->done = 1;
     }
+    __syncthreads();
+}
+// user 2026-11-22: the host asks for a list of allocs (sizes may differ) in one launch and goes on; each gets its report, in order (later ones see the
+// earlier ones' map)
+static __global__ void __launch_bounds__(PM_T) k_pm_alloc(pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, const pm_req * rq, uint32_t n_rq, pm_result * res) {
+    __shared__ pm_shared S;
+    pm_ctx c = { v, cnt, cap, lo, hi };
+    for (uint32_t k = 0; k < n_rq; ++k) {
+        const pm_req q = rq[k];
+        pm_alloc_one(c, S, q.n, q.a, q.id, q.hot, q.pin, res + k);
+    }
 }
 
 // the movers' bytes and the expert tables (tables[layer][expert] = offset / unit; freed: -1); one block per move or freed entry
-static __global__ void k_pm_apply(const pm_result * res, char * base, int32_t * const * tables, int32_t E) {
+static __global__ void k_pm_apply(const pm_result * resv, char * base, int32_t * const * tables, int32_t E) {
+    const pm_result * res = resv;   // one request's report (the batch launches one apply per request, in order)
     const uint32_t b = blockIdx.x;
     if (b < res->n_mv && b < PM_MAX_MV) {
         const pm_mv m = res->mv[b];
@@ -251,10 +263,22 @@ static __global__ void k_pm_apply(const pm_result * res, char * base, int32_t * 
     if (threadIdx.x == 0 && tables && f < res->n_fr && f < PM_MAX_FR && res->fr[f].id >= 0) { tables[res->fr[f].id / E][res->fr[f].id % E] = -1; }
 }
 
+// the batch: one alloc launch for all requests, then one apply launch per request in order (request k's moves may read bytes request k-1 moved in)
+void ggml_cuda_poolmap_alloc_batch_fork(cudaStream_t st, pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, const pm_req * rq_dev, uint32_t n_rq,
+                                        pm_result * res_dev, char * base, int32_t * const * tables, int32_t E) {
+    if (n_rq == 0) { return; }
+    k_pm_alloc<<<1, PM_T, 0, st>>>(v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev);
+    CUDA_CHECK(cudaGetLastError());
+    for (uint32_t k = 0; k < n_rq; ++k) {
+        k_pm_apply<<<dim3(PM_MAX_FR, 1), 256, 0, st>>>(res_dev + k, base, tables, E);
+        CUDA_CHECK(cudaGetLastError());
+    }
+}
 void ggml_cuda_poolmap_alloc_fork(cudaStream_t st, pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, uint64_t n, uint64_t a,
                                   int32_t id, int64_t hot, int pin, pm_result * res_dev, char * base, int32_t * const * tables, int32_t E) {
-    k_pm_alloc<<<1, PM_T, 0, st>>>(v, cnt, cap, lo, hi, n, a, id, hot, pin, res_dev);
-    CUDA_CHECK(cudaGetLastError());
-    k_pm_apply<<<PM_MAX_FR, 256, 0, st>>>(res_dev, base, tables, E);
-    CUDA_CHECK(cudaGetLastError());
+    static pm_req * h = nullptr, * d = nullptr;   // one mapped request slot (the caller's thread owns the map: one alloc at a time)
+    if (!h) { CUDA_CHECK(cudaHostAlloc((void **) &h, sizeof(pm_req), cudaHostAllocMapped | cudaHostAllocPortable)); CUDA_CHECK(cudaHostGetDevicePointer((void **) &d, h, 0)); }
+    CUDA_CHECK(cudaStreamSynchronize(st));   // the slot may still be read by the last launch
+    *h = { n, a, hot, id, pin };
+    ggml_cuda_poolmap_alloc_batch_fork(st, v, cnt, cap, lo, hi, d, 1, res_dev, base, tables, E);
 }

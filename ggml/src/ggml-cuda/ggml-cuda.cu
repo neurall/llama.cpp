@@ -10278,6 +10278,15 @@ static void ggml_backend_cuda_poolmap_alloc_fork(ggml_backend_t backend, pm_entr
     ggml_cuda_set_device(ctx->device);
     ggml_cuda_poolmap_alloc_fork(ctx->stream(), v, cnt, cap, lo, hi, n, a, id, hot, pin, res_dev, base, tables, E);
 }
+void ggml_cuda_poolmap_alloc_batch_fork(cudaStream_t st, pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, const pm_req * rq_dev, uint32_t n_rq,
+                                        pm_result * res_dev, char * base, int32_t * const * tables, int32_t E);
+// a list of allocs (sizes may differ) in one launch; requests and reports in mapped memory, each report's done set last: the host goes on and reads them later
+static void ggml_backend_cuda_poolmap_alloc_batch_fork(ggml_backend_t backend, pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, const pm_req * rq_dev,
+                                                       uint32_t n_rq, pm_result * res_dev, char * base, int32_t * const * tables, int32_t E) {
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_set_device(ctx->device);
+    ggml_cuda_poolmap_alloc_batch_fork(ctx->stream(), v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev, base, tables, E);
+}
 // the map to and from the card (set at start and for --moe map-check=1, a debug read after every alloc): synchronous
 static void ggml_backend_cuda_poolmap_io_fork(ggml_backend_t backend, void * dev, void * host, size_t bytes, int to_dev) {
     ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
@@ -10394,6 +10403,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_poolmap_alloc_fork") == 0) {
         return (void *)ggml_backend_cuda_poolmap_alloc_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_poolmap_alloc_batch_fork") == 0) {
+        return (void *)ggml_backend_cuda_poolmap_alloc_batch_fork;
     }
     if (strcmp(name, "ggml_backend_cuda_poolmap_io_fork") == 0) {
         return (void *)ggml_backend_cuda_poolmap_io_fork;
