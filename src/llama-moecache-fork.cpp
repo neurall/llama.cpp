@@ -1681,7 +1681,7 @@ static double vis_next(const moe_cache * mc, const layer_state & ls, int32_t e) 
 // own rules. --moe rp-steer=0: neither (the A/B arm); rp-pre=0: not the prompt start's
 static bool rp_steer_on() { static const bool on = [] { const char * v = moe_opt("rp-steer"); return !v || atoi(v) != 0; }(); return on; }
 static bool rp_pre_on() { static const bool on = [] { const char * v = moe_opt("rp-pre"); return !v || atoi(v) != 0; }(); return on; }
-static std::atomic<int64_t> g_rf_n{0}, g_rf_b{0}, g_rf_busy{0}, g_rf_gw{0}, g_rf_t0{0}, g_rf_t1{0};
+static std::atomic<int64_t> g_rf_n{0}, g_rf_b{0}, g_rf_busy{0}, g_rf_gw{0}, g_rf_t0{0}, g_rf_t1{0}, g_rf_lk{0}, g_rf_cv{0}, g_rf_pk{0}, g_rf_post{0};
 static thread_local bool t_rp_fill = false;   // a preheat's reads ahead are being queued: the admission lets each take a resident's block (rp_admit)
 static double rp_next(const moe_cache * mc, const layer_state & ls, int32_t e) { return vis_next(mc, ls, e); }
 static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool reader's thread, the pool's lock held: never takes mc->mtx (racy reads of plain ints)
@@ -12378,8 +12378,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             uint8_t * rd_ptr = w < mc->rd_staging.size() && mc->rd_staging[w] ? (uint8_t *) (((uintptr_t) ggml_backend_buffer_get_base(mc->rd_staging[w]) + 4095) & ~(uintptr_t) 4095) : nullptr;
             for (;;) {
                 upload_job j;
+                const int64_t t_l0 = ggml_time_us(); int64_t t_l1 = 0, t_l2 = 0;   // dev: lock, wait, pick
                 {
                     std::unique_lock<std::mutex> lk(mc->wmtx);
+                    t_l1 = ggml_time_us();
                     // the first queued job on this worker's link (-1: any)
                     const int link = mc->worker_link[w];
                     auto mine = [mc, link]() {
@@ -12413,11 +12415,13 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         return;
                     }
                     if (cs_w && cs_worker_has(cs_link)) { cs_worker_run(mc, cs_link, lk); continue; }
+                    t_l2 = ggml_time_us();
                     auto it = mine();
                     j = *it;
                     mc->todo.erase(it);
                     mc->in_flight++;
                     mc->in_flight_stream += j.stream || j.bg;
+                    if (j.refill && j.bg) { g_rf_lk += t_l1 - t_l0; g_rf_cv += t_l2 - t_l1; g_rf_pk += ggml_time_us() - t_l2; }
                 }
                 auto & ls = mc->layers[j.layer_idx];
                 // ponytail: unlocked reads of gpu_started / n_steps; a race only delays or keeps one stale job
@@ -12653,6 +12657,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     mc->in_flight_stream -= j.stream || j.bg;
                 }
                 mc->dcv.notify_all();
+                if (j.refill && j.bg) { g_rf_post += ggml_time_us() - j.t_done; }
             }
         });
 
@@ -20178,8 +20183,9 @@ bool llama_moe_cache_tuning_fork() { moe_cache * mc = g_cache; return mc && knob
 // dev: refill uploads since the last refill-phase line (jobs, bytes, worker busy us, graph-wait us, first start, last done)
 std::string llama_moe_cache_refill_stats_fork() {
     const int64_t n = g_rf_n.exchange(0), b = g_rf_b.exchange(0), busy = g_rf_busy.exchange(0), gw = g_rf_gw.exchange(0), t0 = g_rf_t0.exchange(0), t1 = g_rf_t1.exchange(0);
-    char x[200]; snprintf(x, sizeof x, "; refill uploads: %lld jobs, %.2f GB, wall %.0f ms (%.1f GB/s), worker busy %.0f ms, graph waits %.0f ms",
-        (long long) n, b / 1e9, (t1 - t0) / 1e3, t1 > t0 ? b / 1e3 / (double) (t1 - t0) : 0.0, busy / 1e3, gw / 1e3);
+    const int64_t lk = g_rf_lk.exchange(0), cv = g_rf_cv.exchange(0), pk = g_rf_pk.exchange(0), post = g_rf_post.exchange(0);
+    char x[320]; snprintf(x, sizeof x, "; refill uploads: %lld jobs, %.2f GB, wall %.0f ms (%.1f GB/s), worker busy %.0f ms, graph waits %.0f ms, lock %.0f ms, queue wait %.0f ms, pick %.0f ms, after copy %.0f ms",
+        (long long) n, b / 1e9, (t1 - t0) / 1e3, t1 > t0 ? b / 1e3 / (double) (t1 - t0) : 0.0, busy / 1e3, gw / 1e3, lk / 1e3, cv / 1e3, pk / 1e3, post / 1e3);
     return x;
 }
 bool llama_moe_cache_refilling_fork() {
