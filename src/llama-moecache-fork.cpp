@@ -1681,7 +1681,7 @@ static double vis_next(const moe_cache * mc, const layer_state & ls, int32_t e) 
 // own rules. --moe rp-steer=0: neither (the A/B arm); rp-pre=0: not the prompt start's
 static bool rp_steer_on() { static const bool on = [] { const char * v = moe_opt("rp-steer"); return !v || atoi(v) != 0; }(); return on; }
 static bool rp_pre_on() { static const bool on = [] { const char * v = moe_opt("rp-pre"); return !v || atoi(v) != 0; }(); return on; }
-static std::atomic<int64_t> g_rf_n{0}, g_rf_b{0}, g_rf_busy{0}, g_rf_gw{0}, g_rf_t0{0}, g_rf_t1{0}, g_rf_lk{0}, g_rf_cv{0}, g_rf_pk{0}, g_rf_post{0}, g_rf_on{0}, g_rf_ob{0}, g_rf_sk{0}, g_rf_os{0}, g_rf_ou{0}, g_rf_or{0};
+static std::atomic<int64_t> g_rf_n{0}, g_rf_b{0}, g_rf_busy{0}, g_rf_gw{0}, g_rf_t0{0}, g_rf_t1{0}, g_rf_lk{0}, g_rf_cv{0}, g_rf_pk{0}, g_rf_post{0}, g_rf_on{0}, g_rf_ob{0}, g_rf_sk{0}, g_rf_os{0}, g_rf_ou{0}, g_rf_or{0}, g_rf_og{0}, g_rf_orp{0}, g_rf_opin{0};
 static thread_local bool t_rp_fill = false;   // a preheat's reads ahead are being queued: the admission lets each take a resident's block (rp_admit)
 static double rp_next(const moe_cache * mc, const layer_state & ls, int32_t e) { return vis_next(mc, ls, e); }
 static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool reader's thread, the pool's lock held: never takes mc->mtx (racy reads of plain ints)
@@ -12470,6 +12470,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 const int64_t t0 = ggml_time_us();
                 led_upload(mc, "up-start", j.layer_idx, j.expert, j.slot, j.bg);
                 const bool busy_start = mc->cpu_busy;
+                const int64_t gw_start = mc->gate_wait_us; int n_rp = 0, n_pin = 0;   // dev: refill line
                 static const bool refill_gated = [] { const char * v = moe_opt("refill-gate"); return v && atoi(v) != 0; }();
                 const int  gate       = upload_gate_for((int) knobs().gate, j.refill, refill_gated);
                 ggml_tensor *       dsts[3] = { ls.pub.up_c,   ls.pub.gate_c,   ls.pub.down_c   };
@@ -12517,7 +12518,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                                 ggml_backend_tensor_set(&z, pc + sz, 0, pb);
                             }
                             ggml_rampool_drop_fork(srcs[k], j.expert);
-                            continue;
+                            n_rp++; continue;
                         }
                     }
                     if (ls.pin_ptr[k]) {   // the preheat's pinned copy of this expert (no read at all): straight to the card
@@ -12530,7 +12531,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                                 ggml_tensor z = expert_past_view(dsts[k], slot_off(dsts[k], ls, j.slot) + sz, pb);
                                 ggml_backend_tensor_set(&z, pc + sz, 0, pb);
                             }
-                            continue;
+                            n_pin++; continue;
                         }
                     }
                     if (rd_ptr && ls.src_dfd[k] >= 0) {
@@ -12621,7 +12622,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 led_upload(mc, "up-done", j.layer_idx, j.expert, j.slot, j.bg);
                 j.t_done  = ggml_time_us();
                 if (j.refill && j.bg) { g_rf_n++; g_rf_b += (int64_t) (ls.v2n ? ls.v2n : 0); g_rf_busy += j.t_done - t0; g_rf_t1 = j.t_done; }
-                else if (g_rf_t0.load() != 0) { g_rf_on++; g_rf_ob += j.t_done - t0; g_rf_os += j.stream; g_rf_ou += j.urgent; g_rf_or += j.refill; }   // dev: other uploads while a refill runs
+                else if (g_rf_t0.load() != 0) { g_rf_on++; g_rf_ob += j.t_done - t0; g_rf_os += j.stream; g_rf_ou += j.urgent; g_rf_or += j.refill; g_rf_og += mc->gate_wait_us - gw_start; g_rf_orp += n_rp; g_rf_opin += n_pin; }   // dev: other uploads while a refill runs
                 if (j.stream) {
                     mc->st_up[ls.link]++;
                     mc->st_late[ls.link] += mc->gpu_started >= (int64_t) j.layer_idx;
@@ -20184,9 +20185,9 @@ bool llama_moe_cache_tuning_fork() { moe_cache * mc = g_cache; return mc && knob
 // dev: refill uploads since the last refill-phase line (jobs, bytes, worker busy us, graph-wait us, first start, last done)
 std::string llama_moe_cache_refill_stats_fork() {
     const int64_t n = g_rf_n.exchange(0), b = g_rf_b.exchange(0), busy = g_rf_busy.exchange(0), gw = g_rf_gw.exchange(0), t0 = g_rf_t0.exchange(0), t1 = g_rf_t1.exchange(0);
-    const int64_t lk = g_rf_lk.exchange(0), cv = g_rf_cv.exchange(0), pk = g_rf_pk.exchange(0), post = g_rf_post.exchange(0), on = g_rf_on.exchange(0), ob = g_rf_ob.exchange(0), sk = g_rf_sk.exchange(0), os_ = g_rf_os.exchange(0), ou = g_rf_ou.exchange(0), orr = g_rf_or.exchange(0);
-    char x[512]; snprintf(x, sizeof x, "; refill uploads: %lld jobs, %.2f GB, wall %.0f ms (%.1f GB/s), worker busy %.0f ms, graph waits %.0f ms, lock %.0f ms, queue wait %.0f ms, pick %.0f ms, after copy %.0f ms; %lld other uploads %.0f ms (%lld stream, %lld urgent, %lld refill part 1); %lld refill jobs skipped",
-        (long long) n, b / 1e9, (t1 - t0) / 1e3, t1 > t0 ? b / 1e3 / (double) (t1 - t0) : 0.0, busy / 1e3, gw / 1e3, lk / 1e3, cv / 1e3, pk / 1e3, post / 1e3, (long long) on, ob / 1e3, (long long) os_, (long long) ou, (long long) orr, (long long) sk);
+    const int64_t lk = g_rf_lk.exchange(0), cv = g_rf_cv.exchange(0), pk = g_rf_pk.exchange(0), post = g_rf_post.exchange(0), on = g_rf_on.exchange(0), ob = g_rf_ob.exchange(0), sk = g_rf_sk.exchange(0), os_ = g_rf_os.exchange(0), ou = g_rf_ou.exchange(0), orr = g_rf_or.exchange(0), og = g_rf_og.exchange(0), orp = g_rf_orp.exchange(0), opin = g_rf_opin.exchange(0);
+    char x[640]; snprintf(x, sizeof x, "; refill uploads: %lld jobs, %.2f GB, wall %.0f ms (%.1f GB/s), worker busy %.0f ms, graph waits %.0f ms, lock %.0f ms, queue wait %.0f ms, pick %.0f ms, after copy %.0f ms; %lld other uploads %.0f ms (%lld stream, %lld urgent, %lld refill part 1; gate waits %.0f ms; tensors from RAM pool %lld, pinned %lld); %lld refill jobs skipped",
+        (long long) n, b / 1e9, (t1 - t0) / 1e3, t1 > t0 ? b / 1e3 / (double) (t1 - t0) : 0.0, busy / 1e3, gw / 1e3, lk / 1e3, cv / 1e3, pk / 1e3, post / 1e3, (long long) on, ob / 1e3, (long long) os_, (long long) ou, (long long) orr, og / 1e3, (long long) orp, (long long) opin, (long long) sk);
     return x;
 }
 bool llama_moe_cache_refilling_fork() {
