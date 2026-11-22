@@ -359,6 +359,8 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
     const bool over = (pin & 2) == 0;   // pin bit 1: movers to free bytes only
     // pin bit 2 (user 2026-11-22, an entry planned ahead): a newcomer below the decode tier takes no expert of it (heat >= PM_TIER) and opens no window
     const int64_t cap_hot = (pin & 8) ? hot : (pin & 4) && hot < PM_TIER ? PM_TIER : INT64_MAX;   // bit 3 (a KV stretch's resident moving out): only a victim colder than it
+    // bit 4 (--moe tier-guard=1, A/B): a newcomer below the decode tier takes no same-size expert of it, but may open a window over colder bytes
+    const int64_t cap_take = (pin & 16) && hot < PM_TIER && cap_hot > PM_TIER ? PM_TIER : cap_hot;
     pin &= 1;
     unsigned long long & sh_best = S.sh_best; unsigned long long & sh_key = S.sh_key; uint32_t & sh_idx = S.sh_idx;
     uint64_t * cov = S.cov; int64_t * cov_hot = S.cov_hot; uint32_t & n_cov = S.n_cov; uint32_t & n_mv = S.n_mv; uint32_t & n_fr = S.n_fr; uint32_t & ovf = S.ovf;
@@ -391,7 +393,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
     }
     // the stream's case, no scan: no free bytes hold n (the last request found none and changed no free bytes): the class's coldest leaves
     if (jc >= 0 && S.nf_n == n && S.nf_a == a) {
-        const uint64_t o = pm_pop(c, S, jc, cap_hot);
+        const uint64_t o = pm_pop(c, S, jc, cap_take);
         if (o != UINT64_MAX) { take_popped(o, 1); return; }
     }
     __syncthreads();
@@ -410,7 +412,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
                 if (st + n <= off + sz && st < best) { best = st; }
             } else if (!left && jc < 0 && ty == PM_MOE && !pm_held(c, v[i])) {
                 const uint64_t k = pm_key(v[i].hot, i);
-                if (sz == n && off % a == 0 && k < same && v[i].hot < cap_hot) { same = k; }
+                if (sz == n && off % a == 0 && k < same && v[i].hot < cap_take) { same = k; }
             }
         }
         if (threadIdx.x == 0) { S.sh_same = ~0ull; }
@@ -419,7 +421,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
         if (same != ~0ull) { atomicMin(&S.sh_same, same); }
         __syncthreads();
         if (sh_best == ~0ull && jc >= 0) {
-            const uint64_t o = pm_pop(c, S, jc, cap_hot);
+            const uint64_t o = pm_pop(c, S, jc, cap_take);
             if (o != UINT64_MAX) { take_popped(o, 2); return; }
         }
         if (sh_best == ~0ull && S.sh_same == ~0ull && !left && cap_hot == INT64_MAX) {   // windows (a walk each) only when no free bytes and no same-size expert hold it

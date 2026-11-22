@@ -14323,9 +14323,10 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     const pm_batch bt = pm_sync(mc, m, busy_layer);
     lap(t_send);
     const uint32_t k = (uint32_t) std::min<size_t>(want.size(), g_pm.max_rq);
+    static const bool tier_guard = [] { const char * x = moe_opt("tier-guard"); return x && atoi(x) != 0; }();   // A/B: newcomers below the decode tier take windows, not its same-size experts
     pm_result * const rs = g_pm.rs, * const rs_dev = g_pm.rs_dev;
     for (uint32_t j = 0; j < k; ++j) {
-        g_pm.rq[j] = { ls.v2n, ls.v2u, heat_of(want[j]), pv2_id(mc, li, want[j]), keep_dec ? 7 : 3 };   // bit 2: below the decode tier, take none of it   // pinned, movers to free bytes only (a kernel may still read a colder one)
+        g_pm.rq[j] = { ls.v2n, ls.v2u, heat_of(want[j]), pv2_id(mc, li, want[j]), (keep_dec ? 7 : 3) | (tier_guard && v.tiered ? 16 : 0) };   // bit 2: below the decode tier, take none of it   // pinned, movers to free bytes only (a kernel may still read a colder one)
         rs[j].done = 0;
     }
     char * base = (char *) ggml_backend_buffer_get_base(mc->alias[v.ap_idx].buf);
