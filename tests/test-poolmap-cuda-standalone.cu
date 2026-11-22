@@ -87,6 +87,34 @@ int main() {
         }
         printf("batch: %d requests, %d failures; per request on ~1000-entry maps %.1f us\n", nb, g_bad - bad0, 1000.0 * bt / std::max(1, btn));
     }
+    // the stream's case (Qwen3.8 14k full stream): ~15k same-size experts, no free bytes, every alloc replaces the coldest unpinned one; per request time
+    {
+        const uint32_t ne = 15000, k = 1000, cap2 = 32768;
+        pm_entry * v2; uint32_t * c2; CUDA_CHECK(cudaMalloc(&v2, cap2 * sizeof(pm_entry))); CUDA_CHECK(cudaMalloc(&c2, 4));
+        pm_req * rq, * rq_dev; pm_result * rs, * rs_dev;
+        CUDA_CHECK(cudaHostAlloc((void **) &rq, k * sizeof(pm_req), cudaHostAllocMapped)); CUDA_CHECK(cudaHostGetDevicePointer((void **) &rq_dev, rq, 0));
+        CUDA_CHECK(cudaHostAlloc((void **) &rs, k * sizeof(pm_result), cudaHostAllocMapped)); CUDA_CHECK(cudaHostGetDevicePointer((void **) &rs_dev, rs, 0));
+        pv2_heap h = pv2_make(0, (size_t) ne * 10);
+        for (uint32_t i = 0; i < ne; ++i) { pv2_res r; r.n = 10; r.u = 10; r.id = (int32_t) i; r.heat = (int64_t) (rng() % 100000); r.pin = rng() % 10 == 0; pv2_add(h, (size_t) i * 10, r); }
+        std::vector<pm_entry> v = pm_from_heap(h); uint32_t cnt = (uint32_t) v.size();
+        cudaMemcpy(v2, v.data(), v.size() * sizeof(pm_entry), cudaMemcpyHostToDevice); cudaMemcpy(c2, &cnt, 4, cudaMemcpyHostToDevice);
+        for (uint32_t j = 0; j < k; ++j) { rq[j] = { 10, 10, (int64_t) (100000 + j), (int32_t) (ne + j), 1, 0 }; }
+        memset(rs, 0, k * sizeof(pm_result));
+        cudaEventRecord(e0);
+        if (getenv("PM_ALLOC_ONLY")) { k_pm_alloc<<<1, PM_T>>>(v2, c2, cap2, h.lo, h.hi, rq_dev, k, rs_dev); } else { ggml_cuda_poolmap_alloc_batch_fork(0, v2, c2, cap2, h.lo, h.hi, rq_dev, k, rs_dev, nullptr, nullptr, 1); }
+        cudaEventRecord(e1);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        float ms; cudaEventElapsedTime(&ms, e0, e1);
+        pv2_heap ref = h; int bad0 = g_bad;
+        for (uint32_t j = 0; j < k; ++j) {
+            const pv2_alloc_result rr = pv2_alloc_do(ref, 10, 10, rq[j].id, rq[j].hot, true);
+            const pv2_alloc_result kr = pm_report(rs[j]);
+            check("stream: report equals reference", rs[j].done == 1 && kr.s == rr.s && kr.freed.size() == rr.freed.size() && kr.moves.size() == rr.moves.size());
+        }
+        cudaMemcpy(&cnt, c2, 4, cudaMemcpyDeviceToHost); std::vector<pm_entry> back(cnt); cudaMemcpy(back.data(), v2, cnt * sizeof(pm_entry), cudaMemcpyDeviceToHost);
+        check("stream: card map equals reference", pm_same(back, pm_from_heap(ref)));
+        printf("stream: %u requests on a %u-entry map, %d failures; %.1f us a request\n", k, ne, g_bad - bad0, 1000.0 * ms / k);
+    }
     printf("runs %d moves %d freed %d none %d; alloc+apply on ~1000-entry maps %.1f us avg\n", runs, moved, freed, none, 1000.0 * tsum / std::max(1, tn));
     printf(g_bad ? "FAIL: %d failure(s)\n" : "OK: 0 failure(s)\n", g_bad);
     return g_bad != 0;

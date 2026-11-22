@@ -140,24 +140,50 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
         }
         __syncthreads();
     }
-    // 1. a free entry that holds it, lowest address first
-    for (uint32_t i = threadIdx.x; i < *cnt; i += PM_T) {
-        const pm_entry & e = v[i];
-        if (e.type != PM_FREE) { continue; }
-        const uint64_t st = pm_align(e.off, a);
-        if (st + n <= e.off + e.size) { atomicMin(&sh_best, (unsigned long long) st); }
+    // 1. a free entry that holds it, lowest address first; in the same pass (one read of the map: a single block is bound by load latency) the coldest
+    // unpinned expert whose window covers only free bytes and unpinned experts (ties: lowest address), used by step 2 when no free entry holds it.
+    // An expert of exactly n bytes at a multiple of a is its own window (no window check).
+    {
+        const uint32_t nc = *cnt;
+        unsigned long long best = ~0ull, key = ~0ull;
+        #pragma unroll 4
+        for (uint32_t i = threadIdx.x; i < nc; i += PM_T) {
+            const uint64_t off = v[i].off, sz = v[i].size; const uint8_t ty = v[i].type, fl = v[i].flags;
+            if (ty == PM_FREE) {
+                const uint64_t st = pm_align(off, a);
+                if (st + n <= off + sz && st < best) { best = st; }
+            } else if (!left && ty == PM_MOE && !(fl & PM_PIN)) {
+                const uint64_t k = pm_key(v[i].hot, i);
+                if (k < key && ((sz == n && off % a == 0) || pm_window_ok(c, i, pm_align(off, a), n))) { key = k; }
+            }
+        }
+        if (best != ~0ull) { atomicMin(&sh_best, best); }
+        if (key != ~0ull) { atomicMin(&sh_key, key); }
     }
     __syncthreads();
     uint64_t s = sh_best;
     if (s == ~0ull && !left) {
-        // 2. the coldest unpinned expert whose window covers only free bytes and unpinned experts (ties: lowest address)
-        for (uint32_t i = threadIdx.x; i < *cnt; i += PM_T) {
-            const pm_entry & e = v[i];
-            if (e.type != PM_MOE || (e.flags & PM_PIN)) { continue; }
-            if (pm_window_ok(c, i, pm_align(e.off, a), n)) { atomicMin(&sh_key, (unsigned long long) pm_key(e.hot, i)); }
+        // 2. the coldest takeable expert found above
+        if (sh_key != ~0ull) {
+            const uint32_t vi = (uint32_t) (sh_key & 0xffffffffu);
+            s = pm_align(v[vi].off, a);
+            // the stream's case: the coldest expert is exactly the size asked at its start; no same-size expert is colder (it would have won) and no free
+            // bytes hold n, so it leaves and the newcomer takes its entry in place (no shift of the vector; same map and report as the general path)
+            const pm_entry w = v[vi];
+            if (w.off == s && w.size == n) {
+                __syncthreads();
+                if (threadIdx.x == 0) {
+                    res->fr[0] = { w.off, w.size, w.id, 0 };
+                    pm_entry & e = v[vi]; e.hot = hot; e.id = id; e.u = (uint32_t) a; e.type = PM_MOE; e.flags = pin ? PM_PIN : 0;
+                    if (kind == PM_ALLOC_KV || kind == PM_ALLOC_WRK) { e.type = kind == PM_ALLOC_KV ? PM_KV : PM_WRK; e.id = -1; e.hot = 0; e.flags = PM_PIN; }
+                    res->s = s; res->n_mv = 0; res->n_fr = 1; res->overflow = 0;
+                    __threadfence_system();
+                    res->done = 1;
+                }
+                __syncthreads();
+                return;
+            }
         }
-        __syncthreads();
-        if (sh_key != ~0ull) { s = pm_align(v[(uint32_t) (sh_key & 0xffffffffu)].off, a); }
         else {
             // 3. a window starting in free bytes (lowest address)
             for (uint32_t i = threadIdx.x; i < *cnt; i += PM_T) {
