@@ -14160,8 +14160,12 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
         const int32_t q = lj < mc->cs_pos.size() ? mc->cs_pos[lj] : -1;
         return !ahead && q >= 0 && (size_t) q >= p;
     };
+    static int64_t t_map = 0, t_send = 0, t_bank = 0, t_spin = 0, t_rest = 0, n_b = 0, n_r = 0;   // where a batch's host time goes (dev timing, logged per 256 batches)
+    int64_t tq = ggml_time_us();
+    auto lap = [&](int64_t & acc) { const int64_t t = ggml_time_us(); acc += t - tq; tq = t; };
     std::vector<pm_entry> m = pm_map_of(mc, busy);
     if (m.empty() || m.size() > g_pm.cap) { left = want; return; }
+    lap(t_map);
     uint32_t cnt = (uint32_t) m.size();
     {   // how much of the whole-map send is new (user 2026-11-22: send changes only once the card's map is shown to match the host's): first entry that differs from the last send
         static std::vector<pm_entry> last; static int said = 0;
@@ -14175,9 +14179,11 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
         last = m;
     }
     g_pm.io(g_pm.be, g_pm.cnt_dev, &cnt, sizeof(cnt), 1);
+    lap(t_send);
     const uint32_t k = (uint32_t) std::min<size_t>(want.size(), g_pm.max_rq);
     const int bk = g_pm.bank; g_pm.bank = (bk + 1) % pm_dev::NB;
     ggml_backend_event_synchronize(g_pm.bank_ev[bk]);   // this bank's last applies have read their reports
+    lap(t_bank);
     pm_result * const rs = g_pm.rs + (size_t) bk * g_pm.max_rq, * const rs_dev = g_pm.rs_dev + (size_t) bk * g_pm.max_rq;
     for (uint32_t j = 0; j < k; ++j) {
         g_pm.rq[j] = { ls.v2n, ls.v2u, heat_of(want[j]), pv2_id(mc, li, want[j]), 3 };   // pinned, movers to free bytes only (a kernel may still read a colder one)
@@ -14186,6 +14192,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     char * base = (char *) ggml_backend_buffer_get_base(mc->alias[v.ap_idx].buf);
     g_pm.batch(g_pm.be, g_pm.v_dev, g_pm.cnt_dev, g_pm.cap, v.main.lo, v.main.hi, g_pm.rq_dev, k, rs_dev, base, g_pm.tbl_dev, v.E);
     for (uint32_t j = 0; j < k; ++j) { while (__atomic_load_n(&rs[j].done, __ATOMIC_ACQUIRE) == 0) { } }   // bell style: the reports land in mapped memory
+    lap(t_spin);
     for (uint32_t j = 0; j < k; ++j) {
         const int32_t e = want[j];
         const pm_result & r = rs[j];
@@ -14225,6 +14232,9 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     if (wait_at > 0) { ggml_backend_event_wait(g_pm.be, csl(mc, mc->cs_order[wait_at - 1]).cs_done_ev); }
     g_pm.apply(g_pm.be, rs_dev, k, base, g_pm.tbl_dev, v.E);
     ggml_backend_event_record(g_pm.bank_ev[bk], g_pm.be);
+    lap(t_rest); n_r += k;
+    if (++n_b % 256 == 0) { LLAMA_LOG_WARN("pool-v2: gpu-alloc host time, %lld batches of %lld allocs: map %.1f ms, send %.1f ms, bank wait %.1f ms, report wait %.1f ms, replay+apply %.1f ms\n",
+            (long long) n_b, (long long) n_r, t_map / 1e3, t_send / 1e3, t_bank / 1e3, t_spin / 1e3, t_rest / 1e3); }
     static const bool check = [] { const char * x = moe_opt("map-check"); return x && atoi(x) != 0; }();
     if (check) {
         uint32_t c2 = 0;
