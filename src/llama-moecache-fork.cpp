@@ -2758,6 +2758,8 @@ static void pv2_zone_sort(moe_cache * mc, size_t a, size_t b) {
 // user 2026-11-22: a stretch [a, b) the KV zone, a lend or CUDA's room is about to take: each expert there (hottest first) moves by one device copy over the coldest
 // colder resident of its size outside the stretch, or into a free gap outside it; that resident leaves. No heap sort: one cold order per size. What finds no colder
 // place leaves with the stretch (pv2_take_range). Cache lock taken here; the caller (pv2_sync, not locked) has no graph running. --moe zone-move=0: off
+struct pool_move_fork { const char * src; char * dst; size_t bytes; int32_t * tbl; int32_t idx; int32_t val; };   // = ggml-cuda.cu
+typedef bool (*pool_move_t)(ggml_backend_t, const pool_move_fork *, size_t);
 static void pv2_zone_move(moe_cache * mc, size_t a, size_t b) {
     auto & v = mc->v2;
     static const bool on = [] { const char * e = moe_opt("zone-move"); return !e || atoi(e) != 0; }();
@@ -2784,6 +2786,13 @@ static void pv2_zone_move(moe_cache * mc, size_t a, size_t b) {
     auto & ap = mc->alias[v.ap_idx];
     uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf);
     size_t n_move = 0, n_free = 0; double b_move = 0.0;
+    // the move kernel (CUDA): every copy and its table entry in one launch on the card's compute stream, no host copy per expert
+    ggml_backend_t mbe = nullptr;
+    for (int k = 0; k < MAX_LINKS; ++k) { if (mc->link_be[k] && mc->link_dev[k] == ap.dev) { mbe = mc->link_be[k]; } }
+    ggml_backend_reg_t mreg = ap.dev ? ggml_backend_dev_backend_reg(ap.dev) : nullptr;
+    static const bool kern = [] { const char * e = moe_opt("move-kernel"); return !e || atoi(e) != 0; }();
+    pool_move_t mfn = kern && mbe && mreg ? (pool_move_t) ggml_backend_reg_get_proc_address(mreg, "ggml_backend_cuda_pool_move_fork") : nullptr;
+    std::vector<pool_move_fork> mvk;
     for (const auto & [sc, from] : mv) {
         const pv2_res & rr = v.main.res.at(from);
         const int32_t id = rr.id;
@@ -2812,6 +2821,7 @@ static void pv2_zone_move(moe_cache * mc, size_t a, size_t b) {
             evict_slot(mc, lv, vid % v.E);
             pv2_out(mc, lv, vid % v.E);
             lv.queued[vid % v.E] = 0;
+            if (mfn) { mvk.push_back({ nullptr, nullptr, 0, (int32_t *) lv.pub.dev_table->data, vid % v.E, -1 }); }   // the victim's entry: a miss
         }
         ggml_tensor ta = {}, tb = {};
         for (ggml_tensor * t : { &ta, &tb }) {
@@ -2820,7 +2830,8 @@ static void pv2_zone_move(moe_cache * mc, size_t a, size_t b) {
             t->nb[0] = 1; t->nb[1] = t->nb[2] = t->nb[3] = n;
         }
         ta.data = base + from; tb.data = base + to;
-        ggml_backend_tensor_copy(&ta, &tb);
+        if (mfn) { mvk.push_back({ (const char *) ta.data, (char *) tb.data, n, (int32_t *) lo.pub.dev_table->data, e, (int32_t) (to / u) }); }
+        else { ggml_backend_tensor_copy(&ta, &tb); }
         const pv2_res r = pv2_drop(v.main, from);
         const bool ok = pv2_add(v.main, to, r);
         GGML_ASSERT(ok && "pool-v2: a zone move into bytes that are not free");
@@ -2828,6 +2839,7 @@ static void pv2_zone_move(moe_cache * mc, size_t a, size_t b) {
         set_table_entry(lo.pub, e, e);
         n_move++; b_move += (double) n;
     }
+    if (mfn && !mvk.empty() && !mfn(mbe, mvk.data(), mvk.size())) { GGML_ABORT("pool-v2: the move kernel refused %zu moves", mvk.size()); }
     static int logged = 0;
     if (logged++ < 24) {
         LLAMA_LOG_WARN("moe-cache: pool-v2: zone move before [%.0f, %.0f) MiB is taken: %zu of %zu experts moved out (%.2f GB, %zu into free gaps, the rest over colder ones)\n",
