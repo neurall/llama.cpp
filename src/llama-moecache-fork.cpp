@@ -2393,7 +2393,7 @@ void note_evict(moe_cache * mc, layer_state & ls, int32_t e);
 void pv2_out(moe_cache * mc, layer_state & ls, int32_t e);   // pool-v2: an expert leaves the card's heap (below the block pool runtime)
 static void pv2_log(const char * op, int32_t id, size_t from, size_t to, size_t n);
 static void mapsync_card_wrote(const llama_moe_cache_layer_fork * pub, int32_t idx);   // a kernel wrote this card table entry (below)
-static void mapsync_table_wrote(const llama_moe_cache_layer_fork * pub);   // a copy wrote this whole card table outside the ring (below)   // the heap allocation log (--moe verify>0), below
+static void mapsync_table_wrote(const llama_moe_cache_layer_fork * pub, const int32_t * vals = nullptr);   // a copy wrote this whole card table outside the ring: vals = what it wrote (nullptr: unknown) (below)   // the heap allocation log (--moe verify>0), below
 double score(const layer_state & ls, int32_t id, uint64_t gmax);
 double score(const layer_state & ls, int32_t id);
 // score of an expert competing with experts of other layers for a block: one common scale (moe_cache::gmax_all) in the pool
@@ -5605,11 +5605,14 @@ static const layer_state * tbl_layer(const llama_moe_cache_layer_fork * pub) {
 // card (Qwen3.8 IQ4_XS NaN at token 0, 2026-11-22; map-ring=0 clean). mapsync_card_wrote marks such an entry unknown, so the next flush sends the host's value.
 static std::mutex g_ms_mu;
 static std::map<const llama_moe_cache_layer_fork *, std::pair<uint32_t, std::vector<int32_t>>> * g_ms_sent = nullptr;
-static void mapsync_table_wrote(const llama_moe_cache_layer_fork * pub) {
+static void mapsync_table_wrote(const llama_moe_cache_layer_fork * pub, const int32_t * vals) {
     std::lock_guard<std::mutex> lk(g_ms_mu);
     if (!g_ms_sent) { return; }
     auto it = g_ms_sent->find(pub);
-    if (it != g_ms_sent->end()) { std::fill(it->second.second.begin(), it->second.second.end(), INT32_MIN); }
+    if (it == g_ms_sent->end()) { return; }
+    auto & sv = it->second.second;
+    // user 2026-11-22: the ring's record follows what the copy wrote, so the next flush sends only real changes (unknown resent every entry of every table after each pass)
+    if (vals) { std::copy(vals, vals + sv.size(), sv.begin()); } else { std::fill(sv.begin(), sv.end(), INT32_MIN); }
 }
 static void mapsync_card_wrote(const llama_moe_cache_layer_fork * pub, int32_t idx) {
     std::lock_guard<std::mutex> lk(g_ms_mu);
@@ -5717,7 +5720,7 @@ void flush_tables() {
         const bool map = tl && (tl->v2u || tl->tbl_mul != 1);
         if (map) { u = v; for (auto & x : u) { x = x < 0 ? x : tl->v2u ? tl->at[(size_t) x] : x * tl->tbl_mul; } }   // --moe pool-v2: a block is tbl_mul units of nb[2]; the heap: the expert's start
         ggml_backend_tensor_set(pub->dev_table, (map ? u : v).data(), 0, v.size()*sizeof(int32_t));
-        mapsync_table_wrote(pub);
+        mapsync_table_wrote(pub, (map ? u : v).data());
         led_line("?", "table", 0, v.size()*sizeof(int32_t), tr_fmt("L%d device table", pub->il));
         if (guard_level() > 0) { std::lock_guard<std::mutex> lk(g_gtbl_mu); g_gtbl[pub] = v; }   // the guard reads its copies as slots
     }
@@ -12349,7 +12352,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             std::vector<int32_t> dummy(n_expert, ns);
             std::vector<int32_t> neg(n_expert, -1);
             ggml_backend_tensor_set(ls.pub.dev_table, neg.data(), 0, n_expert*sizeof(int32_t));
-            mapsync_table_wrote(&ls.pub);
+            mapsync_table_wrote(&ls.pub, neg.data());
             ggml_backend_tensor_set(ls.pub.host_table, dummy.data(), 0, n_expert*sizeof(int32_t));
             if (ls.pub.jit_n > 0) {
                 ls.pool_expert.assign(ls.pub.jit_n, -1);
@@ -14330,7 +14333,17 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     std::vector<pm_entry> m = pm_map_of(mc, busy);
     if (m.empty() || m.size() > g_pm.cap) { left = want; return; }
     uint32_t cnt = (uint32_t) m.size();
-    g_pm.io(g_pm.be, g_pm.v_dev, m.data(), m.size() * sizeof(pm_entry), 1);
+    {   // how much of the whole-map send is new (user 2026-11-22: send changes only once the card's map is shown to match the host's): first entry that differs from the last send
+        static std::vector<pm_entry> last; static int said = 0;
+        const int64_t t0 = ggml_time_us();
+        g_pm.io(g_pm.be, g_pm.v_dev, m.data(), m.size() * sizeof(pm_entry), 1);
+        size_t i0 = 0, ns = 0;
+        while (i0 < m.size() && i0 < last.size() && pm_same({ m[i0] }, { last[i0] })) { ++i0; }
+        for (size_t i = 0; i < m.size(); ++i) { ns += i >= last.size() || !pm_same({ m[i] }, { last[i] }); }
+        if (said++ < 16) { LLAMA_LOG_WARN("pool-v2: gpu-alloc map send: %zu entries (%.0f KiB) in %lld us, first change at entry %zu, %zu entries differ from the last send\n",
+                m.size(), m.size() * sizeof(pm_entry) / 1024.0, (long long) (ggml_time_us() - t0), i0, ns); }
+        last = m;
+    }
     g_pm.io(g_pm.be, g_pm.cnt_dev, &cnt, sizeof(cnt), 1);
     const uint32_t k = (uint32_t) std::min<size_t>(want.size(), g_pm.max_rq);
     for (uint32_t j = 0; j < k; ++j) {
@@ -14385,6 +14398,26 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
         if (!pm_same(back, pm_from_heap(v.main), &d, false)) {   // pins differ by design (the card's copy pinned busy experts)
             GGML_ABORT("pool-v2: map-check: the card's map and the host's differ at entry %zu of %u (layer %d, %u allocs)", d, c2, ls.pub.il, k);
         }
+        // the expert tables the apply kernels wrote (moved: its new start / unit, freed: -1) against the host's prediction, read back after the stream ran
+        ggml_backend_synchronize(g_pm.be);
+        size_t n_chk = 0, n_bad = 0;
+        auto chk = [&](int32_t id, int32_t want) {
+            const layer_state & lo = mc->layers[(size_t) (id / v.E)];
+            int32_t got = 0;
+            ggml_backend_tensor_get(lo.pub.dev_table, &got, (size_t) (id % v.E) * sizeof(int32_t), sizeof(int32_t));
+            n_chk++;
+            if (got != want && n_bad++ < 8) { LLAMA_LOG_ERROR("pool-v2: map-check: L%d e%d: the card's table says %d, the host predicted %d\n", id / v.E, id % v.E, got, want); }
+        };
+        std::set<int32_t> seen;   // an expert moved twice in a batch: its last report is what the table holds
+        for (uint32_t j = k; j-- > 0;) {
+            const pm_result & r = g_pm.rs[j];
+            if (r.s == UINT64_MAX) { continue; }
+            for (uint32_t q = r.n_mv; q-- > 0;) { if (seen.insert(r.mv[q].id).second) { chk(r.mv[q].id, (int32_t) (r.mv[q].to / (r.mv[q].u ? r.mv[q].u : 1))); } }
+            for (uint32_t f = r.n_fr; f-- > 0;) { if (r.fr[f].id >= 0 && seen.insert(r.fr[f].id).second) { chk(r.fr[f].id, -1); } }
+        }
+        static int said = 0;
+        if (n_bad || said++ < 8) { LLAMA_LOG_WARN("pool-v2: map-check: layer %d, %u allocs: map of %u entries same as the host's, %zu table entries read back, %zu differ\n", ls.pub.il, k, c2, n_chk, n_bad); }
+        if (n_bad) { GGML_ABORT("pool-v2: map-check: %zu table entries differ from the host's prediction", n_bad); }
     }
 }
 
@@ -14952,7 +14985,7 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, s
     const layer_state * home = mix == 2 && ls.home_li >= 0 && (size_t) ls.home_li < mc->layers.size() ? &mc->layers[(size_t) ls.home_li] : nullptr;   // the mix's shadow: the home's held are the home's
     for (int64_t i = 0; i < nt; ++i) { snap[i] = h[i] >= ls.pub.n_slots || i < r0 || i >= r1 || (home && home->expert_slot[i] >= 0) ? -1 : slot_tbl(ls, h[i]); }
     ggml_backend_tensor_set_async(rb, ls.pub.dev_table, snap, 0, (size_t) nt*sizeof(int32_t));
-    mapsync_table_wrote(&ls.pub);   // the ring's record of this table is stale now (Qwen3.8 IQ4_XS: 13672 evicted experts kept their stream places on the card)
+    mapsync_table_wrote(&ls.pub, snap);   // the ring's record = what the pass wrote (unrecorded: 13672 evicted experts kept their stream places on the card, Qwen3.8 IQ4_XS)
     if (guard_level() > 0) {   // the guard reads its copies as slots
         std::lock_guard<std::mutex> lk(g_gtbl_mu);
         auto & g = g_gtbl[&ls.pub];
