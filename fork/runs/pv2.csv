@@ -65,3 +65,4 @@ q4v-nomk,qn_iq4xs,1,pf12k1k,64,"-bs --moe pool-v2=1,verify=2,poison=3,move-kerne
 q4v-nan,qn_iq4xs,1,pf12k1k,64,"-bs --moe pool-v2=1,verify=2,poison=3",--env CUDA_VISIBLE_DEVICES=0 --env GGML_SCHED_NAN_CHECK=1
 q4v-ver3,qn_iq4xs,1,pf12k1k,64,"-bs --moe pool-v2=1,verify=3,poison=3",--env CUDA_VISIBLE_DEVICES=0 --env GGML_SCHED_NAN_CHECK=1
 q4v-noring,qn_iq4xs,1,pf12k1k,64,"-bs --moe pool-v2=1,verify=2,poison=3,map-ring=0",--env CUDA_VISIBLE_DEVICES=0 --env GGML_SCHED_NAN_CHECK=1
+qz-heap,qwen38,1,pf14k1k,16,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
