@@ -17937,7 +17937,7 @@ static void pv2_switch(moe_cache * mc) {
     optime_t _ot(OP_SWITCH);
     auto & v = mc->v2;
     if (v.tiered && !v.hv.empty()) {   // dev: what the prompt left in the heap, by the layer's place in the pass (8 bins): decode tier / prompt only
-        size_t t[8] = {}, q[8] = {};
+        size_t t[8] = {}, q[8] = {}, qp[8] = {};
         const size_t np = std::max<size_t>(1, mc->cs_order.size());
         for (const auto & [x, r] : v.main.res) {
             if (r.id < 0) { continue; }
@@ -17945,7 +17945,14 @@ static void pv2_switch(moe_cache * mc) {
             const int32_t ps = li < mc->cs_pos.size() ? mc->cs_pos[li] : -1;
             const size_t b = ps < 0 ? 0 : std::min<size_t>(7, (size_t) ps * 8 / np);
             (v.hv[(size_t) r.id] >= 1000000000000000ll ? t : q)[b]++;
+            if (v.hv[(size_t) r.id] < 1000000000000000ll && r.pin) { qp[b]++; }
         }
+        std::string sz;
+        for (size_t qq = 0; qq < mc->cs_order.size() && qq < mc->layers.size(); ++qq) {
+            const layer_state & lq = mc->layers[mc->cs_order[qq]];
+            if (lq.v2n) { sz += std::to_string(lq.v2n >> 20) + (qq % 8 == 7 ? "|" : ","); }
+        }
+        LLAMA_LOG_WARN("pool-v2: prompt-only pinned by eighth: %zu %zu %zu %zu %zu %zu %zu %zu; expert MiB by pass place: %s\n", qp[0], qp[1], qp[2], qp[3], qp[4], qp[5], qp[6], qp[7], sz.c_str());
         LLAMA_LOG_WARN("pool-v2: prompt end residue by pass eighth (decode tier/prompt only): %zu/%zu %zu/%zu %zu/%zu %zu/%zu %zu/%zu %zu/%zu %zu/%zu %zu/%zu\n",
                 t[0], q[0], t[1], q[1], t[2], q[2], t[3], q[3], t[4], q[4], t[5], q[5], t[6], q[6], t[7], q[7]);
     }
