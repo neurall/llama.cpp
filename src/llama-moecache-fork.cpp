@@ -14243,7 +14243,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
         std::vector<pm_entry> back(c2);
         g_pm.io(g_pm.be, g_pm.v_dev, back.data(), (size_t) c2 * sizeof(pm_entry), 0);
         size_t d = 0;
-        if (!pm_same(back, pm_from_heap(v.main), &d)) {
+        if (!pm_same(back, pm_from_heap(v.main), &d, false)) {   // pins differ by design (the card's copy pinned busy experts)
             GGML_ABORT("pool-v2: map-check: the card's map and the host's differ at entry %zu of %u (layer %d, %u allocs)", d, c2, ls.pub.il, k);
         }
     }

@@ -69,11 +69,11 @@ static inline pv2_heap pm_to_heap(const std::vector<pm_entry> & v, size_t lo, si
     return h;
 }
 // two maps agree: same entries in the same order (heat may differ: the card counts uses the host does not see)
-static inline bool pm_same(const std::vector<pm_entry> & a, const std::vector<pm_entry> & b, size_t * first_diff = nullptr) {
+static inline bool pm_same(const std::vector<pm_entry> & a, const std::vector<pm_entry> & b, size_t * first_diff = nullptr, bool pins = true) {
     const size_t n = std::min(a.size(), b.size());
     for (size_t i = 0; i < n; ++i) {
         const pm_entry & x = a[i], & y = b[i];
-        if (x.off != y.off || x.size != y.size || x.type != y.type || x.id != y.id || (x.flags & PM_PIN) != (y.flags & PM_PIN)) { if (first_diff) { *first_diff = i; } return false; }
+        if (x.off != y.off || x.size != y.size || x.type != y.type || x.id != y.id || (pins && (x.flags & PM_PIN) != (y.flags & PM_PIN))) { if (first_diff) { *first_diff = i; } return false; }
     }
     if (a.size() != b.size()) { if (first_diff) { *first_diff = n; } return false; }
     return true;
