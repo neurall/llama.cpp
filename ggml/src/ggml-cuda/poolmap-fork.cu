@@ -122,6 +122,8 @@ static __device__ bool pm_window_ok(const pm_ctx & c, uint32_t i0, uint64_t st, 
 
 struct pm_shared { unsigned long long sh_best, sh_key; uint32_t sh_idx; uint64_t cov[PM_MAX_MV]; int64_t cov_hot[PM_MAX_MV]; uint32_t n_cov, n_mv, n_fr, ovf; };
 static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint64_t a, int32_t id, int64_t hot, int pin, pm_result * res) {
+    const bool over = (pin & 2) == 0;   // pin bit 1: movers to free bytes only
+    pin &= 1;
     unsigned long long & sh_best = S.sh_best; unsigned long long & sh_key = S.sh_key; uint32_t & sh_idx = S.sh_idx;
     uint64_t * cov = S.cov; int64_t * cov_hot = S.cov_hot; uint32_t & n_cov = S.n_cov; uint32_t & n_mv = S.n_mv; uint32_t & n_fr = S.n_fr; uint32_t & ovf = S.ovf;
     pm_entry * v = c.v; uint32_t * cnt = c.cnt;
@@ -197,7 +199,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
         }
         __syncthreads();
         uint64_t to = sh_best;
-        if (to == ~0ull) {   // else the coldest same-size unpinned expert outside the window, colder than it (ties: lowest address)
+        if (to == ~0ull && over) {   // else the coldest same-size unpinned expert outside the window, colder than it (ties: lowest address)
             for (uint32_t i = threadIdx.x; i < *cnt; i += PM_T) {
                 const pm_entry & w = v[i];
                 if (w.type != PM_MOE || (w.flags & PM_PIN) || w.size != r.size || w.off % u != 0 || (w.off < s + n && w.off + w.size > s) || w.hot >= r.hot) { continue; }

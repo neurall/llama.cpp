@@ -28,7 +28,7 @@ static_assert(sizeof(pm_entry) == 40, "pm_entry layout is shared with the kernel
 struct pm_mv { uint64_t from, to, n; int32_t id; uint32_t u; };   // u: the mover's unit (its table entry = to / u)
 struct pm_fr { uint64_t s, n; int32_t id; int32_t pad; };
 static constexpr int PM_MAX_MV = 64, PM_MAX_FR = 128;
-struct pm_req { uint64_t n, a; int64_t hot; int32_t id; int32_t pin; };   // one alloc of a batch (sizes may differ)
+struct pm_req { uint64_t n, a; int64_t hot; int32_t id; int32_t pin; };   // one alloc of a batch (sizes may differ); pin bit 0: pinned, bit 1: movers to free bytes only
 struct pm_result {
     uint64_t s;          // the new area, UINT64_MAX: none
     uint32_t n_mv, n_fr;

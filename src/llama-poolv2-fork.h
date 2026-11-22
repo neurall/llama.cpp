@@ -859,7 +859,8 @@ struct pv2_alloc_result { size_t s = PV2_NONE; std::vector<pv2_amove> moves; std
 // n bytes at a multiple of a for newcomer id (heat, pinned as asked): pv2_alloc_window picks the window; each expert in it, hottest first, moves to a free
 // extent outside the window (first by address) or over the coldest takeable expert of its size outside the window that is colder than it (that one leaves);
 // the rest leave. A newcomer only partly covering an expert frees the expert's bytes outside the window.
-static inline pv2_alloc_result pv2_alloc_do(pv2_heap & h, size_t n, size_t a, int32_t id, int64_t heat, bool pin) {
+// over false: movers go to free bytes only (no colder expert is replaced: a kernel may still read it)
+static inline pv2_alloc_result pv2_alloc_do(pv2_heap & h, size_t n, size_t a, int32_t id, int64_t heat, bool pin, bool over = true) {
     pv2_alloc_result out;
     const size_t s = pv2_alloc_window(h, n, a);
     if (s == PV2_NONE) { return out; }
@@ -874,7 +875,7 @@ static inline pv2_alloc_result pv2_alloc_do(pv2_heap & h, size_t n, size_t a, in
             const size_t st = (gs + u - 1) / u * u;
             if (st + r.n <= gs + gn && (st >= s + n || st + r.n <= s)) { to = st; break; }
         }
-        if (to == PV2_NONE) {   // the coldest same-size expert outside the window, colder than this one (lowest heat, then address)
+        if (to == PV2_NONE && over) {   // the coldest same-size expert outside the window, colder than this one (lowest heat, then address)
             int64_t best = r.heat;
             for (const auto & [y, q] : h.res) {
                 if (q.id == PV2_HOLD || q.pin || q.n != r.n || y % u != 0 || (y < s + n && y + q.n > s)) { continue; }

@@ -54,6 +54,7 @@
 #include "llama-poolalloc-fork.h"
 #include "llama-poolv2-fork.h"   // pool v2 (fork/docs/pool-v2.md): the unit of an expert's views (pv2_shape_of)
 #include "llama-mapsync-fork.h"   // pool v2: expert tables to the card through a mapped ring
+#include "llama-poolmap-fork.h"   // pool v2: the card's pool map, the alloc kernel's report
 #include "llama-moetopic-fork.h"
 #include "llama-passplan-fork.h"
 #include "llama-kvtier-fork.h"
@@ -14122,6 +14123,132 @@ static void pv2_pin_entry(moe_cache * mc, size_t q, bool pin) {   // cache lock 
 // (a free window first, else residents colder than it within reach), else the landing area at its cursor over anything not pinned (what is left there belongs
 // to computed layers or earlier calls). A victim whose layer computed in this pass makes the copy wait for that compute. false: no place for every expert yet
 // (an entry ahead: the next split frees some), and nothing changed but the victims gone
+// user 2026-11-22: --moe gpu-alloc=1: a stream entry's experts are placed by the card's alloc kernel in one batch (poolmap-fork.cu): it scans the map's heat
+// counters, moves the window's experts to free bytes and points the expert tables at them, and reports; the host replays the reports on its heap.
+// First stage: the host sends its whole map before each batch (residents of layers still ahead in the pass, uploading or queued go as pinned), so host
+// changes made elsewhere (lend, zone, decode swaps) need no other sync. --moe map-check=1: the card's map read back after each batch and compared.
+// Returns the experts it placed (in placed); the rest go through the host's picks.
+struct pm_dev {
+    bool tried = false, ok = false;
+    ggml_backend_t be = nullptr;
+    void (*batch)(ggml_backend_t, pm_entry *, uint32_t *, uint32_t, uint64_t, uint64_t, const pm_req *, uint32_t, pm_result *, char *, int32_t * const *, int32_t) = nullptr;
+    void (*io)(ggml_backend_t, void *, void *, size_t, int) = nullptr;
+    ggml_backend_buffer_t buf = nullptr;   // the map vector + its count on the card
+    pm_entry * v_dev = nullptr; uint32_t * cnt_dev = nullptr; uint32_t cap = 0;
+    pm_req * rq = nullptr, * rq_dev = nullptr; pm_result * rs = nullptr, * rs_dev = nullptr; uint32_t max_rq = 0;
+    int32_t ** tbl = nullptr, ** tbl_dev = nullptr;
+};
+static pm_dev g_pm;
+static bool pm_setup(moe_cache * mc) {
+    if (g_pm.tried) { return g_pm.ok; }
+    g_pm.tried = true;
+    auto & v = mc->v2;
+    const ggml_backend_dev_t dev = mc->alias[v.ap_idx].dev;
+    for (int k = 0; k < mc->n_links; ++k) { if (mc->ring_be[k] && mc->link_dev[k] == dev) { g_pm.be = mc->ring_be[k]; } }
+    ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
+    typedef void * (*alloc_t)(size_t, void **);
+    alloc_t al = reg ? (alloc_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_mapped_alloc_fork") : nullptr;
+    g_pm.batch = reg ? (decltype(g_pm.batch)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_poolmap_alloc_batch_fork") : nullptr;
+    g_pm.io = reg ? (decltype(g_pm.io)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_poolmap_io_fork") : nullptr;
+    if (!g_pm.be || !al || !g_pm.batch || !g_pm.io) { LLAMA_LOG_WARN("moe-cache: pool-v2: gpu-alloc needs the CUDA pool-map kernels and the ring stream: host picks\n"); return false; }
+    g_pm.cap = (uint32_t) std::max<size_t>(1u << 16, 4 * (v.main.res.size() + v.main.gaps.size()) + 4096);
+    g_pm.buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), (size_t) g_pm.cap * sizeof(pm_entry) + 256);
+    if (!g_pm.buf) { LLAMA_LOG_WARN("moe-cache: pool-v2: gpu-alloc: no room for the map (%.1f MiB): host picks\n", g_pm.cap * sizeof(pm_entry) / 1048576.0); return false; }
+    char * b = (char *) ggml_backend_buffer_get_base(g_pm.buf);
+    g_pm.v_dev = (pm_entry *) b; g_pm.cnt_dev = (uint32_t *) (b + (size_t) g_pm.cap * sizeof(pm_entry));
+    g_pm.max_rq = 1024;
+    void * d = nullptr;
+    g_pm.rq = (pm_req *) al(g_pm.max_rq * sizeof(pm_req), &d); g_pm.rq_dev = (pm_req *) d;
+    g_pm.rs = g_pm.rq ? (pm_result *) al(g_pm.max_rq * sizeof(pm_result), &d) : nullptr; g_pm.rs_dev = (pm_result *) d;
+    g_pm.tbl = g_pm.rs ? (int32_t **) al(mc->layers.size() * sizeof(int32_t *), &d) : nullptr; g_pm.tbl_dev = (int32_t **) d;
+    if (!g_pm.tbl) { LLAMA_LOG_WARN("moe-cache: pool-v2: gpu-alloc: no mapped memory: host picks\n"); return false; }
+    for (size_t li = 0; li < mc->layers.size(); ++li) { g_pm.tbl[li] = mc->layers[li].pub.dev_table ? (int32_t *) mc->layers[li].pub.dev_table->data : nullptr; }
+    LLAMA_LOG_WARN("moe-cache: pool-v2: gpu-alloc on: the card places stream experts (map of %u entries at most, %.1f MiB)\n", g_pm.cap, g_pm.cap * sizeof(pm_entry) / 1048576.0);
+    g_pm.ok = true;
+    return true;
+}
+// the host heap as the card's map; busy(id): pinned on the card for this batch
+template <typename BUSY>
+static std::vector<pm_entry> pm_map_of(moe_cache * mc, BUSY busy) {
+    auto & v = mc->v2;
+    std::vector<pm_entry> m = pm_from_heap(v.main);
+    for (pm_entry & e : m) {
+        if (e.type != PM_MOE) { continue; }
+        e.u = (uint32_t) mc->layers[(size_t) (e.id / v.E)].v2u;
+        if (busy(e.id)) { e.flags |= PM_PIN; }
+    }
+    return m;
+}
+// one batch for want's experts of layer li; ahead: experts of layers still ahead in the pass may be taken
+static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t> & want, std::vector<int32_t> & placed, std::vector<int32_t> & left,
+                           size_t done, size_t & wait_at, size_t & n_ev, size_t p, bool ahead, const std::function<int64_t(int32_t)> & heat_of) {
+    auto & v = mc->v2;
+    layer_state & ls = mc->layers[li];
+    auto busy = [&](int32_t id) {
+        const size_t lj = (size_t) (id / v.E); const int32_t x = id % v.E;
+        const layer_state & lq = mc->layers[lj];
+        if (lq.slot_in_flight[(size_t) x] || lq.queued[(size_t) x] || lq.at[(size_t) x] < 0) { return true; }
+        const int32_t q = lj < mc->cs_pos.size() ? mc->cs_pos[lj] : -1;
+        return !ahead && q >= 0 && (size_t) q >= p;
+    };
+    std::vector<pm_entry> m = pm_map_of(mc, busy);
+    if (m.empty() || m.size() > g_pm.cap) { left = want; return; }
+    uint32_t cnt = (uint32_t) m.size();
+    g_pm.io(g_pm.be, g_pm.v_dev, m.data(), m.size() * sizeof(pm_entry), 1);
+    g_pm.io(g_pm.be, g_pm.cnt_dev, &cnt, sizeof(cnt), 1);
+    const uint32_t k = (uint32_t) std::min<size_t>(want.size(), g_pm.max_rq);
+    for (uint32_t j = 0; j < k; ++j) {
+        g_pm.rq[j] = { ls.v2n, ls.v2u, heat_of(want[j]), pv2_id(mc, li, want[j]), 3 };   // pinned, movers to free bytes only (a kernel may still read a colder one)
+        g_pm.rs[j].done = 0;
+    }
+    char * base = (char *) ggml_backend_buffer_get_base(mc->alias[v.ap_idx].buf);
+    g_pm.batch(g_pm.be, g_pm.v_dev, g_pm.cnt_dev, g_pm.cap, v.main.lo, v.main.hi, g_pm.rq_dev, k, g_pm.rs_dev, base, g_pm.tbl_dev, v.E);
+    for (uint32_t j = 0; j < k; ++j) { while (__atomic_load_n(&g_pm.rs[j].done, __ATOMIC_ACQUIRE) == 0) { } }   // bell style: the reports land in mapped memory
+    for (uint32_t j = 0; j < k; ++j) {
+        const int32_t e = want[j];
+        const pm_result & r = g_pm.rs[j];
+        GGML_ASSERT(!r.overflow && "pool-v2: gpu-alloc report overflow");
+        if (r.s == UINT64_MAX) { left.push_back(e); continue; }
+        // the kernels that read what leaves or moves (computed layers) finish before the upload lands
+        auto waits = [&](int32_t id) {
+            const int32_t q = mc->cs_pos[(size_t) (id / v.E)];
+            if (q >= 0 && (size_t) q < done) { wait_at = std::max(wait_at, (size_t) mc->cs_cov[(size_t) q] + 1); }
+        };
+        for (uint32_t f = 0; f < r.n_fr; ++f) {
+            const int32_t id = r.fr[f].id;
+            waits(id);
+            layer_state & lo = mc->layers[(size_t) (id / v.E)];
+            evict_slot(mc, lo, id % v.E);
+            pv2_out(mc, lo, id % v.E);
+            n_ev++;
+        }
+        for (uint32_t q = 0; q < r.n_mv; ++q) {   // the card copied the bytes and wrote its table entry already
+            const pm_mv & mv = r.mv[q];
+            waits(mv.id);
+            layer_state & lo = mc->layers[(size_t) (mv.id / v.E)];
+            const pv2_res rr = pv2_drop(v.main, (size_t) mv.from);
+            const bool ok = pv2_add(v.main, (size_t) mv.to, rr);
+            GGML_ASSERT(ok && "pool-v2: gpu-alloc moved an expert onto bytes the host does not have free");
+            lo.at[(size_t) (mv.id % v.E)] = (int32_t) (mv.to / lo.v2u);
+            set_table_entry(lo.pub, mv.id % v.E, mv.id % v.E);
+        }
+        pv2_put(mc, v.main, li, e, (size_t) r.s, heat_of(e), true);
+        placed.push_back(e);
+    }
+    for (uint32_t j = k; j < want.size(); ++j) { left.push_back(want[j]); }
+    static const bool check = [] { const char * x = moe_opt("map-check"); return x && atoi(x) != 0; }();
+    if (check) {
+        uint32_t c2 = 0;
+        g_pm.io(g_pm.be, g_pm.cnt_dev, &c2, sizeof(c2), 0);
+        std::vector<pm_entry> back(c2);
+        g_pm.io(g_pm.be, g_pm.v_dev, back.data(), (size_t) c2 * sizeof(pm_entry), 0);
+        size_t d = 0;
+        if (!pm_same(back, pm_from_heap(v.main), &d)) {
+            GGML_ABORT("pool-v2: map-check: the card's map and the host's differ at entry %zu of %u (layer %d, %u allocs)", d, c2, ls.pub.il, k);
+        }
+    }
+}
+
 static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t & wait_at, bool cheap = false) {   // cheap: an entry further ahead than the next (cs_ahead): free bytes and residents no layer of the pass still needs only
     optime_t _ot(OP_PLAN_V2);   // cache lock held
     auto & v = mc->v2;
@@ -14169,6 +14296,18 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
     int n_fail_run = 0;
     std::set<std::pair<int, size_t>> rebuilt;   // no landing area: the cold orders rebuilt in this call (per tier and size), the every-size order per tier
     bool rebuilt_all[2] = { false, false }, win_failed[2] = { false, false };
+    static const bool gpu_alloc = [] { const char * x = moe_opt("gpu-alloc"); return x && atoi(x) != 0; }();
+    std::vector<int32_t> want_all;   // gpu-alloc: every expert of the entry (want keeps those left to the host's picks)
+    if (gpu_alloc && v.H == v.M && pm_setup(mc)) {
+        want_all = want;
+        optime_t _og(OP_PLAN_MAIN);
+        auto hx_of = [&](int32_t e) { return v.tiered ? v.hv[(size_t) pv2_id(mc, li, e)] : pv2_heat(mc, ls, e, false, lsum); };
+        std::vector<int32_t> left, left2;
+        pm_place_batch(mc, li, want, placed, left, done, wait_at, n_ev, p, false, hx_of);
+        if (!left.empty() && !cheap) { pm_place_batch(mc, li, left, placed, left2, done, wait_at, n_ev, p, true, hx_of); left.swap(left2); }
+        n_heat += placed.size(); b_heat += placed.size() * ls.v2n;
+        want.swap(left);   // what the card found no place for goes through the host's picks below
+    }
     for (int32_t e : want) {
         const int64_t hx = v.tiered ? v.hv[(size_t) pv2_id(mc, li, e)] : pv2_heat(mc, ls, e, false, lsum);
         // no free extent can hold it: the scan of every gap is skipped (19k experts a prompt); an entry ahead takes free bytes only here (no landing area: its
@@ -14305,6 +14444,7 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
         }
         placed.push_back(e);
     }
+    if (!want_all.empty()) { want.swap(want_all); }   // every expert of the entry is placed now: all upload
     v.n_heat += n_heat; v.b_heat += b_heat; v.n_land += n_land; v.b_land += n_land * ls.v2n; v.n_evict += n_ev;
     const double S   = (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]);
     const double rlb = mc->gbs_link[ls.link] * 1e3;
