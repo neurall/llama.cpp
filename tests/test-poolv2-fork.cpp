@@ -1313,6 +1313,9 @@ static void test_cold_window() {
     cur = 0;
     pv2_pick d = pv2_cold_window(h, ord, cur, 400, 10, [](int32_t id) { return id == 2; });
     check("cold window: no window of takeable residents, nothing", d.s == PV2_NONE && d.evict.empty());
+    cur = 0;
+    pv2_pick e = pv2_cold_window(h, ord, cur, 150, 10, all, 1);
+    check("cold window: max_scan 1 tries the coldest anchor only (B: A+B)", e.s == 50 && e.evict == std::vector<size_t>({0, 100}));
     h.res[100].id = 7;   // B replaced since the order was built: stale front skipped for good
     cur = 0;
     (void) pv2_cold_window(h, ord, cur, 150, 10, all);

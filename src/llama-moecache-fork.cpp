@@ -13955,7 +13955,7 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
     std::vector<int32_t> placed;
     size_t n_heat = 0, b_heat = 0, n_land = 0, n_ev = 0;
     std::set<std::pair<int, size_t>> rebuilt;   // no landing area: the cold orders rebuilt in this call (per tier and size), the every-size order per tier
-    bool rebuilt_all[2] = { false, false };
+    bool rebuilt_all[2] = { false, false }, win_failed[2] = { false, false };
     for (int32_t e : want) {
         const int64_t hx = v.tiered ? v.hv[(size_t) pv2_id(mc, li, e)] : pv2_heat(mc, ls, e, false, lsum);
         // no free extent can hold it: the scan of every gap is skipped (19k experts a prompt); an entry ahead takes free bytes only here (no landing area: its
@@ -13991,10 +13991,13 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
                     ci->second = { pv2_cold_order(v.main, ls.v2n), 0 };
                     pk = t == 0 ? pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_done) : pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_any);
                 }
-                if (pk.s == PV2_NONE) {   // none of its size: a window over residents of other sizes, anchored at the coldest (the classes claim across classes)
+                if (pk.s == PV2_NONE && !win_failed[t]) {   // none of its size: a window over residents of other sizes, anchored at the coldest (the classes claim across classes)
                     auto & ca = cold_all[t];
                     if (!rebuilt_all[t]) { ca = { pv2_cold_order(v.main), 0 }; rebuilt_all[t] = true; }   // once a call: windows see this call's placements
-                    pk = t == 0 ? pv2_cold_window(v.main, ca.first, ca.second, ls.v2n, ls.v2u, ok_done) : pv2_cold_window(v.main, ca.first, ca.second, ls.v2n, ls.v2u, ok_any);
+                    // the 512 coldest anchors at most; a search that found none is not repeated in this call (takeable residents only get fewer: 1.4 s of a 15.5k
+                    // prompt's plan went to repeated full scans)
+                    pk = t == 0 ? pv2_cold_window(v.main, ca.first, ca.second, ls.v2n, ls.v2u, ok_done, 512) : pv2_cold_window(v.main, ca.first, ca.second, ls.v2n, ls.v2u, ok_any, 512);
+                    if (pk.s == PV2_NONE) { win_failed[t] = true; }
                 }
             }
             if (pk.s == PV2_NONE) {   // every resident of its size is pinned or ahead: the entry waits for the next split

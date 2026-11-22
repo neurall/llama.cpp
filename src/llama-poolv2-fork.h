@@ -764,7 +764,7 @@ static inline pv2_pick pv2_coldest(const pv2_heap & h, const std::vector<pv2_col
 // takeable (not pinned, ok(id)); of the windows anchored at the coldest residents, the one whose hottest victim is coldest (the scan stops at a resident as hot
 // as the best window found: every window it anchors covers it). cur skips the stale front of ord for good.
 template <typename OK>
-static inline pv2_pick pv2_cold_window(const pv2_heap & h, const std::vector<pv2_cold_t> & ord, size_t & cur, size_t n, size_t u, OK ok) {
+static inline pv2_pick pv2_cold_window(const pv2_heap & h, const std::vector<pv2_cold_t> & ord, size_t & cur, size_t n, size_t u, OK ok, size_t max_scan = SIZE_MAX) {   // max_scan: anchors tried at most
     pv2_pick best;
     int64_t best_cost = std::numeric_limits<int64_t>::max();
     auto alive = [&](const pv2_cold_t & c) {
@@ -787,10 +787,12 @@ static inline pv2_pick pv2_cold_window(const pv2_heap & h, const std::vector<pv2
         }
         if (cost < best_cost) { best_cost = cost; best.s = a; best.evict = ev; }
     };
-    for (size_t k = cur; k < ord.size(); ++k) {
+    size_t tried = 0;
+    for (size_t k = cur; k < ord.size() && tried < max_scan; ++k) {
         const pv2_cold_t & c = ord[k];
         if (c.heat >= best_cost) { break; }
         if (!alive(c)) { continue; }
+        ++tried;
         size_t hs = c.s;   // the hole's start: the free extent right before it
         auto g = h.gaps.lower_bound(c.s);
         if (g != h.gaps.begin()) { auto pg = std::prev(g); if (pg->first + pg->second == c.s) { hs = pg->first; } }
