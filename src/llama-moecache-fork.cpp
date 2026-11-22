@@ -17085,9 +17085,12 @@ void llama_moe_cache_step_fork() {
                 optime_t _os(OP_SWAP);
                 const pv2_pick pk = pv2_pick_main(mc, li, id, std::llround(1e6 * (xscore(mc, ls, id) - pay_back(link_margin[ls.link]))), mc->v2.reach, ls.v2n + ls.v2u <= mc->v2.max_gap ? SIZE_MAX : 2 * mc->v2.reach);   // decode: free windows only near the target (a scan of every gap cost 40% of the main thread per token)
                 pv2_pick pkf = pk;
+                bool in_land = false;   // the fallback's victim sits in the landing area
                 if (pkf.s == PV2_NONE) {   // nothing colder near its heat target: the coldest resident of the same size anywhere in the heap (as the classes take the class's coldest);
                     // the table points anywhere, so the swap is exact and correct; keeping the heap sorted is background work (user 2026-11-22: a swap is never refused for placement)
-                    static std::map<std::pair<size_t, size_t>, std::vector<std::tuple<int64_t, size_t, int32_t>>> cold;   // (bytes, unit) -> (decode score, start, id), coldest first
+                    // (bytes, unit) -> (decode score, start, id, heap: 0 main, 1 landing), coldest first. The landing area's residents are victims too: between prompts
+                    // it holds decode experts like the main heap (GLM 3.5 one card: 3.5 GB of a 14.1 GB heap never swapped, hit 38-42% vs the classes' 42-45%)
+                    static std::map<std::pair<size_t, size_t>, std::vector<std::tuple<int64_t, size_t, int32_t, int>>> cold;
                     static std::map<std::pair<size_t, size_t>, size_t> cur;
                     static uint64_t cold_step = UINT64_MAX;
                     // rebuilt every N steps (--moe pv2-cold-every=N, default 16; 1: every step as before): entries gone stale are skipped by still_ok, a score
@@ -17098,28 +17101,32 @@ void llama_moe_cache_step_fork() {
                     if (cold_step == UINT64_MAX || mc->n_steps >= cold_step + cold_every || mc->n_steps < cold_step || spent) {
                         optime_t _oc(OP_SWAP_COLD);
                         cold.clear(); cur.clear(); cold_step = mc->n_steps;
-                        for (const auto & [x, r] : mc->v2.main.res) {
-                            if (r.id < 0 || r.pin) { continue; }
-                            const layer_state & lq = mc->layers[(size_t) (r.id / mc->v2.E)];
-                            const int32_t eq = r.id % mc->v2.E;
-                            if (lq.slot_in_flight[(size_t) eq] || lq.queued[eq]) { continue; }
-                            cold[{ lq.v2n, lq.v2u }].push_back({ std::llround(1e6 * xscore(mc, lq, eq)), x, r.id });
+                        static const bool land_too = [] { const char * x = moe_opt("pv2-swap-land"); return !x || atoi(x) != 0; }();   // --moe pv2-swap-land=0: main heap only
+                        for (int hk = 0; hk < (land_too ? 2 : 1); ++hk) {
+                            for (const auto & [x, r] : (hk ? mc->v2.land : mc->v2.main).res) {
+                                if (r.id < 0 || r.pin) { continue; }
+                                const layer_state & lq = mc->layers[(size_t) (r.id / mc->v2.E)];
+                                const int32_t eq = r.id % mc->v2.E;
+                                if (lq.slot_in_flight[(size_t) eq] || lq.queued[eq]) { continue; }
+                                cold[{ lq.v2n, lq.v2u }].push_back({ std::llround(1e6 * xscore(mc, lq, eq)), x, r.id, hk });
+                            }
                         }
                         for (auto & [k, v] : cold) { std::sort(v.begin(), v.end(), [](const auto & a, const auto & b) { return std::get<0>(a) != std::get<0>(b) ? std::get<0>(a) < std::get<0>(b) : std::get<1>(a) < std::get<1>(b); }); }
                     }
                     auto ci = cold.find({ ls.v2n, ls.v2u });
                     size_t & cx = cur[{ ls.v2n, ls.v2u }];
                     const int64_t need = std::llround(1e6 * (xscore(mc, ls, id) - pay_back(link_margin[ls.link])));
-                    auto still_ok = [&](const std::tuple<int64_t, size_t, int32_t> & c) {   // the same expert still sits there, no upload on its way (an earlier pick of this step may have replaced it)
-                        const auto rit = mc->v2.main.res.find(std::get<1>(c));
-                        if (rit == mc->v2.main.res.end() || rit->second.id != std::get<2>(c) || rit->second.pin) { return false; }
+                    auto still_ok = [&](const std::tuple<int64_t, size_t, int32_t, int> & c) {   // the same expert still sits there, no upload on its way (an earlier pick of this step may have replaced it)
+                        const pv2_heap & hc = std::get<3>(c) ? mc->v2.land : mc->v2.main;
+                        const auto rit = hc.res.find(std::get<1>(c));
+                        if (rit == hc.res.end() || rit->second.id != std::get<2>(c) || rit->second.pin) { return false; }
                         const layer_state & lq = mc->layers[(size_t) (rit->second.id / mc->v2.E)];
                         const int32_t eq = rit->second.id % mc->v2.E;
                         return !lq.slot_in_flight[(size_t) eq] && !lq.queued[eq] && lq.at[(size_t) eq] >= 0;
                     };
                     while (ci != cold.end() && cx < ci->second.size() && !still_ok(ci->second[cx])) { ++cx; }
                     if (ci != cold.end() && cx < ci->second.size() && std::get<0>(ci->second[cx]) < need) {
-                        pkf.s = std::get<1>(ci->second[cx]); pkf.evict = { pkf.s }; ++cx;
+                        pkf.s = std::get<1>(ci->second[cx]); pkf.evict = { pkf.s }; in_land = std::get<3>(ci->second[cx]) != 0; ++cx;
                         g_pv2_fallback++;   // admitted by the global fallback
                     }
                 }
@@ -17136,7 +17143,7 @@ void llama_moe_cache_step_fork() {
                     mc->pr[5]++;
                 }
                 mc->pr[4] += pkf.evict.empty();
-                pv2_take(mc, mc->v2.main, pkf, li, id, hx, true);
+                pv2_take(mc, in_land ? mc->v2.land : mc->v2.main, pkf, li, id, hx, true);
                 ls.slot_in_flight[id] = true;
                 ls.queued[id]         = 1;
                 std::lock_guard<std::mutex> wlk(mc->wmtx);
