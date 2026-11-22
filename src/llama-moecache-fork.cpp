@@ -17101,7 +17101,7 @@ void llama_moe_cache_step_fork() {
                     if (cold_step == UINT64_MAX || mc->n_steps >= cold_step + cold_every || mc->n_steps < cold_step || spent) {
                         optime_t _oc(OP_SWAP_COLD);
                         cold.clear(); cur.clear(); cold_step = mc->n_steps;
-                        static const bool land_too = [] { const char * x = moe_opt("pv2-swap-land"); return !x || atoi(x) != 0; }();   // --moe pv2-swap-land=0: main heap only
+                        static const bool land_too = [] { const char * x = moe_opt("pv2-swap-land"); return x && atoi(x) != 0; }();   // --moe pv2-swap-land=1: landing residents too (GLM 3.5 +1.5%, Qwen3.8 IQ3_S -1%: first request hit 90.2-90.7 vs 92.1-93.0%; off until the cause is known)
                         for (int hk = 0; hk < (land_too ? 2 : 1); ++hk) {
                             for (const auto & [x, r] : (hk ? mc->v2.land : mc->v2.main).res) {
                                 if (r.id < 0 || r.pin) { continue; }
