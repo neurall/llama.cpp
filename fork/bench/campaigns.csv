@@ -11091,3 +11091,8 @@ poolv2_cold16-pv2-q-on-nsys-pf2k1k,2026-11-22 05:20:02,bench /m/q/1/Qwen3.8-Flas
 poolv2_cold16-pv2-q-off-nsys-pf2k1k,2026-11-22 05:23:52,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_cold16 variants v test pf2k n=3,,
 poolv2_plant-pv2-q-on-pf14k1k,2026-11-22 05:30:21,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_plant variants v test pf14k n=2,,
 poolv2_plant-nsys-pv2-q-on-pf2k1k,2026-11-22 05:32:10,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_plant variants v test pf2k n=2,,
+poolv2_mainfail-pv2-q-vf-on-pf14k1k,2026-11-22 05:37:37,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_mainfail variants v test pf14k n=2,,
+poolv2_mainfail-pv2-ol-on-pf1k,2026-11-22 05:39:27,bench /m/o/4/OLMoE-1B-7B-0924-Q4_K_M.gguf builds poolv2_mainfail variants v test pf1k n=2,,
+poolv2_mainfail-pv2-ol-full-on-pf1k,2026-11-22 05:40:26,bench /m/o/4/OLMoE-1B-7B-0924-Q4_K_M.gguf builds poolv2_mainfail variants v test pf1k n=2,,
+poolv2_mainfail-pv2-q-off-pf14k1k,2026-11-22 05:42:06,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_mainfail variants v test pf14k n=3,,
+poolv2_mainfail-pv2-q-on-pf14k1k,2026-11-22 05:44:15,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_mainfail variants v test pf14k n=3,,
