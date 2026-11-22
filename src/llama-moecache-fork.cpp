@@ -14649,6 +14649,16 @@ static void cs_ahead(moe_cache * mc, int k, size_t must, std::vector<cs_job> & j
                     for (size_t q = mc->cs_hooked[c]; q < nx; ++q) { ahead += csl(mc, mc->cs_order[q]).link == c; }
                     if (ahead >= cs_k_ahead_max(mc, nx)) { mc->cs_why[c] = 1; break; }
                 }
+                if (mc->v2.on && (must == SIZE_MAX || nx > must)) {
+                    // pool-v2 (user 2026-11-22: "pin just those needed in the executed or soon executed range, don't pin n layers ahead"): the heap plans the entry
+                    // about to run and N more (--moe pv2-ahead=N, default 1; 0: as far as the heap allows); the rest stay unpinned, the past layers' takeable
+                    static const int n_ahead = [] { const char * x = moe_opt("pv2-ahead"); return x ? atoi(x) : 1; }();
+                    if (n_ahead > 0) {
+                        int ahead = 0;
+                        for (size_t q = mc->cs_hooked[c]; q < nx; ++q) { ahead += csl(mc, mc->cs_order[q]).link == c; }
+                        if (ahead >= n_ahead) { mc->cs_why[c] = 1; break; }
+                    }
+                }
                 cs_job j { mc->cs_order[nx], {}, 0 };
                 // the k arm: only an entry whose layer's ranking came back, its predicted experts (q1 alone when the blocks hold no more); else its split plans it
                 const std::vector<uint8_t> * sel = g_cs_k_pass > 0.0 ? cs_sel(mc, nx) : nullptr;
