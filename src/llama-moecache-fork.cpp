@@ -15367,6 +15367,14 @@ void llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         for (int32_t e = 0; e < (int32_t) ls.expert_slot.size(); ++e) {
             const int32_t slot = ls.expert_slot[e];
             if (slot < 0 || ls.slot_in_flight[slot]) { continue; }
+            if (ls.v2u && li < mc->layers.size()) {   // pool-v2: the heap's book must name this expert at its place (2026-11-22: L26 e200 and L0 e21 both at one address)
+                static int said_own = 0;
+                const pv2_res * r = pv2_find(mc, const_cast<layer_state &>(ls), e);
+                if ((!r || r->id != pv2_id(mc, li, e)) && said_own++ < 16) {
+                    LLAMA_LOG_ERROR("pool-v2 check: L%zu e%d has place %d (%zu) but the heap's book there says id %d (L%d e%d)\n", li, e, ls.at[e], (size_t) ls.at[e] * ls.v2u,
+                            r ? r->id : -1, r ? r->id / mc->v2.E : -1, r ? r->id % mc->v2.E : -1);
+                }
+            }
             n_read++;
             for (int k = 0; k < 3; ++k) {
                 if (!srcs[k] || !dsts[k] || !ggml_backend_buffer_is_host(srcs[k]->buffer)) { continue; }
