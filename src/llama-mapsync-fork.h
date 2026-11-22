@@ -33,9 +33,9 @@ static inline bool mapsync_push(mapsync_ring & r, const std::vector<mapsync_entr
     return true;
 }
 
-// the kernel's work on the CPU (the reference and the test): apply [tail, head) to the tables
-static inline void mapsync_apply_ref(mapsync_ring & r, int32_t * const * tables) {
-    const uint64_t h = __atomic_load_n(r.head, __ATOMIC_ACQUIRE);
+// the kernel's work on the CPU (the reference and the test): apply [tail, h) to the tables. h is the head when the kernel was QUEUED (a launch argument):
+// read when the kernel runs, a kernel queued before graph N applied graph N+1's entries too, whose experts were still uploading (GLM 3.5 NaN, 2026-11-22)
+static inline void mapsync_apply_ref(mapsync_ring & r, int32_t * const * tables, uint64_t h) {
     for (uint64_t i = *r.tail; i < h; ++i) { const mapsync_entry & m = r.e[i % r.cap]; tables[m.tbl][m.idx] = m.val; }
     __atomic_store_n(r.tail, h, __ATOMIC_RELEASE);
 }

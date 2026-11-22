@@ -5515,7 +5515,7 @@ static bool mapsync_flush(std::vector<llama_moe_cache_layer_fork *> & d) {
     struct ms_state {
         bool tried = false, ok = false;
         ggml_backend_t be = nullptr;
-        void (*apply)(ggml_backend_t, const void *, const void *, void *, uint64_t, int32_t * const *) = nullptr;
+        void (*apply)(ggml_backend_t, const void *, uint64_t, void *, uint64_t, int32_t * const *) = nullptr;   // head by value: what was pushed when queued
         mapsync_ring r; mapsync_entry * e_dev = nullptr; uint64_t * ht_dev = nullptr;
         int32_t ** tbl_host = nullptr; int32_t ** tbl_dev = nullptr; uint32_t n_tbl = 0;
         std::map<const llama_moe_cache_layer_fork *, std::pair<uint32_t, std::vector<int32_t>>> sent;   // table slot, what the card holds
@@ -5579,7 +5579,7 @@ static bool mapsync_flush(std::vector<llama_moe_cache_layer_fork *> & d) {
         *st.r.tail = *st.r.head;
         return true;
     }
-    if (!es.empty()) { st.apply(st.be, st.e_dev, st.ht_dev, st.ht_dev + 1, st.r.cap, st.tbl_dev); }
+    if (!es.empty()) { st.apply(st.be, st.e_dev, *st.r.head, st.ht_dev + 1, st.r.cap, st.tbl_dev); }
     return true;
 }
 

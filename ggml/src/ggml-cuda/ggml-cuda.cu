@@ -10234,10 +10234,11 @@ static bool ggml_backend_cuda_pool_move_fork(ggml_backend_t backend, const pool_
 // [tail, head) on the card's stream and writes the new tail back, no copy call. Entries are applied in ring order: chunks of 256 one after the other, and
 // inside a chunk an entry is skipped when a later one of the chunk writes the same (table, index): the last write wins as the host made them.
 struct mapsync_entry_fork { uint32_t tbl; int32_t idx; int32_t val; uint32_t pad; };
-static __global__ void k_mapsync_apply_fork(const mapsync_entry_fork * ring, const volatile unsigned long long * head, volatile unsigned long long * tail,
+// h: the host's head when the launch was queued (by value): a kernel that read it when it ran applied the entries of graphs queued after it (GLM 3.5 NaN)
+static __global__ void k_mapsync_apply_fork(const mapsync_entry_fork * ring, unsigned long long h, volatile unsigned long long * tail,
                                             unsigned long long cap, int32_t * const * tables) {
     __shared__ uint64_t key[256];
-    const unsigned long long h = *head, t0 = *tail;
+    const unsigned long long t0 = *tail;
     for (unsigned long long c = t0; c < h; c += 256) {
         const unsigned long long i = c + threadIdx.x;
         mapsync_entry_fork m = {};
@@ -10252,10 +10253,10 @@ static __global__ void k_mapsync_apply_fork(const mapsync_entry_fork * ring, con
     }
     if (threadIdx.x == 0) { __threadfence_system(); *tail = h; }
 }
-static void ggml_backend_cuda_mapsync_apply_fork(ggml_backend_t backend, const void * ring, const void * head, void * tail, uint64_t cap, int32_t * const * tables_dev) {
+static void ggml_backend_cuda_mapsync_apply_fork(ggml_backend_t backend, const void * ring, uint64_t head, void * tail, uint64_t cap, int32_t * const * tables_dev) {
     ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
     ggml_cuda_set_device(ctx->device);
-    k_mapsync_apply_fork<<<1, 256, 0, ctx->stream()>>>((const mapsync_entry_fork *) ring, (const volatile unsigned long long *) head, (volatile unsigned long long *) tail,
+    k_mapsync_apply_fork<<<1, 256, 0, ctx->stream()>>>((const mapsync_entry_fork *) ring, (unsigned long long) head, (volatile unsigned long long *) tail,
             (unsigned long long) cap, tables_dev);
     CUDA_CHECK(cudaGetLastError());
 }
