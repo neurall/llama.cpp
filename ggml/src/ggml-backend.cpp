@@ -5527,6 +5527,17 @@ void ggml_backend_sched_set_external_buffer(ggml_backend_sched_t sched, ggml_bac
     }
 }
 
+// fork (no header edit): the backend's graphs are cut in chunks of chunk_bytes, each placed by place() in its external buffer (ggml_gallocr_set_external_placer)
+extern "C" void ggml_gallocr_set_external_placer(ggml_gallocr_t galloc, int buffer_id, size_t chunk_bytes, size_t (*place)(void * ud, int buffer_id, int chunk, size_t bytes), void * ud);
+extern "C" GGML_API void ggml_backend_sched_set_external_placer(ggml_backend_sched_t sched, ggml_backend_t backend, size_t chunk_bytes, size_t (*place)(void * ud, int buffer_id, int chunk, size_t bytes), void * ud) {
+    for (int i = 0; i < sched->n_backends; i++) {
+        if (sched->backends[i] == backend) {
+            ggml_gallocr_set_external_placer(sched->galloc, i, chunk_bytes, place, ud);
+            return;
+        }
+    }
+}
+
 // fork: bytes of the backend's compute buffer the current graph uses (what the graph allocator placed, from the start of the buffer)
 size_t ggml_backend_sched_graph_peak(ggml_backend_sched_t sched, ggml_backend_t backend) {
     for (int i = 0; i < sched->n_backends; i++) {

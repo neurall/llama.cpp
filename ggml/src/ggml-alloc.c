@@ -414,6 +414,10 @@ struct vbuffer {
     // fork: an external buffer (ggml_gallocr_set_external_buffer): one chunk inside a buffer the allocator does not own, at this offset
     size_t offset;
     size_t capacity;   // > 0: external
+    // fork: an external buffer placed chunk by chunk (ggml_gallocr_set_external_placer): n_ext > 0 chunks, each at its own offset in the same buffer
+    int    n_ext;
+    size_t offs[GGML_VBUFFER_MAX_CHUNKS];
+    size_t caps[GGML_VBUFFER_MAX_CHUNKS];
 };
 
 static void ggml_vbuffer_free(struct vbuffer * buf) {
@@ -427,6 +431,9 @@ static void ggml_vbuffer_free(struct vbuffer * buf) {
 }
 
 static size_t ggml_vbuffer_chunk_size(struct vbuffer * buf, int chunk) {
+    if (buf->n_ext > 0) {
+        return chunk < buf->n_ext ? buf->caps[chunk] : 0;
+    }
     if (buf->capacity > 0) {
         return chunk == 0 ? buf->capacity : 0;
     }
@@ -464,7 +471,7 @@ static struct vbuffer * ggml_vbuffer_alloc(ggml_backend_buffer_type_t buft, cons
 
 static void ggml_vbuffer_tensor_alloc(struct vbuffer * buf, struct ggml_tensor * tensor, struct buffer_address buf_addr) {
     void * base = ggml_backend_buffer_get_base(buf->chunks[buf_addr.chunk]);
-    void * addr = (char *)base + buf->offset + buf_addr.offset;
+    void * addr = (char *)base + (buf->n_ext > 0 ? buf->offs[buf_addr.chunk] : buf->offset) + buf_addr.offset;
     ggml_backend_tensor_alloc(buf->chunks[buf_addr.chunk], tensor, addr);
 }
 
@@ -519,6 +526,9 @@ struct ggml_gallocr {
     size_t * ext_off;                   // [n_buffers]
     size_t * ext_cap;                   // [n_buffers]
     struct ggml_backend_buffer * ext_twin;   // [n_buffers] the external buffer as compute memory (ggml_gallocr_set_external_buffer)
+    // fork: per buffer id, a placer that puts each chunk of the plan somewhere in the external buffer (NULL: one chunk at ext_off). chunk -1: give back every chunk
+    size_t (**ext_place)(void * ud, int buffer_id, int chunk, size_t bytes);
+    void ** ext_ud;
 
     struct leaf_alloc * leaf_allocs; // [n_leafs]
     int n_leafs;
@@ -585,7 +595,12 @@ static bool ggml_gallocr_plan_fits(ggml_gallocr_t galloc) {
         for (int c = 0; c < a->n_chunks; c++) {
             sum += ggml_dyn_tallocr_max_size(a, c);
         }
-        if (galloc->ext_buf[i] != NULL) {
+        if (galloc->ext_buf[i] != NULL && galloc->ext_place[i] != NULL) {
+            if (galloc->buffers[i] == NULL || a->n_chunks > galloc->buffers[i]->n_ext) { return false; }
+            for (int c = 0; c < a->n_chunks; c++) {
+                if (ggml_dyn_tallocr_max_size(a, c) > galloc->buffers[i]->caps[c]) { return false; }
+            }
+        } else if (galloc->ext_buf[i] != NULL) {
             if (a->n_chunks > 1 || sum > galloc->ext_cap[i]) { return false; }
         } else if (galloc->buffers[i] == NULL) {
             if (sum > 0) { return false; }
@@ -619,6 +634,9 @@ ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs
     galloc->ext_off = calloc(n_bufs, sizeof(size_t));
     galloc->ext_cap = calloc(n_bufs, sizeof(size_t));
     galloc->ext_twin = calloc(n_bufs, sizeof(struct ggml_backend_buffer));
+    galloc->ext_place = calloc(n_bufs, sizeof(*galloc->ext_place));
+    galloc->ext_ud = calloc(n_bufs, sizeof(void *));
+    GGML_ASSERT(galloc->ext_place != NULL && galloc->ext_ud != NULL);
     GGML_ASSERT(galloc->ext_buf != NULL && galloc->ext_off != NULL && galloc->ext_cap != NULL && galloc->ext_twin != NULL);
 
     for (int i = 0; i < n_bufs; i++) {
@@ -708,6 +726,17 @@ void ggml_gallocr_set_external_buffer(ggml_gallocr_t galloc, int buffer_id, ggml
     galloc->buf_tallocs[buffer_id]->max_chunk_size = buffer ? MAX(own, capacity) : own;
 }
 
+// fork (no header edit: declared where used): the plan of buffer_id is cut in chunks of chunk_bytes (a tensor larger than that gets a chunk of its own) and
+// place() puts each chunk somewhere in the external buffer (set first with ggml_gallocr_set_external_buffer): it returns the offset, or SIZE_MAX when the
+// buffer has no room for it (the reserve fails as a graph that does not fit). place(ud, id, -1, 0) gives back every chunk of the last plan. NULL: one chunk again
+void ggml_gallocr_set_external_placer(ggml_gallocr_t galloc, int buffer_id, size_t chunk_bytes, size_t (*place)(void * ud, int buffer_id, int chunk, size_t bytes), void * ud) {
+    GGML_ASSERT(buffer_id >= 0 && buffer_id < galloc->n_buffers);
+    galloc->ext_place[buffer_id] = place;
+    galloc->ext_ud[buffer_id] = ud;
+    const size_t own = MIN(ggml_backend_buft_get_max_size(galloc->bufts[buffer_id]), SIZE_MAX/2);
+    galloc->buf_tallocs[buffer_id]->max_chunk_size = place ? MIN(own, MAX((size_t) 1, chunk_bytes)) : MAX(own, galloc->ext_cap[buffer_id]);
+}
+
 ggml_gallocr_t ggml_gallocr_new(ggml_backend_buffer_type_t buft) {
     return ggml_gallocr_new_n(&buft, 1);
 }
@@ -758,6 +787,8 @@ void ggml_gallocr_free(ggml_gallocr_t galloc) {
     free(galloc->ext_off);
     free(galloc->ext_cap);
     free(galloc->ext_twin);
+    free(galloc->ext_place);
+    free(galloc->ext_ud);
     free(galloc->node_allocs);
     free(galloc->leaf_allocs);
     free(galloc);
@@ -1190,6 +1221,31 @@ static bool ggml_gallocr_reserve_n_impl(
             ggml_vbuffer_free(galloc->buffers[i]);
             if (no_alloc) {
                 galloc->buffers[i] = NULL;
+            } else if (galloc->ext_buf[i] != NULL && galloc->ext_place[i] != NULL) {
+                // fork: the plan's chunks go wherever the placer finds room in the external buffer (the expert pool's free gaps or cold experts)
+                galloc->buffers[i] = NULL;
+                galloc->ext_place[i](galloc->ext_ud[i], i, -1, 0);
+                struct vbuffer * vb = (struct vbuffer *) calloc(1, sizeof(struct vbuffer));
+                GGML_ASSERT(vb != NULL);
+                const struct ggml_dyn_tallocr * ta = galloc->buf_tallocs[i];
+                for (int c = 0; c < ta->n_chunks; c++) {
+                    const size_t sz = ta->chunks[c]->max_size;
+                    const size_t off = sz > 0 ? galloc->ext_place[i](galloc->ext_ud[i], i, c, sz) : 0;
+                    if (off == SIZE_MAX) {
+                        GGML_LOG_ERROR("%s: no room for chunk %d of %.1f MiB of the graph (%d chunks) in the external %s buffer\n", __func__, c, sz / 1048576.0,
+                            ta->n_chunks, ggml_backend_buft_name(galloc->bufts[i]));
+                        galloc->ext_place[i](galloc->ext_ud[i], i, -1, 0);
+                        free(vb);
+                        return false;
+                    }
+                    vb->chunks[c] = galloc->ext_buf[i];
+                    vb->offs[c] = off;
+                    vb->caps[c] = sz;
+                    vb->capacity += sz;
+                }
+                vb->n_ext = ta->n_chunks;
+                vb->capacity = MAX(vb->capacity, (size_t) 1);
+                galloc->buffers[i] = vb;
             } else if (galloc->ext_buf[i] != NULL) {
                 // fork: the graph goes into the external buffer; it never grows: a graph that does not fit is an error, not a reallocation
                 galloc->buffers[i] = NULL;
