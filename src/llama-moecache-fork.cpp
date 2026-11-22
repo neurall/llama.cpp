@@ -2540,6 +2540,20 @@ void pv2_put(moe_cache * mc, pv2_heap & h, size_t li, int32_t e, size_t s, int64
     GGML_ASSERT(ls.at[e] < 0 && s % ls.v2u == 0 && "pool-v2: an expert placed twice, or off its unit");
     const bool ok = pv2_add(h, s, { pv2_id(mc, li, e), ls.v2n, heat, pin });
     GGML_ASSERT(ok && "pool-v2: a placement over bytes the heap does not have free");
+    {   // dev (2026-11-22, heap corruption on Qwen3.8 IQ4_XS): the ledger saw uploads into lent bytes; name who placed one there (--moe verify>0)
+        static const bool chk = [] { const char * x = moe_opt("verify"); return x && atoi(x) > 0; }();
+        static int said = 0;
+        if (chk && said < 16) {
+            for (const auto & r : mc->v2.held) {
+                if (s < r.second && s + ls.v2n > r.first) {
+                    said++;
+                    LLAMA_LOG_ERROR("pool-v2 check: L%zu e%d placed at [%zu, %zu) inside held [%zu, %zu) (heat %lld, pin %d, heap %s)\n", li, e, s, s + ls.v2n, r.first, r.second,
+                            (long long) heat, (int) pin, &h == &mc->v2.main ? "main" : "land");
+                    break;
+                }
+            }
+        }
+    }
     ls.at[e] = (int32_t) (s / ls.v2u);
     ls.n_own++;
 }
