@@ -2391,6 +2391,7 @@ void set_table_entry(llama_moe_cache_layer_fork & pub, int32_t expert, int32_t s
 void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, bool drop);
 void note_evict(moe_cache * mc, layer_state & ls, int32_t e);
 void pv2_out(moe_cache * mc, layer_state & ls, int32_t e);   // pool-v2: an expert leaves the card's heap (below the block pool runtime)
+static void pv2_log(const char * op, int32_t id, size_t from, size_t to, size_t n);   // the heap allocation log (--moe verify>0), below
 double score(const layer_state & ls, int32_t id, uint64_t gmax);
 double score(const layer_state & ls, int32_t id);
 // score of an expert competing with experts of other layers for a block: one common scale (moe_cache::gmax_all) in the pool
@@ -2555,10 +2556,41 @@ void pv2_put(moe_cache * mc, pv2_heap & h, size_t li, int32_t e, size_t s, int64
         }
     }
     ls.at[e] = (int32_t) (s / ls.v2u);
+    pv2_log("put", pv2_id(mc, li, e), (size_t) -1, s, ls.v2n);
     ls.n_own++;
 }
 // expert e of layer ls leaves the heap (evicted, or its upload dropped before it landed)
+// --moe verify>0 (dev): the heap's allocation log. Every place an expert takes or leaves (put, out, zone move, gpu-alloc move, refill leave) is one entry: who, from, to, bytes, when.
+// A verify that finds a bad expert prints the entries of that expert and of every expert that touched its bytes, and a collision audit (two experts, one byte) runs first.
+struct pv2_ev { uint64_t seq; const char * op; int32_t id; size_t from, to, n; int64_t t; };
+static std::vector<pv2_ev> g_pv2_log(1 << 15);
+static uint64_t            g_pv2_seq = 0;
+static std::mutex          g_pv2_log_mu;
+static const bool          g_pv2_log_on = [] { const char * x = moe_opt("verify"); return x && atoi(x) > 0; }();
+static void pv2_log(const char * op, int32_t id, size_t from, size_t to, size_t n) {
+    if (!g_pv2_log_on) { return; }
+    std::lock_guard<std::mutex> lk(g_pv2_log_mu);
+    g_pv2_log[g_pv2_seq % g_pv2_log.size()] = { g_pv2_seq, op, id, from, to, n, ggml_time_us() };
+    g_pv2_seq++;
+}
+// the newest `max` entries of expert `id` or touching [lo, hi), oldest first
+static void pv2_log_dump(const moe_cache * mc, int32_t id, size_t lo, size_t hi, int max) {
+    std::lock_guard<std::mutex> lk(g_pv2_log_mu);
+    std::vector<const pv2_ev *> hit;
+    const uint64_t first = g_pv2_seq > g_pv2_log.size() ? g_pv2_seq - g_pv2_log.size() : 0;
+    for (uint64_t q = g_pv2_seq; q-- > first && (int) hit.size() < max; ) {
+        const pv2_ev & x = g_pv2_log[q % g_pv2_log.size()];
+        const bool touches = (x.n && x.to != (size_t) -1 && x.to < hi && x.to + x.n > lo) || (x.n && x.from != (size_t) -1 && x.from < hi && x.from + x.n > lo);
+        if (x.id == id || touches) { hit.push_back(&x); }
+    }
+    for (size_t k = hit.size(); k-- > 0; ) {
+        const pv2_ev & x = *hit[k];
+        LLAMA_LOG_ERROR("pool-v2 log #%llu t=%.3fs %s L%d e%d from %lld to %lld bytes %zu\n", (unsigned long long) x.seq, x.t / 1e6, x.op, x.id / mc->v2.E, x.id % mc->v2.E,
+                (long long) x.from, (long long) x.to, x.n);
+    }
+}
 void pv2_out(moe_cache * mc, layer_state & ls, int32_t e) {
+    if (g_pv2_log_on && ls.v2u && ls.at[e] >= 0) { pv2_log("out", (int32_t) (&ls - mc->layers.data()) * mc->v2.E + e, (size_t) ls.at[e] * ls.v2u, (size_t) -1, ls.v2n); }
     if (!ls.v2u || ls.at[e] < 0) { return; }
     const size_t s = (size_t) ls.at[e] * ls.v2u;
     pv2_heap & h = pv2_heap_of(mc, s);
@@ -2764,6 +2796,7 @@ static void pv2_zone_sort(moe_cache * mc, size_t a, size_t b) {
         const bool ok = pv2_add(v.main, st.to, r);
         GGML_ASSERT(ok && "pool-v2: a zone-sort step into bytes that are not free");
         lo.at[(size_t) e] = (int32_t) (st.to / lo.v2u);
+        pv2_log("zmove", st.id, st.from, st.to, lo.v2n);
         set_table_entry(lo.pub, e, e);
         n_move++; b_move += (double) len;
     }
@@ -14294,6 +14327,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
             const bool ok = pv2_add(v.main, (size_t) mv.to, rr);
             GGML_ASSERT(ok && "pool-v2: gpu-alloc moved an expert onto bytes the host does not have free");
             lo.at[(size_t) (mv.id % v.E)] = (int32_t) (mv.to / lo.v2u);
+            pv2_log("gmove", mv.id, (size_t) mv.from, (size_t) mv.to, lo.v2n);
             set_table_entry(lo.pub, mv.id % v.E, mv.id % v.E);
         }
         pv2_put(mc, v.main, li, e, (size_t) r.s, heat_of(e), true);
@@ -15360,6 +15394,26 @@ void llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     size_t n_read = 0, n_bad = 0, n_bad_past = 0;
     int said = 0;
     std::lock_guard<std::mutex> lk(mc->mtx);
+    if (mc->v2.on) {   // collision audit: two cached experts of the heap must never share a byte
+        std::vector<std::tuple<size_t, size_t, int32_t>> iv;
+        for (size_t li = 0; li < mc->layers.size(); ++li) {
+            const layer_state & ls = mc->layers[li];
+            if (!ls.v2u) { continue; }
+            for (int32_t e = 0; e < (int32_t) ls.at.size(); ++e) { if (ls.at[e] >= 0 && ls.expert_slot[e] >= 0) { const size_t a = (size_t) ls.at[e] * ls.v2u; iv.emplace_back(a, a + ls.v2n, pv2_id(mc, li, e)); } }
+        }
+        std::sort(iv.begin(), iv.end());
+        int nc = 0;
+        for (size_t k = 1; k < iv.size() && nc < 8; ++k) {
+            if (std::get<0>(iv[k]) < std::get<1>(iv[k - 1])) {
+                nc++;
+                const int32_t a = std::get<2>(iv[k - 1]), b = std::get<2>(iv[k]);
+                LLAMA_LOG_ERROR("pool-v2 COLLISION: L%d e%d [%zu, %zu) and L%d e%d [%zu, %zu) share bytes\n", a / mc->v2.E, a % mc->v2.E, std::get<0>(iv[k - 1]), std::get<1>(iv[k - 1]),
+                        b / mc->v2.E, b % mc->v2.E, std::get<0>(iv[k]), std::get<1>(iv[k]));
+                pv2_log_dump(mc, b, std::get<0>(iv[k]), std::get<1>(iv[k]), 8);
+            }
+        }
+        if (!nc) { LLAMA_LOG_WARN("pool-v2: collision audit: %zu cached experts, no two share a byte\n", iv.size()); }
+    }
     for (size_t li = 0; li < mc->layers.size() + mc->shadows.size(); ++li) {   // the cstream shadows too: their blocks hold this pass's experts until the next lend
         const layer_state & ls = csl(mc, li);
         const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
@@ -15407,6 +15461,7 @@ void llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                 const std::string who = tr_fmt("L%zu il %d e%d %s block %d: %zu of %zu bytes differ, the first at +%zu, the last at +%zu (%s); card %s host %s, as floats%s",
                         li, ls.pub.il, e, parts[k], slot, diff, n, first, last, in_slice ? "in the slice" : "only past the slice", hx_got.c_str(), hx_want.c_str(), fl.c_str());
                 if (ap) { led_line(led_card(*ap), "verify-bad", lo, hi, who); }
+                if (said < 4 && ls.v2u && li < mc->layers.size()) { pv2_log_dump(mc, pv2_id(mc, li, e), (size_t) ls.at[e] * ls.v2u, (size_t) ls.at[e] * ls.v2u + ls.v2n, 10); }
                 if (said++ < 16) { LLAMA_LOG_ERROR("pool-verify: BAD %s [%zu, %zu) of %s: %s\n", dsts[k]->name, lo, hi, ap ? led_card(*ap) : "?", who.c_str()); }
             }
         }
@@ -17955,6 +18010,7 @@ static void pv2_switch(moe_cache * mc) {
     for (const auto & r : left) {   // its bytes are the refill's now: out of the tables
         layer_state & lo = mc->layers[(size_t) (r.id / v.E)];
         const int32_t x = r.id % v.E;
+        pv2_log("left", r.id, lo.at[(size_t) x] >= 0 ? (size_t) lo.at[(size_t) x] * lo.v2u : (size_t) -1, (size_t) -1, lo.v2n);
         lo.at[(size_t) x] = -1;
         lo.n_own--;
         evict_slot(mc, lo, x);
