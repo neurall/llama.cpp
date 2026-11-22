@@ -758,3 +758,45 @@ static inline pv2_pick pv2_coldest(const pv2_heap & h, const std::vector<pv2_col
     }
     return p;
 }
+
+// An expert of n bytes (start a multiple of u) where no resident of its own size can go (a model's layers hold experts of several sizes: Qwen3.8 IQ3_S has seven,
+// 1.44-2.54 MiB): a window anchored at a cold resident, at the start of its hole (it and the free bytes before it) or ending at its end, whose residents are all
+// takeable (not pinned, ok(id)); of the windows anchored at the coldest residents, the one whose hottest victim is coldest (the scan stops at a resident as hot
+// as the best window found: every window it anchors covers it). cur skips the stale front of ord for good.
+template <typename OK>
+static inline pv2_pick pv2_cold_window(const pv2_heap & h, const std::vector<pv2_cold_t> & ord, size_t & cur, size_t n, size_t u, OK ok) {
+    pv2_pick best;
+    int64_t best_cost = std::numeric_limits<int64_t>::max();
+    auto alive = [&](const pv2_cold_t & c) {
+        const auto it = h.res.find(c.s);
+        return it != h.res.end() && it->second.id == c.id && !it->second.pin && ok(c.id);
+    };
+    while (cur < ord.size() && !alive(ord[cur])) { ++cur; }
+    auto try_window = [&](size_t a, const pv2_cold_t & c) {
+        if (a < h.lo || a + n > h.hi || a % u != 0) { return; }
+        if (!(c.s < a + n && c.s + h.res.at(c.s).n > a)) { return; }   // the window must take the cold resident it is anchored at
+        auto it = h.res.upper_bound(a);
+        if (it != h.res.begin()) { auto pv = std::prev(it); if (pv->first + pv->second.n > a) { it = pv; } }
+        std::vector<size_t> ev;
+        int64_t cost = std::numeric_limits<int64_t>::min();
+        for (; it != h.res.end() && it->first < a + n; ++it) {
+            const pv2_res & r = it->second;
+            if (r.id < 0 || r.pin || !ok(r.id)) { return; }
+            ev.push_back(it->first);
+            cost = std::max(cost, r.heat);
+        }
+        if (cost < best_cost) { best_cost = cost; best.s = a; best.evict = ev; }
+    };
+    for (size_t k = cur; k < ord.size(); ++k) {
+        const pv2_cold_t & c = ord[k];
+        if (c.heat >= best_cost) { break; }
+        if (!alive(c)) { continue; }
+        size_t hs = c.s;   // the hole's start: the free extent right before it
+        auto g = h.gaps.lower_bound(c.s);
+        if (g != h.gaps.begin()) { auto pg = std::prev(g); if (pg->first + pg->second == c.s) { hs = pg->first; } }
+        try_window((hs + u - 1) / u * u, c);
+        const size_t e = c.s + h.res.at(c.s).n;
+        if (e >= n) { try_window((e - n) / u * u, c); }
+    }
+    return best;
+}

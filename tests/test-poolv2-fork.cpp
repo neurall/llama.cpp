@@ -1287,11 +1287,43 @@ static void test_coldest() {
     size_t c2 = 0;
     check("coldest: a start off the newcomer's unit skipped", pv2_coldest(h, ord, c2, 100, 7, all).s == 0);
 }
+static void test_cold_window() {
+    // [0,1000): A 0-100 h5, B 100-200 h1, C 200-350 h9, gap 350-450, D 450-550 h2, E 550-650 h3 pinned, gap 650-1000 (too far from any cold resident? no: anchored only)
+    pv2_heap h = pv2_make(0, 1000);
+    h.gaps.clear();
+    h.res[0]   = { 1, 100, 5, false, 10 };
+    h.res[100] = { 2, 100, 1, false, 10 };
+    h.res[200] = { 3, 150, 9, false, 10 };
+    h.gaps[350] = 100;
+    h.res[450] = { 4, 100, 2, false, 10 };
+    h.res[550] = { 5, 100, 3, true,  10 };
+    h.gaps[650] = 350;
+    auto ord = pv2_cold_order(h);
+    auto all = [](int32_t) { return true; };
+    size_t cur = 0;
+    pv2_pick a = pv2_cold_window(h, ord, cur, 150, 10, all);
+    // B's windows take C (h9) or A (h5): [100,250) B+C, [50,200) A+B -> cost 5; D's hole [350,500) takes only D -> cost 2: best
+    check("cold window: the window whose hottest victim is coldest (D with the free bytes before it)", a.s == 350 && a.evict == std::vector<size_t>({450}));
+    cur = 0;
+    pv2_pick b = pv2_cold_window(h, ord, cur, 150, 40, all);
+    check("cold window: aligned to the unit (360, D only)", b.s == 360 && b.evict == std::vector<size_t>({450}));
+    cur = 0;
+    pv2_pick c = pv2_cold_window(h, ord, cur, 150, 10, [](int32_t id) { return id != 4; });
+    check("cold window: a refused resident is never taken (A+B, cost 5)", c.s == 50 && c.evict == std::vector<size_t>({0, 100}));
+    cur = 0;
+    pv2_pick d = pv2_cold_window(h, ord, cur, 400, 10, [](int32_t id) { return id == 2; });
+    check("cold window: no window of takeable residents, nothing", d.s == PV2_NONE && d.evict.empty());
+    h.res[100].id = 7;   // B replaced since the order was built: stale front skipped for good
+    cur = 0;
+    (void) pv2_cold_window(h, ord, cur, 150, 10, all);
+    check("cold window: the stale front of the order is skipped", cur == 1);
+}
 int main(int argc, char ** argv) {
     test_upchunks();
     test_upring();
     test_eranges();
     test_coldest();
+    test_cold_window();
     if (argc > 1 && strcmp(argv[1], "--sim") == 0) {
         std::vector<std::string> pos;
         std::string mode = "own";

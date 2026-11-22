@@ -13910,7 +13910,7 @@ static void pv2_pin_entry(moe_cache * mc, size_t q, bool pin) {   // cache lock 
 // (a free window first, else residents colder than it within reach), else the landing area at its cursor over anything not pinned (what is left there belongs
 // to computed layers or earlier calls). A victim whose layer computed in this pass makes the copy wait for that compute. false: no place for every expert yet
 // (an entry ahead: the next split frees some), and nothing changed but the victims gone
-static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t & wait_at) {
+static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t & wait_at, bool cheap = false) {   // cheap: an entry further ahead than the next (cs_ahead): free bytes and residents no layer of the pass still needs only
     optime_t _ot(OP_PLAN_V2);   // cache lock held
     auto & v = mc->v2;
     const size_t li = mc->cs_order[p];
@@ -13954,9 +13954,13 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
     for (const auto & g : v.main.gaps) { max_gap = std::max(max_gap, g.second); }
     std::vector<int32_t> placed;
     size_t n_heat = 0, b_heat = 0, n_land = 0, n_ev = 0;
+    std::set<std::pair<int, size_t>> rebuilt;   // no landing area: the cold orders rebuilt in this call (per tier and size), the every-size order per tier
+    bool rebuilt_all[2] = { false, false };
     for (int32_t e : want) {
         const int64_t hx = v.tiered ? v.hv[(size_t) pv2_id(mc, li, e)] : pv2_heat(mc, ls, e, false, lsum);
-        pv2_pick pk = pv2_pick_main(mc, li, e, hx, v.reach, ls.v2n + ls.v2u <= max_gap ? SIZE_MAX : v.reach);   // no free extent can hold it: the scan of every gap is skipped (19k experts a prompt)
+        // no free extent can hold it: the scan of every gap is skipped (19k experts a prompt); an entry ahead takes free bytes only here (no landing area: its
+        // victims come from the residents no layer of the pass still needs, below)
+        pv2_pick pk = pv2_pick_main(mc, li, e, cheap && v.H == v.M ? std::numeric_limits<int64_t>::min() : hx, v.reach, ls.v2n + ls.v2u <= max_gap ? SIZE_MAX : v.reach);
         if (pk.s != PV2_NONE) {
             victim(v.main, pk);
             pv2_take(mc, v.main, pk, li, e, hx, true, &n_ev);
@@ -13965,6 +13969,7 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
             // first a resident no layer of this pass still needs, else (a full-stream pass: every layer is ahead at its start) the coldest of any layer, which that
             // layer streams again at its turn (as the classes claim over an expert of a layer ahead)
             static std::map<size_t, std::pair<std::vector<pv2_cold_t>, size_t>> cold[2];   // per expert size: the coldest first, its cursor (rebuilt each pass)
+            static std::pair<std::vector<pv2_cold_t>, size_t> cold_all[2];                  // every size: a window over residents of other sizes
             static uint64_t ord_pass = UINT64_MAX;
             auto ok_any = [&](int32_t id) {
                 const layer_state & lq = mc->layers[(size_t) (id / v.E)];
@@ -13976,14 +13981,20 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
                 const int32_t q = lj < mc->cs_pos.size() ? mc->cs_pos[lj] : -1;
                 return ok_any(id) && (q < 0 || (size_t) q < p);
             };
-            if (ord_pass != mc->cs_pass) { cold[0].clear(); cold[1].clear(); ord_pass = mc->cs_pass; }
-            for (int t = 0; t < 2 && pk.s == PV2_NONE; ++t) {
+            if (ord_pass != mc->cs_pass) { cold[0].clear(); cold[1].clear(); cold_all[0] = cold_all[1] = {}; ord_pass = mc->cs_pass; }
+            for (int t = 0; t < (cheap ? 1 : 2) && pk.s == PV2_NONE; ++t) {
                 auto ci = cold[t].find(ls.v2n);
                 if (ci == cold[t].end()) { ci = cold[t].emplace(ls.v2n, std::make_pair(pv2_cold_order(v.main, ls.v2n), (size_t) 0)).first; }
                 pk = t == 0 ? pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_done) : pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_any);
-                if (pk.s == PV2_NONE) {   // residents skipped earlier (pinned, ahead, uploading) may be free now
+                if (pk.s == PV2_NONE && !rebuilt.count({ t, ls.v2n })) {   // residents skipped earlier (pinned, ahead, uploading) may be free now: once a call
+                    rebuilt.insert({ t, ls.v2n });
                     ci->second = { pv2_cold_order(v.main, ls.v2n), 0 };
                     pk = t == 0 ? pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_done) : pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_any);
+                }
+                if (pk.s == PV2_NONE) {   // none of its size: a window over residents of other sizes, anchored at the coldest (the classes claim across classes)
+                    auto & ca = cold_all[t];
+                    if (!rebuilt_all[t]) { ca = { pv2_cold_order(v.main), 0 }; rebuilt_all[t] = true; }   // once a call: windows see this call's placements
+                    pk = t == 0 ? pv2_cold_window(v.main, ca.first, ca.second, ls.v2n, ls.v2u, ok_done) : pv2_cold_window(v.main, ca.first, ca.second, ls.v2n, ls.v2u, ok_any);
                 }
             }
             if (pk.s == PV2_NONE) {   // every resident of its size is pinned or ahead: the entry waits for the next split
@@ -14036,7 +14047,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t &
     if (mc->v2.on) {   // pool-v2: no k arm, no late fix, no mix, no cs-tail (pp_decide keeps them off)
         GGML_ASSERT(!sel && !late && "pool-v2: the k arm's lists reached the heap's stream");
         if (mvs) { mvs->clear(); }
-        return cs_plan_v2(mc, p, out, wait_at);
+        return cs_plan_v2(mc, p, out, wait_at, cheap);
     }
     ring_hot_cuts(mc);
     const size_t li = mc->cs_order[p];
