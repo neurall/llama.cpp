@@ -1447,8 +1447,8 @@ static bool                g_cs_pred_built = false;    // the graph that runs ca
 static double              g_cs_k_pass = 0.0;          // the running cstream pass's prediction multiplier (cs_begin): 0 = the stream, every expert of an entry's range
 // user 2026-11-21: keep operation timestamps so a run shows where the time goes and what it waits on. optime_add(op, us) from scoped timers; llama_moe_cache_prompt_call_fork
 // prints the prompt call's table (ms, % of its wall time) and the decode steps' table every 128 steps, then clears them.
-enum optime_op { OP_SYNC, OP_TAKE_WAIT, OP_SWITCH, OP_PLAN_V2, OP_FILL_FREE, OP_REHEAT, OP_SWAP, OP_ZONE_SORT, OP_SWAP_COLD, OP_N };
-static const char * const optime_name[OP_N] = { "heap sync (lend/zone)", "range take wait", "switch to decode", "stream plan", "free-window fill", "reheat refill", "decode swap pick", "zone sort", "swap cold-map rebuild" };
+enum optime_op { OP_SYNC, OP_TAKE_WAIT, OP_SWITCH, OP_PLAN_V2, OP_FILL_FREE, OP_REHEAT, OP_SWAP, OP_ZONE_SORT, OP_SWAP_COLD, OP_PLAN_MAIN, OP_PLAN_LAND, OP_PLAN_COLD, OP_N };
+static const char * const optime_name[OP_N] = { "heap sync (lend/zone)", "range take wait", "switch to decode", "stream plan", "free-window fill", "reheat refill", "decode swap pick", "zone sort", "swap cold-map rebuild", "plan: main-heap pick", "plan: landing place", "plan: coldest fallback" };
 static std::atomic<uint64_t> g_optime_us[OP_N];
 static std::atomic<uint64_t> g_optime_n[OP_N];
 struct optime_t { optime_op op; int64_t t0; explicit optime_t(optime_op o) : op(o), t0(ggml_time_us()) {} ~optime_t() { g_optime_us[op] += (uint64_t) (ggml_time_us() - t0); g_optime_n[op]++; } };
@@ -13966,7 +13966,8 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
         const int64_t hx = v.tiered ? v.hv[(size_t) pv2_id(mc, li, e)] : pv2_heat(mc, ls, e, false, lsum);
         // no free extent can hold it: the scan of every gap is skipped (19k experts a prompt); an entry ahead takes free bytes only here (no landing area: its
         // victims come from the residents no layer of the pass still needs, below)
-        pv2_pick pk = pv2_pick_main(mc, li, e, cheap && v.H == v.M ? std::numeric_limits<int64_t>::min() : hx, v.reach, ls.v2n + ls.v2u <= max_gap ? SIZE_MAX : v.reach);
+        pv2_pick pk;
+        { optime_t _om(OP_PLAN_MAIN); pk = pv2_pick_main(mc, li, e, cheap && v.H == v.M ? std::numeric_limits<int64_t>::min() : hx, v.reach, ls.v2n + ls.v2u <= max_gap ? SIZE_MAX : v.reach); }
         if (pk.s != PV2_NONE) {
             victim(v.main, pk);
             pv2_take(mc, v.main, pk, li, e, hx, true, &n_ev);
@@ -13974,7 +13975,7 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
         } else {
             if (v.H > v.M) {   // the landing area at its cursor over anything not pinned (what is left there belongs to computed layers or earlier calls)
                 const size_t t = v.cur < v.M || v.cur + ls.v2n > v.H ? v.M : v.cur;
-                pk = pv2_place(v.land, t, ls.v2n, ls.v2u, std::numeric_limits<int64_t>::max() - 1, v.H - v.M, false);
+                { optime_t _ol(OP_PLAN_LAND); pk = pv2_place(v.land, t, ls.v2n, ls.v2u, std::numeric_limits<int64_t>::max() - 1, v.H - v.M, false); }
                 if (pk.s != PV2_NONE) {
                     victim(v.land, pk);
                     pv2_take(mc, v.land, pk, li, e, -1, true, &n_ev);
@@ -14001,6 +14002,7 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
                 const int32_t q = lj < mc->cs_pos.size() ? mc->cs_pos[lj] : -1;
                 return ok_any(id) && (q < 0 || (size_t) q < p);
             };
+            optime_t _oc(OP_PLAN_COLD);
             if (ord_pass != mc->cs_pass) { cold[0].clear(); cold[1].clear(); cold_all[0] = cold_all[1] = {}; ord_pass = mc->cs_pass; }
             for (int t = 0; t < (cheap ? 1 : 2) && pk.s == PV2_NONE; ++t) {
                 auto ci = cold[t].find(ls.v2n);
