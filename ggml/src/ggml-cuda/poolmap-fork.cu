@@ -121,7 +121,7 @@ static __device__ bool pm_window_ok(const pm_ctx & c, uint32_t i0, uint64_t st, 
     return true;
 }
 
-struct pm_shared { uint32_t cur, nofree, pick, pidx; unsigned long long sh_best, sh_key; uint32_t sh_idx; uint64_t cov[PM_MAX_MV]; int64_t cov_hot[PM_MAX_MV]; uint32_t n_cov, n_mv, n_fr, ovf; };
+struct pm_shared { uint32_t cur, nofree, pick, pidx; unsigned long long sh_best, sh_key, sh_same; uint32_t sh_idx; uint64_t cov[PM_MAX_MV]; int64_t cov_hot[PM_MAX_MV]; uint32_t n_cov, n_mv, n_fr, ovf; };
 // thread 0: the coldest unpinned expert at w (index vi, exactly n bytes at a multiple of a) leaves and the newcomer takes its entry in place
 static __device__ void pm_take_inplace(pm_ctx & c, uint32_t vi, uint64_t a, int32_t id, int64_t hot, int pin, pm_result * res) {
     const pm_entry w = c.v[vi];
@@ -196,7 +196,9 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
     // An expert of exactly n bytes at a multiple of a is its own window (no window check).
     {
         const uint32_t nc = *cnt;
-        unsigned long long best = ~0ull, key = ~0ull;
+        // user 2026-11-22: the coldest expert of the same size is swapped in place (no split, no merge, no shift of the vector); a window over other
+        // sizes only when no same-size expert is takeable
+        unsigned long long best = ~0ull, key = ~0ull, same = ~0ull;
         #pragma unroll 4
         for (uint32_t i = threadIdx.x; i < nc; i += PM_T) {
             const uint64_t off = v[i].off, sz = v[i].size; const uint8_t ty = v[i].type, fl = v[i].flags;
@@ -205,13 +207,18 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
                 if (st + n <= off + sz && st < best) { best = st; }
             } else if (!left && ty == PM_MOE && !(fl & PM_PIN)) {
                 const uint64_t k = pm_key(v[i].hot, i);
-                if (k < key && ((sz == n && off % a == 0) || pm_window_ok(c, i, pm_align(off, a), n))) { key = k; }
+                if (sz == n && off % a == 0) { if (k < same) { same = k; } }
+                else if (k < key && pm_window_ok(c, i, pm_align(off, a), n)) { key = k; }
             }
         }
+        if (threadIdx.x == 0) { S.sh_same = ~0ull; }
+        __syncthreads();
         if (best != ~0ull) { atomicMin(&sh_best, best); }
         if (key != ~0ull) { atomicMin(&sh_key, key); }
+        if (same != ~0ull) { atomicMin(&S.sh_same, same); }
     }
     __syncthreads();
+    if (sh_best == ~0ull && !left && S.sh_same != ~0ull) { sh_key = S.sh_same; }   // uniform: every thread reads the same shared values
     uint64_t s = sh_best;
     if (s == ~0ull && !left) {
         // 2. the coldest takeable expert found above

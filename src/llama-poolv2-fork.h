@@ -824,6 +824,12 @@ static inline size_t pv2_alloc_window(const pv2_heap & h, size_t n, size_t a, si
         const size_t st = (gs + a - 1) / a * a;
         if (st + n <= gs + gn) { return st; }
     }
+    // user 2026-11-22: the coldest takeable expert of exactly n bytes at a multiple of a is swapped in place (no split, no move); windows only without one
+    if (!left) {
+        size_t sx = PV2_NONE; int64_t sh = INT64_MAX;
+        for (const auto & [x, r] : h.res) { if (!r.pin && r.id != PV2_HOLD && r.n == n && x % a == 0 && r.heat < sh) { sh = r.heat; sx = x; } }
+        if (sx != PV2_NONE) { return sx; }
+    }
     // user 2026-11-22: anchored at the coldest takeable expert (its neighbours in the window move over colder ones elsewhere: pv2_zone_move); the
     // max_anchors coldest are tried coldest first, the first window that covers only takeable bytes wins; then every free extent's start (a window may
     // begin in free bytes and run on over experts)
