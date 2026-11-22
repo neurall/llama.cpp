@@ -11160,3 +11160,7 @@ poolv2_land32-pv2-q-vf-on-pf14k1k,2026-11-22 08:46:40,bench /m/q/1/Qwen3.8-Flash
 poolv2_land32-pv2-ol-on-pf1k,2026-11-22 08:48:29,bench /m/o/4/OLMoE-1B-7B-0924-Q4_K_M.gguf builds poolv2_land32 variants v test pf1k n=2,,
 poolv2_land32-ga-classes-pf12k1k,2026-11-22 08:50:07,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds poolv2_land32 variants v test pf12k n=3,,
 poolv2_land32-ga-heap-all-pf12k1k,2026-11-22 08:54:15,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds poolv2_land32 variants v test pf12k n=3,,
+poolv2_land32win-pv2-q-vf-on-pf14k1k,2026-11-22 08:57:48,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_land32win variants v test pf14k n=2,,
+poolv2_land32win-pv2-ol-on-pf1k,2026-11-22 08:59:41,bench /m/o/4/OLMoE-1B-7B-0924-Q4_K_M.gguf builds poolv2_land32win variants v test pf1k n=2,,
+poolv2_unsorted-pv2-q-vf-on-pf14k1k,2026-11-22 09:04:54,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_unsorted variants v test pf14k n=2,,
+poolv2_unsorted-pv2-ol-on-pf1k,2026-11-22 09:06:47,bench /m/o/4/OLMoE-1B-7B-0924-Q4_K_M.gguf builds poolv2_unsorted variants v test pf1k n=2,,

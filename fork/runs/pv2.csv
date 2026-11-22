@@ -30,3 +30,6 @@ ga-classes,glm35,2,pf12k1k,1024,-bs,--env CUDA_VISIBLE_DEVICES=0
 ga-heap-all,glm35,2,pf12k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
 ga-heap-oldland,glm35,2,pf12k1k,1024,"-bs --moe pool-v2=1,pv2-land-mb=100000",--env CUDA_VISIBLE_DEVICES=0
 ga-heap-noinpl,glm35,2,pf12k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_MOE_WEIGHT_INPLACE=0
+qa-heap-heatplace,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,pv2-heatplace=1",--env CUDA_VISIBLE_DEVICES=0
+qa-heap-nomove,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,zone-move=0",--env CUDA_VISIBLE_DEVICES=0
+ga-heap-nomove,glm35,2,pf12k1k,1024,"-bs --moe pool-v2=1,zone-move=0",--env CUDA_VISIBLE_DEVICES=0
