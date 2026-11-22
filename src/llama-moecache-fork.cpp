@@ -8471,17 +8471,18 @@ static size_t pv2_fill_free(moe_cache * mc, bool wait, bool ini_only) {
     std::vector<upload_job> jobs;
     double bytes = 0.0, bytes1 = 0.0;
     size_t n1 = 0;
+    // a size no free window holds stays refused for the rest of the call (placements only shrink the gaps): 20k missing experts each scanning every gap
+    // held the cache lock 430 ms after a 15.5k prompt, in front of its first token (Qwen3.8 one card)
+    std::set<std::pair<size_t, size_t>> refused;
     for (const auto & c : pv2_missing(mc, ini_only)) {
         layer_state & ls = mc->layers[c.li];
-        if (ls.v2n > gmax) { continue; }
+        if (ls.v2n > gmax || refused.count({ ls.v2n, ls.v2u })) { continue; }
         const pv2_pick pk = pv2_pick_main(mc, c.li, c.e, std::numeric_limits<int64_t>::min(), 0, SIZE_MAX);
-        if (pk.s == PV2_NONE) { continue; }
+        if (pk.s == PV2_NONE) { refused.insert({ ls.v2n, ls.v2u }); continue; }
         pv2_put(mc, v.main, c.li, c.e, pk.s, std::llround(1e6 * c.sc), true);
         jobs.push_back(pv2_job(mc, c.li, c.e, wait, c.part));
         bytes += ls.v2n;
         if (!jobs.back().bg) { n1++; bytes1 += ls.v2n; }
-        gmax = 0;
-        for (const auto & [g, n] : v.main.gaps) { gmax = std::max(gmax, n); }
     }
     pv2_queue(mc, jobs);
     static int logged = 0;
