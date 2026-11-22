@@ -2566,9 +2566,9 @@ struct pv2_ev { uint64_t seq; const char * op; int32_t id; size_t from, to, n; i
 static std::vector<pv2_ev> g_pv2_log(1 << 21);
 static uint64_t            g_pv2_seq = 0;
 static std::mutex          g_pv2_log_mu;
-static const bool          g_pv2_log_on = [] { const char * x = moe_opt("verify"); return x && atoi(x) > 0; }();
+static bool pv2_log_on() { static const bool on = [] { const char * x = moe_opt("verify"); return x && atoi(x) > 0; }(); return on; }   // lazy: the --moe options are not parsed when static init runs
 static void pv2_log(const char * op, int32_t id, size_t from, size_t to, size_t n) {
-    if (!g_pv2_log_on) { return; }
+    if (!pv2_log_on()) { return; }
     std::lock_guard<std::mutex> lk(g_pv2_log_mu);
     g_pv2_log[g_pv2_seq % g_pv2_log.size()] = { g_pv2_seq, op, id, from, to, n, ggml_time_us() };
     g_pv2_seq++;
@@ -2590,7 +2590,7 @@ static void pv2_log_dump(const moe_cache * mc, int32_t id, size_t lo, size_t hi,
     }
 }
 void pv2_out(moe_cache * mc, layer_state & ls, int32_t e) {
-    if (g_pv2_log_on && ls.v2u && ls.at[e] >= 0) { pv2_log("out", (int32_t) (&ls - mc->layers.data()) * mc->v2.E + e, (size_t) ls.at[e] * ls.v2u, (size_t) -1, ls.v2n); }
+    if (pv2_log_on() && ls.v2u && ls.at[e] >= 0) { pv2_log("out", (int32_t) (&ls - mc->layers.data()) * mc->v2.E + e, (size_t) ls.at[e] * ls.v2u, (size_t) -1, ls.v2n); }
     if (!ls.v2u || ls.at[e] < 0) { return; }
     const size_t s = (size_t) ls.at[e] * ls.v2u;
     pv2_heap & h = pv2_heap_of(mc, s);
