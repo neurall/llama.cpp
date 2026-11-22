@@ -14101,6 +14101,8 @@ struct pm_dev {
     ggml_backend_buffer_t buf = nullptr;   // the map vector + its count on the card
     pm_entry * v_dev = nullptr; uint32_t * cnt_dev = nullptr; uint32_t cap = 0;
     pm_req * rq = nullptr, * rq_dev = nullptr; pm_result * rs = nullptr, * rs_dev = nullptr; uint32_t max_rq = 0;
+    // the applies run on the ring behind compute, long after the host moved on: each batch's reports live in their own bank until its applies ran
+    static constexpr int NB = 4; int bank = 0; ggml_backend_event_t bank_ev[NB] = {};
     int32_t ** tbl = nullptr, ** tbl_dev = nullptr;
 };
 static pm_dev g_pm;
@@ -14125,7 +14127,8 @@ static bool pm_setup(moe_cache * mc) {
     g_pm.max_rq = 1024;
     void * d = nullptr;
     g_pm.rq = (pm_req *) al(g_pm.max_rq * sizeof(pm_req), &d); g_pm.rq_dev = (pm_req *) d;
-    g_pm.rs = g_pm.rq ? (pm_result *) al(g_pm.max_rq * sizeof(pm_result), &d) : nullptr; g_pm.rs_dev = (pm_result *) d;
+    g_pm.rs = g_pm.rq ? (pm_result *) al(pm_dev::NB * g_pm.max_rq * sizeof(pm_result), &d) : nullptr; g_pm.rs_dev = (pm_result *) d;
+    for (auto & e : g_pm.bank_ev) { e = ggml_backend_event_new(dev); }
     g_pm.tbl = g_pm.rs ? (int32_t **) al(mc->layers.size() * sizeof(int32_t *), &d) : nullptr; g_pm.tbl_dev = (int32_t **) d;
     if (!g_pm.tbl) { LLAMA_LOG_WARN("moe-cache: pool-v2: gpu-alloc: no mapped memory: host picks\n"); return false; }
     for (size_t li = 0; li < mc->layers.size(); ++li) { g_pm.tbl[li] = mc->layers[li].pub.dev_table ? (int32_t *) mc->layers[li].pub.dev_table->data : nullptr; }
@@ -14173,16 +14176,19 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     }
     g_pm.io(g_pm.be, g_pm.cnt_dev, &cnt, sizeof(cnt), 1);
     const uint32_t k = (uint32_t) std::min<size_t>(want.size(), g_pm.max_rq);
+    const int bk = g_pm.bank; g_pm.bank = (bk + 1) % pm_dev::NB;
+    ggml_backend_event_synchronize(g_pm.bank_ev[bk]);   // this bank's last applies have read their reports
+    pm_result * const rs = g_pm.rs + (size_t) bk * g_pm.max_rq, * const rs_dev = g_pm.rs_dev + (size_t) bk * g_pm.max_rq;
     for (uint32_t j = 0; j < k; ++j) {
         g_pm.rq[j] = { ls.v2n, ls.v2u, heat_of(want[j]), pv2_id(mc, li, want[j]), 3 };   // pinned, movers to free bytes only (a kernel may still read a colder one)
-        g_pm.rs[j].done = 0;
+        rs[j].done = 0;
     }
     char * base = (char *) ggml_backend_buffer_get_base(mc->alias[v.ap_idx].buf);
-    g_pm.batch(g_pm.be, g_pm.v_dev, g_pm.cnt_dev, g_pm.cap, v.main.lo, v.main.hi, g_pm.rq_dev, k, g_pm.rs_dev, base, g_pm.tbl_dev, v.E);
-    for (uint32_t j = 0; j < k; ++j) { while (__atomic_load_n(&g_pm.rs[j].done, __ATOMIC_ACQUIRE) == 0) { } }   // bell style: the reports land in mapped memory
+    g_pm.batch(g_pm.be, g_pm.v_dev, g_pm.cnt_dev, g_pm.cap, v.main.lo, v.main.hi, g_pm.rq_dev, k, rs_dev, base, g_pm.tbl_dev, v.E);
+    for (uint32_t j = 0; j < k; ++j) { while (__atomic_load_n(&rs[j].done, __ATOMIC_ACQUIRE) == 0) { } }   // bell style: the reports land in mapped memory
     for (uint32_t j = 0; j < k; ++j) {
         const int32_t e = want[j];
-        const pm_result & r = g_pm.rs[j];
+        const pm_result & r = rs[j];
         GGML_ASSERT(!r.overflow && "pool-v2: gpu-alloc report overflow");
         if (r.s == UINT64_MAX) { left.push_back(e); continue; }
         // the kernels that read what leaves or moves (computed layers) finish before the upload lands
@@ -14217,7 +14223,8 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     for (uint32_t j = k; j < want.size(); ++j) { left.push_back(want[j]); }
     // the applies wait on the ring for the compute of every layer whose experts they free or move (cs_done counts queued layers, not finished ones)
     if (wait_at > 0) { ggml_backend_event_wait(g_pm.be, csl(mc, mc->cs_order[wait_at - 1]).cs_done_ev); }
-    g_pm.apply(g_pm.be, g_pm.rs_dev, k, base, g_pm.tbl_dev, v.E);
+    g_pm.apply(g_pm.be, rs_dev, k, base, g_pm.tbl_dev, v.E);
+    ggml_backend_event_record(g_pm.bank_ev[bk], g_pm.be);
     static const bool check = [] { const char * x = moe_opt("map-check"); return x && atoi(x) != 0; }();
     if (check) {
         uint32_t c2 = 0;
@@ -14240,7 +14247,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
         };
         std::set<int32_t> seen;   // an expert moved twice in a batch: its last report is what the table holds
         for (uint32_t j = k; j-- > 0;) {
-            const pm_result & r = g_pm.rs[j];
+            const pm_result & r = rs[j];
             if (r.s == UINT64_MAX) { continue; }
             for (uint32_t q = r.n_mv; q-- > 0;) { if (seen.insert(r.mv[q].id).second) { chk(r.mv[q].id, (int32_t) (r.mv[q].to / (r.mv[q].u ? r.mv[q].u : 1))); } }
             for (uint32_t f = r.n_fr; f-- > 0;) { if (r.fr[f].id >= 0 && seen.insert(r.fr[f].id).second) { chk(r.fr[f].id, -1); } }
