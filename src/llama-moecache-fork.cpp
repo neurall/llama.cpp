@@ -2888,6 +2888,7 @@ static size_t pv2_zone_move_locked(moe_cache * mc, size_t a, size_t b, ggml_back
         const bool ok = pv2_add(v.main, to, r);
         GGML_ASSERT(ok && "pool-v2: a zone move into bytes that are not free");
         lo.at[(size_t) e] = (int32_t) (to / u);
+        pv2_log("zmove2", (int32_t) (&lo - mc->layers.data()) * v.E + e, from, to, lo.v2n);
         set_table_entry(lo.pub, e, e);
         n_move++; b_move += (double) n;
     }
@@ -18024,6 +18025,7 @@ static void pv2_switch(moe_cache * mc) {
         layer_state & ls = mc->layers[li];
         const size_t x = where.at(c.id);
         ls.at[(size_t) e] = (int32_t) (x / ls.v2u);
+        pv2_log("land", c.id, (size_t) -1, x, ls.v2n);
         ls.n_own++;
         v.land.res.at(x).pin = true;   // until its upload is published
         jobs.push_back(pv2_job(mc, li, e, wait, part[c.id]));
