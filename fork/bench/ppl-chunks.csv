@@ -4996,3 +4996,31 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-22 11:35:49,stock-b12631-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
 2026-11-22 11:36:50,stock-b12631-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
 2026-11-22 11:36:50,stock-b12631-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-11-22 12:15:47,pv2_mapring_head -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3748
+2026-11-22 12:15:47,pv2_mapring_head -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4256
+2026-11-22 12:17:25,pv2_mapring_head -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3778
+2026-11-22 12:17:25,pv2_mapring_head -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4285
+2026-11-22 12:19:42,pv2_mapring_head -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4458
+2026-11-22 12:19:42,pv2_mapring_head -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5621
+2026-11-22 12:20:59,pv2_mapring_head -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4539
+2026-11-22 12:20:59,pv2_mapring_head -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5708
+2026-11-22 12:22:52,pv2_mapring_head -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.142
+2026-11-22 12:22:52,pv2_mapring_head -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1307
+2026-11-22 12:23:47,pv2_mapring_head -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1352
+2026-11-22 12:23:47,pv2_mapring_head -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1299
+2026-11-22 12:25:22,pv2_mapring_head -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1254
+2026-11-22 12:25:22,pv2_mapring_head -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1113
+2026-11-22 12:26:14,pv2_mapring_head -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1378
+2026-11-22 12:26:14,pv2_mapring_head -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1171
+2026-11-22 12:27:44,pv2_mapring_head -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-22 12:27:44,pv2_mapring_head -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-22 12:28:42,pv2_mapring_head -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-22 12:28:42,pv2_mapring_head -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-22 12:30:20,pv2_mapring_head -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6671
+2026-11-22 12:30:20,pv2_mapring_head -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5235
+2026-11-22 12:30:44,pv2_mapring_head -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6636
+2026-11-22 12:30:44,pv2_mapring_head -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5246
+2026-11-22 12:31:47,"pv2_mapring_head -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9381
+2026-11-22 12:31:47,"pv2_mapring_head -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9404
+2026-11-22 12:32:02,"pv2_mapring_head -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9376
+2026-11-22 12:32:02,"pv2_mapring_head -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9407
