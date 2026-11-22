@@ -14112,8 +14112,9 @@ static bool pm_setup(moe_cache * mc) {
     if (g_pm.tried) { return g_pm.ok; }
     auto & v = mc->v2;
     const ggml_backend_dev_t dev = mc->alias[v.ap_idx].dev;
-    for (int k = 0; k < mc->n_links; ++k) { if (mc->ring_be[k] && mc->link_dev[k] == dev) { g_pm.be = mc->ring_be[k]; } }
-    if (!g_pm.be) { return false; }   // the ring stream comes later (the KV's first stretch is taken before it): try again then, not for good
+    // the ring stream is made here when the KV's first stretch comes before any ring use (as ring_backend does)
+    for (int k = 0; k < mc->n_links && !g_pm.be; ++k) { if (mc->link_dev[k] == dev) { if (!mc->ring_be[k]) { mc->ring_be[k] = ggml_backend_dev_init(dev, nullptr); } g_pm.be = mc->ring_be[k]; } }
+    if (!g_pm.be) { return false; }
     g_pm.tried = true;
     ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
     typedef void * (*alloc_t)(size_t, void **);
