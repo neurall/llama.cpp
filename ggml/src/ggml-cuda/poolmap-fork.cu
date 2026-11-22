@@ -11,7 +11,9 @@
 #endif
 #include "../../../src/llama-poolmap-fork.h"
 
-#define PM_T 1024
+#ifndef PM_T
+#define PM_T 256   // a block of 256 fits beside the prompt's kernels; 1024 waited ~18 ms a batch for an SM to drain (Qwen3.8 15.5k prompt)
+#endif
 
 struct pm_ctx { pm_entry * v; uint32_t * cnt; uint32_t cap; uint64_t lo, hi; };
 
