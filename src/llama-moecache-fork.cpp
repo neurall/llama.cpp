@@ -11835,7 +11835,12 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         // --moe pv2-land-layers=2: the layer computing and the next one copying ahead (before 2026-11-22; user: a layer's worth not yet used is waste)
                         static const int land_n = [] { const char * x = moe_opt("pv2-land-layers"); return x ? std::max(1, atoi(x)) : 1; }();
                         size_t lay = 0;
-                        for (const auto & l : mc->layers) { if (l.v2u) { lay = std::max(lay, (size_t) land_n * l.at.size() * l.v2p); } }
+                        size_t big = 0;   // the largest expert: the landing area holds at least one
+                        for (const auto & l : mc->layers) { if (l.v2u) { lay = std::max(lay, (size_t) land_n * l.at.size() * l.v2p); big = std::max(big, l.v2p); } }
+                        // user 2026-11-22: the landing area is 32 MiB at most (upload staging, where link chunks saturate), never a layer: a GLM 3.5 layer froze
+                        // 3583 of its 14461 MiB heap at decode. A streamed expert with no place there takes the globally coldest resident (the fallback below)
+                        static const size_t land_cap = (size_t) [] { const char * x = moe_opt("pv2-land-mb"); return x ? std::max(1, atoi(x)) : 32; }() << 20;
+                        lay = std::max(std::min(lay, land_cap), big);
                         v.H = ap.tail_end;
                         // --moe pv2-land=0: no layer-sized landing area; the whole heap holds experts by heat, a streamed expert with no place near its target takes
                         // the place of the globally coldest resident (pv2_coldest). Off by default (user 2026-11-22, "range launches first"): a full-stream layer's
@@ -17111,7 +17116,15 @@ void llama_moe_cache_step_fork() {
                                 cold[{ lq.v2n, lq.v2u }].push_back({ std::llround(1e6 * xscore(mc, lq, eq)), x, r.id, hk });
                             }
                         }
-                        for (auto & [k, v] : cold) { std::sort(v.begin(), v.end(), [](const auto & a, const auto & b) { return std::get<0>(a) != std::get<0>(b) ? std::get<0>(a) < std::get<0>(b) : std::get<1>(a) < std::get<1>(b); }); }
+                        // only the coldest K per size, partially sorted (a full sort of every resident ran every 16 steps: 11 ms per 128 decode steps on Qwen3.8);
+                        // a size whose K are spent rebuilds at once (spent, above). --moe pv2-cold-k=N
+                        static const size_t cold_k = (size_t) [] { const char * x = moe_opt("pv2-cold-k"); return x ? std::max(1, atoi(x)) : 256; }();
+                        for (auto & [k, v] : cold) {
+                            auto lt = [](const auto & a, const auto & b) { return std::get<0>(a) != std::get<0>(b) ? std::get<0>(a) < std::get<0>(b) : std::get<1>(a) < std::get<1>(b); };
+                            const size_t n = std::min(cold_k, v.size());
+                            std::partial_sort(v.begin(), v.begin() + n, v.end(), lt);
+                            v.resize(n);
+                        }
                     }
                     auto ci = cold.find({ ls.v2n, ls.v2u });
                     size_t & cx = cur[{ ls.v2n, ls.v2u }];
