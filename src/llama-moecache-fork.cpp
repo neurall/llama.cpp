@@ -13941,7 +13941,7 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
         size_t room = 0;
         for (const auto & [g, n] : v.land.gaps) { room += n; }
         for (const auto & [x, r] : v.land.res) { room += r.pin ? 0 : r.n; }
-        if (room < want.size() * ls.v2p) { return false; }
+        if (room < want.size() * ls.v2p && cheap) { return false; }   // an entry ahead waits; the next one falls back to the main heap's coldest below
     }
     double lsum = 0.0;
     for (uint64_t c : ls.glob_count) { lsum += (double) c; }
@@ -13971,7 +13971,21 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
             victim(v.main, pk);
             pv2_take(mc, v.main, pk, li, e, hx, true, &n_ev);
             n_heat++; b_heat += ls.v2n;
-        } else if (v.H == v.M) {   // no landing area: the globally coldest resident of the same size not pinned, not uploading, not of a layer still ahead in this pass
+        } else {
+            if (v.H > v.M) {   // the landing area at its cursor over anything not pinned (what is left there belongs to computed layers or earlier calls)
+                const size_t t = v.cur < v.M || v.cur + ls.v2n > v.H ? v.M : v.cur;
+                pk = pv2_place(v.land, t, ls.v2n, ls.v2u, std::numeric_limits<int64_t>::max() - 1, v.H - v.M, false);
+                if (pk.s != PV2_NONE) {
+                    victim(v.land, pk);
+                    pv2_take(mc, v.land, pk, li, e, -1, true, &n_ev);
+                    v.cur = pk.s + ls.v2n;
+                    n_land++;
+                    placed.push_back(e);
+                    continue;
+                }
+            }
+            // the landing area full (CUDA's room and the KV zone take its bytes too: OLMoE, a one-layer landing area cut to 76 MiB) or none: the globally coldest
+            // resident of the same size not pinned, not uploading, not of a layer still ahead in this pass
             // first a resident no layer of this pass still needs, else (a full-stream pass: every layer is ahead at its start) the coldest of any layer, which that
             // layer streams again at its turn (as the classes claim over an expert of a layer ahead)
             static std::map<size_t, std::pair<std::vector<pv2_cold_t>, size_t>> cold[2];   // per expert size: the coldest first, its cursor (rebuilt each pass)
@@ -14037,17 +14051,6 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
             }
             victim(v.main, pk);
             pv2_take(mc, v.main, pk, li, e, hx, true, &n_ev);
-            n_land++;
-        } else {
-            const size_t t = v.cur < v.M || v.cur + ls.v2n > v.H ? v.M : v.cur;
-            pk = pv2_place(v.land, t, ls.v2n, ls.v2u, std::numeric_limits<int64_t>::max() - 1, v.H - v.M, false);
-            if (pk.s == PV2_NONE) {   // a fragment refused it: the entry waits for the next split
-                for (int32_t x : placed) { pv2_out(mc, ls, x); }
-                return false;
-            }
-            victim(v.land, pk);
-            pv2_take(mc, v.land, pk, li, e, -1, true, &n_ev);
-            v.cur = pk.s + ls.v2n;
             n_land++;
         }
         placed.push_back(e);
