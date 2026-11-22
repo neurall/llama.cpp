@@ -4930,3 +4930,37 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-21 17:55:10,stock-b12608-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
 2026-11-21 17:56:10,stock-b12608-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
 2026-11-21 17:56:10,stock-b12608-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-11-22 09:51:49,poolv2_noland -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3721
+2026-11-22 09:51:49,poolv2_noland -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4259
+2026-11-22 09:53:26,poolv2_noland -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3633
+2026-11-22 09:53:26,poolv2_noland -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4169
+2026-11-22 09:55:45,poolv2_noland -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4669
+2026-11-22 09:55:45,poolv2_noland -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5818
+2026-11-22 09:57:03,poolv2_noland -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4408
+2026-11-22 09:57:03,poolv2_noland -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5658
+2026-11-22 09:58:58,poolv2_noland -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1465
+2026-11-22 09:58:58,poolv2_noland -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1345
+2026-11-22 09:59:53,poolv2_noland -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1399
+2026-11-22 09:59:53,poolv2_noland -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1361
+2026-11-22 10:01:27,poolv2_noland -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1361
+2026-11-22 10:01:27,poolv2_noland -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1165
+2026-11-22 10:02:19,poolv2_noland -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1306
+2026-11-22 10:02:19,poolv2_noland -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1136
+2026-11-22 10:03:49,poolv2_noland -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-22 10:03:49,poolv2_noland -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-22 10:04:47,poolv2_noland -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-22 10:04:47,poolv2_noland -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-22 10:06:27,poolv2_noland -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6645
+2026-11-22 10:06:27,poolv2_noland -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5224
+2026-11-22 10:06:52,poolv2_noland -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6602
+2026-11-22 10:06:52,poolv2_noland -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5218
+2026-11-22 10:07:55,"poolv2_noland -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9414
+2026-11-22 10:07:55,"poolv2_noland -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9419
+2026-11-22 10:08:10,"poolv2_noland -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9406
+2026-11-22 10:08:10,"poolv2_noland -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9423
+2026-11-22 10:08:57,stock-b12629-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-22 10:08:57,stock-b12629-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-11-22 10:09:57,stock-b12629-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-22 10:09:57,stock-b12629-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-11-22 11:13:55,keephot_movek -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.37
+2026-11-22 11:13:55,keephot_movek -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4226
