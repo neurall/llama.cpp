@@ -22,6 +22,8 @@ int main() {
     const uint32_t cap = 8192;
     pm_entry * v_dev; uint32_t * cnt_dev; pm_result * res, * res_dev;
     CUDA_CHECK(cudaMalloc(&v_dev, cap * sizeof(pm_entry))); CUDA_CHECK(cudaMalloc(&cnt_dev, 4));
+    void * scr; CUDA_CHECK(cudaMalloc(&scr, pm_scratch_bytes(cap)));
+    const bool g_scr = !getenv("PM_NO_SORT");   // the batch's sorted takeable experts (the server's path); PM_NO_SORT=1: the scan for every request
     CUDA_CHECK(cudaHostAlloc((void **) &res, sizeof(pm_result), cudaHostAllocMapped)); CUDA_CHECK(cudaHostGetDevicePointer((void **) &res_dev, res, 0));
     std::mt19937 rng(31337);
     int runs = 0, moved = 0, freed = 0, none = 0;
@@ -67,7 +69,7 @@ int main() {
             for (uint32_t j = 0; j < k; ++j) { rq[j] = { (1 + rng() % 4) * 10, 10, (int64_t) (rng() % 50), (int32_t) (2000000 + it * 16 + j), 1, (int32_t) ((it + j) % 3) }; }   // expert, KV, work
             memset(rs, 0, 16 * sizeof(pm_result));
             cudaEventRecord(e0);
-            ggml_cuda_poolmap_alloc_batch_fork(0, v_dev, cnt_dev, cap, h.lo, h.hi, rq_dev, k, rs_dev, nullptr, nullptr, 1);
+            ggml_cuda_poolmap_alloc_batch_fork(0, v_dev, cnt_dev, cap, h.lo, h.hi, rq_dev, k, rs_dev, nullptr, nullptr, 1, 0, nullptr, g_scr ? scr : nullptr);
             cudaEventRecord(e1);
             CUDA_CHECK(cudaDeviceSynchronize());
             if (slots == 2000) { float ms; cudaEventElapsedTime(&ms, e0, e1); bt += ms / k; btn++; }
@@ -91,6 +93,7 @@ int main() {
     {
         const uint32_t ne = 15000, k = 1000, cap2 = 32768;
         pm_entry * v2; uint32_t * c2; CUDA_CHECK(cudaMalloc(&v2, cap2 * sizeof(pm_entry))); CUDA_CHECK(cudaMalloc(&c2, 4));
+        void * scr2; CUDA_CHECK(cudaMalloc(&scr2, pm_scratch_bytes(cap2)));
         pm_req * rq, * rq_dev; pm_result * rs, * rs_dev;
         CUDA_CHECK(cudaHostAlloc((void **) &rq, k * sizeof(pm_req), cudaHostAllocMapped)); CUDA_CHECK(cudaHostGetDevicePointer((void **) &rq_dev, rq, 0));
         CUDA_CHECK(cudaHostAlloc((void **) &rs, k * sizeof(pm_result), cudaHostAllocMapped)); CUDA_CHECK(cudaHostGetDevicePointer((void **) &rs_dev, rs, 0));
@@ -101,7 +104,7 @@ int main() {
         for (uint32_t j = 0; j < k; ++j) { rq[j] = { 10, 10, (int64_t) (100000 + j), (int32_t) (ne + j), 1, 0 }; }
         memset(rs, 0, k * sizeof(pm_result));
         cudaEventRecord(e0);
-        if (getenv("PM_ALLOC_ONLY")) { k_pm_alloc<<<1, PM_T>>>(v2, c2, cap2, h.lo, h.hi, rq_dev, k, rs_dev); } else { ggml_cuda_poolmap_alloc_batch_fork(0, v2, c2, cap2, h.lo, h.hi, rq_dev, k, rs_dev, nullptr, nullptr, 1); }
+        if (getenv("PM_ALLOC_ONLY")) { k_pm_alloc<<<1, PM_T>>>(v2, c2, cap2, h.lo, h.hi, rq_dev, k, rs_dev, nullptr, nullptr); } else { ggml_cuda_poolmap_alloc_batch_fork(0, v2, c2, cap2, h.lo, h.hi, rq_dev, k, rs_dev, nullptr, nullptr, 1, 0, nullptr, g_scr ? scr2 : nullptr); }
         cudaEventRecord(e1);
         CUDA_CHECK(cudaDeviceSynchronize());
         float ms; cudaEventElapsedTime(&ms, e0, e1);

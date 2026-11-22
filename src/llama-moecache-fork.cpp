@@ -14120,7 +14120,7 @@ static bool pm_setup(moe_cache * mc) {
     g_pm.apply = reg ? (decltype(g_pm.apply)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_poolmap_apply_fork") : nullptr;
     if (!g_pm.be || !al || !g_pm.batch || !g_pm.io || !g_pm.apply) { LLAMA_LOG_WARN("moe-cache: pool-v2: gpu-alloc needs the CUDA pool-map kernels and the ring stream: host picks\n"); return false; }
     g_pm.cap = (uint32_t) std::max<size_t>(1u << 16, 4 * (v.main.res.size() + v.main.gaps.size()) + 4096);
-    g_pm.buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), (size_t) g_pm.cap * sizeof(pm_entry) + 256);
+    g_pm.buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), (size_t) g_pm.cap * sizeof(pm_entry) + 256 + pm_scratch_bytes(g_pm.cap));
     if (!g_pm.buf) { LLAMA_LOG_WARN("moe-cache: pool-v2: gpu-alloc: no room for the map (%.1f MiB): host picks\n", g_pm.cap * sizeof(pm_entry) / 1048576.0); return false; }
     char * b = (char *) ggml_backend_buffer_get_base(g_pm.buf);
     g_pm.v_dev = (pm_entry *) b; g_pm.cnt_dev = (uint32_t *) (b + (size_t) g_pm.cap * sizeof(pm_entry));

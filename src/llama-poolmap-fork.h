@@ -33,6 +33,8 @@ static_assert(sizeof(pm_entry) == 40, "pm_entry layout is shared with the kernel
 struct pm_mv { uint64_t from, to, n; int32_t id; uint32_t u; };   // u: the mover's unit (its table entry = to / u)
 struct pm_fr { uint64_t s, n; int32_t id; int32_t pad; };
 static constexpr int PM_MAX_MV = 64, PM_MAX_FR = 128;
+// the card's scratch behind the map's count (map buffer: cap entries, 256 bytes for the count, then this): the batch's takeable experts sorted by heat
+static inline size_t pm_scratch_bytes(uint32_t cap) { return (size_t) cap * 4 * 8 + ((size_t) 4 << 20); }
 struct pm_req { uint64_t n = 0, a = 1; int64_t hot = 0; int32_t id = -1; int32_t pin = 1; int32_t kind = PM_ALLOC_MOE; };   // one alloc of a batch (sizes may differ): { n } asks a size only; pin bit 0: pinned, bit 1: movers to free bytes only; kind optional
 struct pm_result {
     uint64_t s;          // the new area, UINT64_MAX: none

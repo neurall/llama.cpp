@@ -10280,7 +10280,7 @@ static void ggml_backend_cuda_poolmap_alloc_fork(ggml_backend_t backend, pm_entr
     ggml_cuda_poolmap_alloc_fork(ctx->stream(), v, cnt, cap, lo, hi, n, a, id, hot, pin, res_dev, base, tables, E);
 }
 void ggml_cuda_poolmap_alloc_batch_fork(cudaStream_t st, pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, const pm_req * rq_dev, uint32_t n_rq,
-                                        pm_result * res_dev, char * base, int32_t * const * tables, int32_t E, cudaStream_t st_apply, cudaEvent_t ev);
+                                        pm_result * res_dev, char * base, int32_t * const * tables, int32_t E, cudaStream_t st_apply, cudaEvent_t ev, void * scratch);
 static __global__ void k_pm_send_fork(const uint4 * src, uint4 * dst, size_t n16, const char * st, char * dt, size_t tail) {
     for (size_t i = blockIdx.x * (size_t) blockDim.x + threadIdx.x; i < n16; i += (size_t) gridDim.x * blockDim.x) { dst[i] = src[i]; }
     if (blockIdx.x == 0 && threadIdx.x < tail) { dt[threadIdx.x] = st[threadIdx.x]; }
@@ -10305,7 +10305,7 @@ static void ggml_backend_cuda_poolmap_alloc_batch_fork(ggml_backend_t backend, p
     cudaStream_t st = ggml_cuda_poolmap_stream_fork(ctx->device);
     // the alloc only: the applies (moves, table writes) go on the ring through ggml_backend_cuda_poolmap_apply_fork once the host knows from the reports
     // which compute they wait for (a freed expert's layer may still run: its table entry turned -1 under its kernels gave NaN at token 0)
-    ggml_cuda_poolmap_alloc_batch_fork(st, v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev, base, tables, E, nullptr, g_pm_ev_fork[ctx->device]);
+    ggml_cuda_poolmap_alloc_batch_fork(st, v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev, base, tables, E, nullptr, g_pm_ev_fork[ctx->device], (char *) cnt + 256);   // the map buffer's scratch (pm_scratch_bytes)
 }
 void ggml_cuda_poolmap_apply_fork(cudaStream_t st, cudaEvent_t ev, const pm_mv * ops_dev, uint32_t n_ops, char * base, int32_t * const * tables, int32_t E);
 // the last batch's applies on this backend's stream (the ring), behind what the caller queued there and the alloc's event
