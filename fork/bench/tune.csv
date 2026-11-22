@@ -6932,3 +6932,9 @@ ts,commit,line
 2026-11-22 06:40:24,74cc5c0e89,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
 2026-11-22 06:40:24,74cc5c0e89,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:45.09 3:45.59 -> 3 (not sure: the value in use stays, 8 slices each)"
 2026-11-22 06:40:24,74cc5c0e89,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:44.47 1:44.70 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 06:46:00,74cc5c0e89,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 06:46:00,74cc5c0e89,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:13.33 3:16.20 -> 0 (clear, 3 slices each)"
+2026-11-22 06:46:00,74cc5c0e89,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:12.79 1:12.77 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 06:46:21,74cc5c0e89,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 06:46:21,74cc5c0e89,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:13.33 3:16.20 -> 0 (clear, 3 slices each)"
+2026-11-22 06:46:21,74cc5c0e89,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:12.79 1:12.77 -> 1 (not sure: the value in use stays, 8 slices each)"
