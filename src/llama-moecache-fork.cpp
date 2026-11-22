@@ -2563,7 +2563,7 @@ void pv2_put(moe_cache * mc, pv2_heap & h, size_t li, int32_t e, size_t s, int64
 // --moe verify>0 (dev): the heap's allocation log. Every place an expert takes or leaves (put, out, zone move, gpu-alloc move, refill leave) is one entry: who, from, to, bytes, when.
 // A verify that finds a bad expert prints the entries of that expert and of every expert that touched its bytes, and a collision audit (two experts, one byte) runs first.
 struct pv2_ev { uint64_t seq; const char * op; int32_t id; size_t from, to, n; int64_t t; };
-static std::vector<pv2_ev> g_pv2_log(1 << 15);
+static std::vector<pv2_ev> g_pv2_log(1 << 21);
 static uint64_t            g_pv2_seq = 0;
 static std::mutex          g_pv2_log_mu;
 static const bool          g_pv2_log_on = [] { const char * x = moe_opt("verify"); return x && atoi(x) > 0; }();
