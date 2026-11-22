@@ -10280,12 +10280,18 @@ static void ggml_backend_cuda_poolmap_alloc_fork(ggml_backend_t backend, pm_entr
     ggml_cuda_poolmap_alloc_fork(ctx->stream(), v, cnt, cap, lo, hi, n, a, id, hot, pin, res_dev, base, tables, E);
 }
 void ggml_cuda_poolmap_alloc_batch_fork(cudaStream_t st, pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, const pm_req * rq_dev, uint32_t n_rq,
-                                        pm_result * res_dev, char * base, int32_t * const * tables, int32_t E);
+                                        pm_result * res_dev, char * base, int32_t * const * tables, int32_t E, cudaStream_t st_apply, cudaEvent_t ev);
+static __global__ void k_pm_send_fork(const uint4 * src, uint4 * dst, size_t n16, const char * st, char * dt, size_t tail) {
+    for (size_t i = blockIdx.x * (size_t) blockDim.x + threadIdx.x; i < n16; i += (size_t) gridDim.x * blockDim.x) { dst[i] = src[i]; }
+    if (blockIdx.x == 0 && threadIdx.x < tail) { dt[threadIdx.x] = st[threadIdx.x]; }
+}
 static cudaStream_t g_pm_st_fork[GGML_CUDA_MAX_DEVICES] = {};
 static cudaEvent_t g_pm_ev_fork[GGML_CUDA_MAX_DEVICES] = {};
 static cudaStream_t ggml_cuda_poolmap_stream_fork(int device) {
     if (!g_pm_st_fork[device]) {
-        CUDA_CHECK(cudaStreamCreateWithFlags(&g_pm_st_fork[device], cudaStreamNonBlocking));
+        int lo = 0, hi = 0;
+        CUDA_CHECK(cudaDeviceGetStreamPriorityRange(&lo, &hi));   // highest: its one block is next on an SM when a prompt kernel's blocks retire
+        CUDA_CHECK(cudaStreamCreateWithPriority(&g_pm_st_fork[device], cudaStreamNonBlocking, hi));
         CUDA_CHECK(cudaEventCreateWithFlags(&g_pm_ev_fork[device], cudaEventDisableTiming));
     }
     return g_pm_st_fork[device];
@@ -10297,17 +10303,40 @@ static void ggml_backend_cuda_poolmap_alloc_batch_fork(ggml_backend_t backend, p
     ggml_cuda_set_device(ctx->device);
     // user 2026-11-22: the alloc runs on its own stream, not behind the ring's queued uploads; the ring waits for its moves on an event, the host for no upload
     cudaStream_t st = ggml_cuda_poolmap_stream_fork(ctx->device);
-    ggml_cuda_poolmap_alloc_batch_fork(st, v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev, base, tables, E);
-    CUDA_CHECK(cudaEventRecord(g_pm_ev_fork[ctx->device], st));
-    CUDA_CHECK(cudaStreamWaitEvent(ctx->stream(), g_pm_ev_fork[ctx->device], 0));
+    // the applies (moves, table writes) on the ring stream behind the alloc: in order with its table flushes and uploads (on the alloc stream they raced a
+    // flush queued earlier on the ring, which wrote a freed expert's old entry back: NaN at token 0)
+    ggml_cuda_poolmap_alloc_batch_fork(st, v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev, base, tables, E, ctx->stream(), g_pm_ev_fork[ctx->device]);
 }
 // the map to and from the card (set at start and for --moe map-check=1, a debug read after every alloc): synchronous
 static void ggml_backend_cuda_poolmap_io_fork(ggml_backend_t backend, void * dev, void * host, size_t bytes, int to_dev) {
     ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
     ggml_cuda_set_device(ctx->device);
     cudaStream_t st = ggml_cuda_poolmap_stream_fork(ctx->device);   // ordered before the next batch on the same stream; a send waits for nothing
-    CUDA_CHECK(cudaMemcpyAsync(to_dev ? dev : host, to_dev ? host : dev, bytes, to_dev ? cudaMemcpyHostToDevice : cudaMemcpyDeviceToHost, st));
-    if (!to_dev) { CUDA_CHECK(cudaStreamSynchronize(st)); }
+    if (!to_dev) {
+        CUDA_CHECK(cudaMemcpyAsync(host, dev, bytes, cudaMemcpyDeviceToHost, st));
+        CUDA_CHECK(cudaStreamSynchronize(st));
+        return;
+    }
+    // a send goes through mapped memory and a kernel, not the copy engine: a cudaMemcpyAsync queues behind the ring's uploads on the same engine
+    // (two staging buffers in turn: the one a kernel may still read is not written; each send is followed by its batch on this stream)
+    static char * stg[GGML_CUDA_MAX_DEVICES][2] = {}, * stg_dev[GGML_CUDA_MAX_DEVICES][2] = {};
+    static size_t stg_n[GGML_CUDA_MAX_DEVICES][2] = {};
+    static cudaEvent_t stg_ev[GGML_CUDA_MAX_DEVICES][2] = {};
+    static int turn[GGML_CUDA_MAX_DEVICES] = {};
+    const int d = ctx->device, t = turn[d]; turn[d] ^= 1;
+    if (stg_ev[d][t]) { CUDA_CHECK(cudaEventSynchronize(stg_ev[d][t])); } else { CUDA_CHECK(cudaEventCreateWithFlags(&stg_ev[d][t], cudaEventDisableTiming)); }
+    const size_t need = (bytes + 15) / 16 * 16;
+    if (stg_n[d][t] < need) {
+        if (stg[d][t]) { CUDA_CHECK(cudaFreeHost(stg[d][t])); }
+        stg_n[d][t] = std::max<size_t>(need, 4u << 20);
+        CUDA_CHECK(cudaHostAlloc((void **) &stg[d][t], stg_n[d][t], cudaHostAllocMapped | cudaHostAllocPortable));
+        CUDA_CHECK(cudaHostGetDevicePointer((void **) &stg_dev[d][t], stg[d][t], 0));
+    }
+    memcpy(stg[d][t], host, bytes);
+    const size_t n16 = bytes / 16, tail = bytes - n16 * 16;
+    k_pm_send_fork<<<(unsigned) std::min<size_t>(64, (n16 + 255) / 256 + 1), 256, 0, st>>>((const uint4 *) stg_dev[d][t], (uint4 *) dev, n16, (const char *) stg_dev[d][t] + n16 * 16, (char *) dev + n16 * 16, tail);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaEventRecord(stg_ev[d][t], st));
 }
 
 extern int ggml_cuda_fattn_force_fork;   // fattn.cu

@@ -303,13 +303,15 @@ static __global__ void k_pm_apply(const pm_result * resv, char * base, int32_t *
 }
 
 // the batch: one alloc launch for all requests, then one apply launch per request in order (request k's moves may read bytes request k-1 moved in)
+// ev (optional): the alloc runs on st, the applies on st_apply after it (the table writes stay in order with that stream's table flushes and uploads)
 void ggml_cuda_poolmap_alloc_batch_fork(cudaStream_t st, pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, const pm_req * rq_dev, uint32_t n_rq,
-                                        pm_result * res_dev, char * base, int32_t * const * tables, int32_t E) {
+                                        pm_result * res_dev, char * base, int32_t * const * tables, int32_t E, cudaStream_t st_apply = 0, cudaEvent_t ev = nullptr) {
     if (n_rq == 0) { return; }
     k_pm_alloc<<<1, PM_T, 0, st>>>(v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev);
     CUDA_CHECK(cudaGetLastError());
+    if (ev) { CUDA_CHECK(cudaEventRecord(ev, st)); CUDA_CHECK(cudaStreamWaitEvent(st_apply, ev, 0)); } else { st_apply = st; }
     for (uint32_t k = 0; k < n_rq; ++k) {
-        k_pm_apply<<<dim3(PM_MAX_FR, 1), 256, 0, st>>>(res_dev + k, base, tables, E);
+        k_pm_apply<<<dim3(PM_MAX_FR, 1), 256, 0, st_apply>>>(res_dev + k, base, tables, E);
         CUDA_CHECK(cudaGetLastError());
     }
 }
