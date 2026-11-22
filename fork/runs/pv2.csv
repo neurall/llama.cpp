@@ -52,3 +52,6 @@ gd-hostcopy,glm35,2,pf12k1k,1024,"-bs --moe move-kernel=0",--env CUDA_VISIBLE_DE
 qd-nokvkeep,qwen38,2,pf14k1k,1024,"-bs --moe kv-keep-hot=0",--env CUDA_VISIBLE_DEVICES=0
 gd-nokvkeep,glm35,2,pf12k1k,1024,"-bs --moe kv-keep-hot=0",--env CUDA_VISIBLE_DEVICES=0
 gv-v2check,glm35,1,pf12k1k,64,"-bs --moe pool-v2=1,verify=2",--env CUDA_VISIBLE_DEVICES=0
+hk-nokv,qn_iq4xs,1,scific,8,"--moe verify=2,kv-keep-hot=0",
+hk-nomk,qn_iq4xs,1,scific,8,"--moe verify=2,move-kernel=0",
+hk-none,qn_iq4xs,1,scific,8,"--moe verify=2,move-kernel=0,kv-keep-hot=0",
