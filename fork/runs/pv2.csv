@@ -7,5 +7,5 @@ pv2-q-vf-off,qwen38,2,pf14k1k,64,"-bs --moe verify=2,pool-v2=0",--env CUDA_VISIB
 pv2-q-vf-on,qwen38,2,pf14k1k,64,"-bs --moe verify=2,pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
 pv2-q-off,qwen38,2,pf14k1k,1024,-bs,--env CUDA_VISIBLE_DEVICES=0
 pv2-q-on,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
-nsys-pv2-q-on,qwen38,1,pf2k1k,1024,"-bs --moe pool-v2=1","--env CUDA_VISIBLE_DEVICES=0 --wrap 'nsys profile --trace=cuda --sample=none --cpuctxsw=none --cuda-graph-trace=node -o /p/bw/data/nsys/pv2-q-on --force-overwrite=true'"
-nsys-pv2-q-off,qwen38,1,pf2k1k,1024,-bs,"--env CUDA_VISIBLE_DEVICES=0 --wrap 'nsys profile --trace=cuda --sample=none --cpuctxsw=none --cuda-graph-trace=node -o /p/bw/data/nsys/pv2-q-off --force-overwrite=true'"
+qnsys-heap,qwen38,1,pf2k1k,1024,"-bs --moe pool-v2=1","--env CUDA_VISIBLE_DEVICES=0 --wrap 'nsys profile --trace=cuda --sample=none --cpuctxsw=none --cuda-graph-trace=node -o /p/bw/data/nsys/pv2-q-on --force-overwrite=true'"
+qnsys-classes,qwen38,1,pf2k1k,1024,-bs,"--env CUDA_VISIBLE_DEVICES=0 --wrap 'nsys profile --trace=cuda --sample=none --cpuctxsw=none --cuda-graph-trace=node -o /p/bw/data/nsys/pv2-q-off --force-overwrite=true'"
