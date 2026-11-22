@@ -7265,3 +7265,17 @@ ts,commit,line
 2026-11-22 08:42:36,26f70ac798,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
 2026-11-22 08:42:36,26f70ac798,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:12.64 3:12.52 -> 3 (not sure: the value in use stays, 8 slices each)"
 2026-11-22 08:42:36,26f70ac798,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:13.71 1:12.60 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 08:47:15,bba0bdc173,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 08:47:48,bba0bdc173,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 08:48:51,bba0bdc173,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 08:48:56,bba0bdc173,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 08:48:56,bba0bdc173,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:165.18 3:7.04 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 08:51:46,bba0bdc173,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 08:51:46,bba0bdc173,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:43.25 3:40.75 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 08:51:46,bba0bdc173,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:41.57 1:37.95 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 08:52:44,bba0bdc173,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 08:52:44,bba0bdc173,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:43.25 3:40.75 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 08:52:44,bba0bdc173,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:41.57 1:37.95 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 08:53:42,bba0bdc173,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 08:53:42,bba0bdc173,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:43.25 3:40.75 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 08:53:42,bba0bdc173,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:41.57 1:37.95 -> 1 (not sure: the value in use stays, 8 slices each)"
