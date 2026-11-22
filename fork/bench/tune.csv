@@ -6728,3 +6728,79 @@ ts,commit,line
 2026-11-22 02:20:46,1ca5eac625,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:13.68 1:12.83 -> 1 (not sure: the value in use stays, 8 slices each)"
 2026-11-22 02:24:47,4f650151fb,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
 2026-11-22 02:25:18,4f650151fb,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:39:12,6e59f5b22a,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:39:37,6e59f5b22a,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:41:38,6e59f5b22a,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:41:44,6e59f5b22a,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:41:44,6e59f5b22a,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:4.13 3:2.22 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:46:13,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:46:38,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:47:43,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:47:48,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:48:38,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:48:44,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:48:44,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:4.10 3:2.23 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:50:54,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:50:54,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:12.63 3:13.54 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:51:15,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:51:15,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:12.63 3:13.54 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:51:15,ed2478faa8,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:12.34 1:12.35 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:51:38,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:51:38,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:12.63 3:13.54 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:51:38,ed2478faa8,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:12.34 1:12.35 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:53:09,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:53:09,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:12.87 3:12.97 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:53:32,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:53:32,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:12.87 3:12.97 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:53:32,ed2478faa8,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:15.11 1:12.98 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:53:54,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:53:54,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:12.87 3:12.97 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:53:54,ed2478faa8,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:15.11 1:12.98 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:53:54,ed2478faa8,"moe-cache: self-tune: SWAP_LEAD ms/token 0:12.71 -2:14.31 -> 0 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:56:43,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:56:43,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:13.00 3:13.59 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:57:05,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:57:05,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:13.00 3:13.59 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:57:05,ed2478faa8,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:12.45 1:12.55 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:58:38,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:58:38,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:13.06 3:12.99 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:59:02,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 04:59:02,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:13.06 3:12.99 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 04:59:02,ed2478faa8,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:15.25 1:13.02 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:02:47,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 05:02:47,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:15.54 3:17.48 -> 0 (clear, 3 slices each)"
+2026-11-22 05:02:47,ed2478faa8,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:14.13 1:14.31 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:03:06,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 05:03:06,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:15.54 3:17.48 -> 0 (clear, 3 slices each)"
+2026-11-22 05:03:06,ed2478faa8,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:14.13 1:14.31 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:04:55,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 05:04:55,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:14.31 3:14.05 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:05:56,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 05:05:56,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:13.25 3:13.11 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:08:25,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 05:08:25,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:13.98 3:13.97 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:09:28,ed2478faa8,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 05:09:28,ed2478faa8,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:13.40 3:13.19 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:16:30,a6e0654e12,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 05:16:30,a6e0654e12,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:12.90 3:13.46 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:16:51,a6e0654e12,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 05:16:51,a6e0654e12,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:12.90 3:13.46 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:16:51,a6e0654e12,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:12.62 1:12.58 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:17:13,a6e0654e12,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 05:17:13,a6e0654e12,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:12.90 3:13.46 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:17:13,a6e0654e12,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:12.62 1:12.58 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:18:44,a6e0654e12,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 05:18:44,a6e0654e12,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:12.48 3:12.85 -> 0 (clear, 5 slices each)"
+2026-11-22 05:19:07,a6e0654e12,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 05:19:07,a6e0654e12,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:12.48 3:12.85 -> 0 (clear, 5 slices each)"
+2026-11-22 05:19:07,a6e0654e12,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:12.50 1:14.48 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:19:29,a6e0654e12,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 05:19:29,a6e0654e12,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:12.48 3:12.85 -> 0 (clear, 5 slices each)"
+2026-11-22 05:19:29,a6e0654e12,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:12.50 1:14.48 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:19:29,a6e0654e12,"moe-cache: self-tune: SWAP_LEAD ms/token 0:12.66 -2:13.77 -> 0 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:21:18,a6e0654e12,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 05:21:18,a6e0654e12,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:13.60 3:13.50 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:22:20,a6e0654e12,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 05:22:20,a6e0654e12,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:13.67 3:13.50 -> 3 (not sure: the value in use stays, 8 slices each)"
+2026-11-22 05:23:19,a6e0654e12,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 05:23:19,a6e0654e12,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:13.64 3:13.57 -> 3 (not sure: the value in use stays, 8 slices each)"
