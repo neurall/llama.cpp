@@ -816,9 +816,11 @@ struct pv2_ff_t { size_t n, u; };
 // coldest resident whose window [start, start + n) covers only free bytes and residents that may leave (not pinned, not held); the caller moves the residents
 // in front of it over the next coldest ones elsewhere (pv2_zone_move), the rest leave, the window is held; a resident the window only partly covers leaves
 // whole, its bytes past the window come back free. PV2_NONE: no free extent, no coldest anchor fits
-static inline size_t pv2_alloc_window(const pv2_heap & h, size_t n, size_t a, size_t max_anchors = SIZE_MAX) {   // user: every takeable expert is an anchor (a linear scan of the heat counters)
+// left: a KV or work alloc (user 2026-11-22: KV and work grow from the heap's left end, interleaved): the lowest window over free bytes and takeable experts
+static inline size_t pv2_alloc_window(const pv2_heap & h, size_t n, size_t a, size_t max_anchors = SIZE_MAX, bool left = false) {   // user: every takeable expert is an anchor (a linear scan of the heat counters)
     a = std::max<size_t>(1, a);
     for (const auto & [gs, gn] : h.gaps) {
+        if (left) { break; }
         const size_t st = (gs + a - 1) / a * a;
         if (st + n <= gs + gn) { return st; }
     }
@@ -832,6 +834,7 @@ static inline size_t pv2_alloc_window(const pv2_heap & h, size_t n, size_t a, si
     std::vector<size_t> anchors;
     for (const auto & c : cold) { anchors.push_back(c.second); }
     for (const auto & [gs, gn] : h.gaps) { anchors.push_back(gs); }
+    if (left) { std::sort(anchors.begin(), anchors.end()); }
     for (size_t x : anchors) {
         const size_t s = (x + a - 1) / a * a;
         if (s < h.lo || s + n > h.hi) { continue; }
@@ -869,7 +872,7 @@ static inline pv2_res pv2_alloc_entry(size_t n, size_t a, int32_t id, int64_t he
 }
 static inline pv2_alloc_result pv2_alloc_do(pv2_heap & h, size_t n, size_t a, int32_t id, int64_t heat, bool pin, bool over = true, int kind = 0) {
     pv2_alloc_result out;
-    const size_t s = pv2_alloc_window(h, n, a);
+    const size_t s = pv2_alloc_window(h, n, a, SIZE_MAX, kind != 0);
     if (s == PV2_NONE) { return out; }
     out.s = s;
     std::vector<size_t> in = pv2_overlap(h, s, s + n);

@@ -130,6 +130,16 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
     if (a == 0) { a = 1; }
     if (threadIdx.x == 0) { sh_best = ~0ull; sh_key = ~0ull; n_cov = 0; n_mv = 0; n_fr = 0; ovf = 0; }
     __syncthreads();
+    const bool left = kind == PM_ALLOC_KV || kind == PM_ALLOC_WRK;   // user 2026-11-22: KV and work grow from the left end: the lowest window over free bytes and unpinned experts
+    if (left) {
+        for (uint32_t i = threadIdx.x; i < *cnt; i += PM_T) {
+            const pm_entry & e = v[i];
+            if (e.type != PM_FREE && (e.type != PM_MOE || (e.flags & PM_PIN))) { continue; }
+            const uint64_t st = pm_align(e.off, a);
+            if (pm_window_ok(c, i, st, n)) { atomicMin(&sh_best, (unsigned long long) st); }
+        }
+        __syncthreads();
+    }
     // 1. a free entry that holds it, lowest address first
     for (uint32_t i = threadIdx.x; i < *cnt; i += PM_T) {
         const pm_entry & e = v[i];
@@ -139,7 +149,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
     }
     __syncthreads();
     uint64_t s = sh_best;
-    if (s == ~0ull) {
+    if (s == ~0ull && !left) {
         // 2. the coldest unpinned expert whose window covers only free bytes and unpinned experts (ties: lowest address)
         for (uint32_t i = threadIdx.x; i < *cnt; i += PM_T) {
             const pm_entry & e = v[i];
