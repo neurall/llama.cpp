@@ -13960,14 +13960,22 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
     for (const auto & g : v.main.gaps) { max_gap = std::max(max_gap, g.second); }
     std::vector<int32_t> placed;
     size_t n_heat = 0, b_heat = 0, n_land = 0, n_ev = 0;
+    int n_fail_run = 0;
     std::set<std::pair<int, size_t>> rebuilt;   // no landing area: the cold orders rebuilt in this call (per tier and size), the every-size order per tier
     bool rebuilt_all[2] = { false, false }, win_failed[2] = { false, false };
     for (int32_t e : want) {
         const int64_t hx = v.tiered ? v.hv[(size_t) pv2_id(mc, li, e)] : pv2_heat(mc, ls, e, false, lsum);
         // no free extent can hold it: the scan of every gap is skipped (19k experts a prompt); an entry ahead takes free bytes only here (no landing area: its
         // victims come from the residents no layer of the pass still needs, below)
+        // --moe pv2-main-fails=N (default 32, 0: never): after N main-heap picks in a row found nothing, the rest of this call skips the search (a full-stream
+        // layer: 84% of its picks fail, 27 us each walking small gaps and residents; Qwen3.8 15.5k: 501 ms of a 6.7 s prompt)
+        static const int main_fails = [] { const char * x = moe_opt("pv2-main-fails"); return x ? atoi(x) : 32; }();
         pv2_pick pk;
-        { optime_t _om(OP_PLAN_MAIN); pk = pv2_pick_main(mc, li, e, cheap && v.H == v.M ? std::numeric_limits<int64_t>::min() : hx, v.reach, ls.v2n + ls.v2u <= max_gap ? SIZE_MAX : v.reach); }
+        if (main_fails <= 0 || n_fail_run < main_fails) {
+            optime_t _om(OP_PLAN_MAIN);
+            pk = pv2_pick_main(mc, li, e, cheap && v.H == v.M ? std::numeric_limits<int64_t>::min() : hx, v.reach, ls.v2n + ls.v2u <= max_gap ? SIZE_MAX : v.reach);
+            n_fail_run = pk.s == PV2_NONE ? n_fail_run + 1 : 0;
+        }
         if (pk.s != PV2_NONE) {
             victim(v.main, pk);
             pv2_take(mc, v.main, pk, li, e, hx, true, &n_ev);
