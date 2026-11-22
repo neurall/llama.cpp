@@ -123,6 +123,12 @@ struct ggml_dyn_tallocr {
     size_t max_chunk_size;
     struct tallocr_chunk * chunks[GGML_VBUFFER_MAX_CHUNKS];
     int n_chunks;
+    // fork: the planner takes each tensor's bytes from the caller's own allocator (the expert pool's heap: free gaps or windows over cold experts) and gives
+    // them back after the tensor's last reader; offsets are the external buffer's own (ggml_gallocr_set_external_heap). NULL: stock's free-block planner
+    size_t (*h_alloc)(void * ud, size_t size, const struct ggml_tensor * tensor);
+    void   (*h_free)(void * ud, size_t offset, size_t size);
+    void   (*h_reset)(void * ud);
+    void * h_ud;
 
 #ifdef GGML_ALLOCATOR_DEBUG
     struct {
@@ -207,6 +213,21 @@ static int galloc_hw_on(void) {   // fork: GGML_GALLOC_HW=1, allocator diagnosti
 
 static struct buffer_address ggml_dyn_tallocr_alloc(struct ggml_dyn_tallocr * alloc, size_t size, const struct ggml_tensor * tensor) {
     size = aligned_offset(NULL, size, alloc->alignment);
+
+    if (alloc->h_alloc) {
+        if (alloc->n_chunks == 0) {
+            alloc->chunks[0] = calloc(1, sizeof(struct tallocr_chunk));
+            GGML_ASSERT(alloc->chunks[0] != NULL);
+            alloc->n_chunks = 1;
+        }
+        const size_t off = alloc->h_alloc(alloc->h_ud, size, tensor);
+        if (off == SIZE_MAX) {
+            GGML_ABORT("ggml-alloc: the external heap has no room for %s (%.1f MiB)", tensor ? tensor->name : "?", size / 1048576.0);
+        }
+        alloc->chunks[0]->max_size = MAX(alloc->chunks[0]->max_size, off + size);
+        struct buffer_address a = { .chunk = 0, .offset = off };
+        return a;
+    }
 
     AT_PRINTF("%s: allocating %s (%zu bytes) - ", __func__, tensor->name, size);
 
@@ -326,6 +347,11 @@ static struct buffer_address ggml_dyn_tallocr_alloc(struct ggml_dyn_tallocr * al
 static void ggml_dyn_tallocr_free_bytes(struct ggml_dyn_tallocr * alloc, struct buffer_address addr, size_t size) {
     size = aligned_offset(NULL, size, alloc->alignment);
 
+    if (alloc->h_free) {
+        alloc->h_free(alloc->h_ud, addr.offset, size);
+        return;
+    }
+
     struct tallocr_chunk * chunk = alloc->chunks[addr.chunk];
 
     // see if we can merge with an existing block
@@ -364,6 +390,9 @@ static void ggml_dyn_tallocr_free_bytes(struct ggml_dyn_tallocr * alloc, struct 
 }
 
 static void ggml_dyn_tallocr_reset(struct ggml_dyn_tallocr * alloc) {
+    if (alloc->h_reset) {
+        alloc->h_reset(alloc->h_ud);   // the last plan's bytes go back to the heap; the new plan takes its own
+    }
     for (int i = 0; i < GGML_VBUFFER_MAX_CHUNKS; i++) {
         free(alloc->chunks[i]);
         alloc->chunks[i] = NULL;
@@ -706,6 +735,15 @@ void ggml_gallocr_set_external_buffer(ggml_gallocr_t galloc, int buffer_id, ggml
     // shortcut: a tallocr shared by two buffer ids of one type gets the larger limit for both; split them if a type ever mixes external and own buffers
     const size_t own = MIN(ggml_backend_buft_get_max_size(galloc->bufts[buffer_id]), SIZE_MAX/2);
     galloc->buf_tallocs[buffer_id]->max_chunk_size = buffer ? MAX(own, capacity) : own;
+}
+
+// fork (no header edit: declared where used): buffer_id's graphs are planned in the external buffer's own address space by the caller's allocator (see
+// ggml_dyn_tallocr.h_alloc); set the external buffer first (ggml_gallocr_set_external_buffer, offset 0, the whole buffer). NULL alloc: stock's planner again
+void ggml_gallocr_set_external_heap(ggml_gallocr_t galloc, int buffer_id, size_t (*alloc)(void *, size_t, const struct ggml_tensor *), void (*freef)(void *, size_t, size_t),
+                                    void (*reset)(void *), void * ud) {
+    GGML_ASSERT(buffer_id >= 0 && buffer_id < galloc->n_buffers);
+    struct ggml_dyn_tallocr * t = galloc->buf_tallocs[buffer_id];
+    t->h_alloc = alloc; t->h_free = freef; t->h_reset = reset; t->h_ud = ud;
 }
 
 ggml_gallocr_t ggml_gallocr_new(ggml_backend_buffer_type_t buft) {
