@@ -75,8 +75,13 @@ static inline uint64_t cp_most_numerous(const std::vector<cp_size> & in) {
     return b;
 }
 // the block size wasting least: candidates are the model's own expert sizes (a size whose experts all fit one block wastes nothing on them)
-static inline uint64_t cp_best_block(const std::vector<cp_size> & in) {
+// d > 1: candidates are the sizes / d (each expert spans more blocks, less padding); unit: every candidate rounded up to a multiple of it
+static inline uint64_t cp_best_block(const std::vector<cp_size> & in, uint64_t d = 1, uint64_t unit = 1) {
     uint64_t b = 0, w = UINT64_MAX;
-    for (const cp_size & x : in) { const uint64_t c = cp_block_waste(in, x.bytes); if (c < w || (c == w && x.bytes > b)) { w = c; b = x.bytes; } }
+    for (const cp_size & x : in) {
+        const uint64_t cand = ((x.bytes + d - 1) / d + unit - 1) / unit * unit;
+        const uint64_t c = cp_block_waste(in, cand);
+        if (c < w || (c == w && cand > b)) { w = c; b = cand; }
+    }
     return b;
 }

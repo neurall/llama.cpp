@@ -28,6 +28,6 @@ int main() {
     assert(cp_block_waste(t, 10) == 2 * 6 + 8 * 1);
     cp_pick p = cp_pick_classes(t, 2); assert(p.classes.size() == 2 && p.classes[0] == 10 && p.classes[1] == 12 && p.waste == 12);
     p = cp_pick_classes(t, 3); assert(p.waste == 0 && p.classes.size() == 3);
-    { std::vector<cp_size> q = { { 338, 8 }, { 392, 8 } }; assert(cp_best_block(q) == 392); }
+    { std::vector<cp_size> q = { { 338, 8 }, { 392, 8 } }; assert(cp_best_block(q) == 392); assert(cp_best_block({ { 224, 43 }, { 308, 4 }, { 332, 1 } }, 2) == 112); assert(cp_best_block(q, 1, 100) == 400); }
     printf("OK\n");
 }

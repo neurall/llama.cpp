@@ -11838,8 +11838,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 // expert sits in one block, a bigger one spans consecutive blocks; every start is a block start, so every gap and every take is whole blocks
                 size_t v2_block = 0;
                 if (mc->v2.on) {
-                    static const bool one_block = [] { const char * x = moe_opt("pv2-block"); return x && atoi(x) != 0; }();
-                    if (one_block) {
+                    // --moe pv2-block=D: the block is the least-padding expert size / D (D = 1: an expert size; 2: half of one, experts span more blocks)
+                    static const int one_block = [] { const char * x = moe_opt("pv2-block"); return x ? std::max(0, atoi(x)) : 0; }();
+                    if (one_block > 0) {
                         size_t L = 1;
                         std::vector<size_t> ns;
                         for (size_t i = 0; i < cands.size(); ++i) {
@@ -11848,10 +11849,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         }
                         std::vector<cp_size> cs;
                         for (size_t n : ns) { cs.push_back({ poolx_up(n, L), 1 }); }
-                        v2_block = cp_best_block(cs);
+                        v2_block = cp_best_block(cs, (uint64_t) one_block, L);
                         uint64_t tot = 0; for (const cp_size & c : cs) { tot += c.bytes; }
-                        LLAMA_LOG_WARN("moe-cache: pool-v2: one block size %.2f MiB for %zu layers (unit lcm %zu bytes), padding %.1f%% of the experts' bytes\n",
-                                       v2_block / 1048576.0, cs.size(), L, tot ? 100.0 * (double) cp_block_waste(cs, v2_block) / (double) tot : 0.0);
+                        LLAMA_LOG_WARN("moe-cache: pool-v2: one block size %.2f MiB (expert size / %d) for %zu layers (unit lcm %zu bytes), padding %.1f%% of the experts' bytes\n",
+                                       v2_block / 1048576.0, one_block, cs.size(), L, tot ? 100.0 * (double) cp_block_waste(cs, v2_block) / (double) tot : 0.0);
                     }
                 }
                 for (size_t i = 0; i < cands.size(); ++i) {
