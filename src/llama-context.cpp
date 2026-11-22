@@ -94,7 +94,8 @@ uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch
 bool     llama_moe_cache_refusal_fork(size_t * need, size_t * room);        // the last refused lend: need and room (bytes)
 uint32_t llama_moe_cache_pp_refused_fork(uint32_t n_tokens, uint64_t cells, double share, uint32_t smaller, uint64_t * tc_all);
 int  llama_moe_cache_counters_fork(int64_t * v, int cap);   // src/llama-moecache-fork.cpp: cpu, upload, stream bytes, then every link's bytes
-bool llama_moe_cache_refilling_fork();   // src/llama-moecache-fork.cpp: the refill a prompt left behind is still uploading
+bool llama_moe_cache_refilling_fork();
+std::string llama_moe_cache_refill_stats_fork();   // dev: the refill's upload counters   // src/llama-moecache-fork.cpp: the refill a prompt left behind is still uploading
 bool llama_moe_cache_tuning_fork();      // a self-tune cycle is open (the decode tuners take turns: src/llama-estimate-fork.h)
 void llama_moe_cache_threads_searching_fork(bool on);
 int  llama_cpu_allowed_count_fork();                          // src/llama-moecache-fork.cpp: the CPUs this process may run on
@@ -3001,8 +3002,8 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         if (refilling) {
             held++; held_us += dt_us;
         } else if (held > 0) {
-            LLAMA_LOG_WARN("%s: refill phase: %" PRId64 " decode tokens in %.0f ms (%.1f ms/token) while the expert cache refilled the blocks the prompt borrowed\n",
-                           __func__, held, held_us / 1e3, held_us / 1e3 / held);
+            LLAMA_LOG_WARN("%s: refill phase: %" PRId64 " decode tokens in %.0f ms (%.1f ms/token) while the expert cache refilled the blocks the prompt borrowed%s\n",
+                           __func__, held, held_us / 1e3, held_us / 1e3 / held, llama_moe_cache_refill_stats_fork().c_str());
             held = held_us = 0;
         }
     }

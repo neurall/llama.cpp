@@ -12458,7 +12458,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     mc->dcv.notify_all();
                     continue;
                 }
+                const int64_t t_gw = ggml_time_us();
                 if (mc->graph_wait.load(std::memory_order_acquire) && mc->graph_ev[ls.link]) { ggml_backend_event_synchronize(mc->graph_ev[ls.link]); }   // a block the running graph may still read
+                if (j.refill && j.bg) { g_rf_gw += ggml_time_us() - t_gw; int64_t z = 0; g_rf_t0.compare_exchange_strong(z, t_gw); }
                 race_stress_sleep();   // --moe race-stress: an upload starts late (a lend or a zone change may happen meanwhile)
                 const int64_t t0 = ggml_time_us();
                 led_upload(mc, "up-start", j.layer_idx, j.expert, j.slot, j.bg);
@@ -12613,6 +12615,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 if (uap) { pool_leave(*uap, ulo, uhi, true); }
                 led_upload(mc, "up-done", j.layer_idx, j.expert, j.slot, j.bg);
                 j.t_done  = ggml_time_us();
+                if (j.refill && j.bg) { g_rf_n++; g_rf_b += (int64_t) (ls.v2n ? ls.v2n : 0); g_rf_busy += j.t_done - t0; g_rf_t1 = j.t_done; }
                 if (j.stream) {
                     mc->st_up[ls.link]++;
                     mc->st_late[ls.link] += mc->gpu_started >= (int64_t) j.layer_idx;
@@ -20171,6 +20174,14 @@ void llama_moe_cache_pass_uploads_fork(int * layers, int * n_layers, double * in
 void llama_moe_cache_threads_searching_fork(bool on) { g_threads_searching.store(on, std::memory_order_relaxed); }
 bool llama_moe_cache_tuning_fork() { moe_cache * mc = g_cache; return mc && knobs().self_tune != 0 && mc->lv_k >= 0; }
 
+// dev: refill uploads since the last refill-phase line (jobs, bytes, worker busy us, graph-wait us, first start, last done)
+static std::atomic<int64_t> g_rf_n{0}, g_rf_b{0}, g_rf_busy{0}, g_rf_gw{0}, g_rf_t0{0}, g_rf_t1{0};
+std::string llama_moe_cache_refill_stats_fork() {
+    const int64_t n = g_rf_n.exchange(0), b = g_rf_b.exchange(0), busy = g_rf_busy.exchange(0), gw = g_rf_gw.exchange(0), t0 = g_rf_t0.exchange(0), t1 = g_rf_t1.exchange(0);
+    char x[200]; snprintf(x, sizeof x, "; refill uploads: %lld jobs, %.2f GB, wall %.0f ms (%.1f GB/s), worker busy %.0f ms, graph waits %.0f ms",
+        (long long) n, b / 1e9, (t1 - t0) / 1e3, t1 > t0 ? b / 1e3 / (double) (t1 - t0) : 0.0, busy / 1e3, gw / 1e3);
+    return x;
+}
 bool llama_moe_cache_refilling_fork() {
     moe_cache * mc = g_cache;
     if (!mc) { return false; }
