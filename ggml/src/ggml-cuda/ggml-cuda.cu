@@ -10230,6 +10230,44 @@ static bool ggml_backend_cuda_pool_move_fork(ggml_backend_t backend, const pool_
     return true;
 }
 
+// fork (pool v2 map sync, src/llama-mapsync-fork.h): the host appends changed expert-table entries to a ring in mapped pinned memory; this kernel applies
+// [tail, head) on the card's stream and writes the new tail back, no copy call. Entries are applied in ring order: chunks of 256 one after the other, and
+// inside a chunk an entry is skipped when a later one of the chunk writes the same (table, index): the last write wins as the host made them.
+struct mapsync_entry_fork { uint32_t tbl; int32_t idx; int32_t val; uint32_t pad; };
+static __global__ void k_mapsync_apply_fork(const mapsync_entry_fork * ring, const volatile unsigned long long * head, volatile unsigned long long * tail,
+                                            unsigned long long cap, int32_t * const * tables) {
+    __shared__ uint64_t key[256];
+    const unsigned long long h = *head, t0 = *tail;
+    for (unsigned long long c = t0; c < h; c += 256) {
+        const unsigned long long i = c + threadIdx.x;
+        mapsync_entry_fork m = {};
+        const bool have = i < h;
+        if (have) { m = ring[i % cap]; }
+        key[threadIdx.x] = have ? ((uint64_t) m.tbl << 32 | (uint32_t) m.idx) : ~0ull;
+        __syncthreads();
+        bool last = have;
+        for (unsigned j = threadIdx.x + 1; last && j < 256; ++j) { last = key[j] != key[threadIdx.x]; }
+        if (last) { tables[m.tbl][m.idx] = m.val; }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) { __threadfence_system(); *tail = h; }
+}
+static void ggml_backend_cuda_mapsync_apply_fork(ggml_backend_t backend, const void * ring, const void * head, void * tail, uint64_t cap, int32_t * const * tables_dev) {
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_set_device(ctx->device);
+    k_mapsync_apply_fork<<<1, 256, 0, ctx->stream()>>>((const mapsync_entry_fork *) ring, (const volatile unsigned long long *) head, (volatile unsigned long long *) tail,
+            (unsigned long long) cap, tables_dev);
+    CUDA_CHECK(cudaGetLastError());
+}
+// mapped pinned host memory for the ring: *dev gets the address the kernel uses
+static void * ggml_backend_cuda_mapped_alloc_fork(size_t bytes, void ** dev) {
+    void * p = nullptr;
+    if (cudaHostAlloc(&p, bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) { (void) cudaGetLastError(); return nullptr; }
+    memset(p, 0, bytes);
+    if (cudaHostGetDevicePointer(dev, p, 0) != cudaSuccess) { (void) cudaGetLastError(); cudaFreeHost(p); return nullptr; }
+    return p;
+}
+
 extern int ggml_cuda_fattn_force_fork;   // fattn.cu
 static void ggml_backend_cuda_fattn_force_set_fork(int kernel) { ggml_cuda_fattn_force_fork = kernel; }
 extern bool ggml_cuda_fattn_rows_fork;   // fattn.cu
@@ -10329,6 +10367,12 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_pool_move_fork") == 0) {
         return (void *)ggml_backend_cuda_pool_move_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_mapsync_apply_fork") == 0) {
+        return (void *)ggml_backend_cuda_mapsync_apply_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_mapped_alloc_fork") == 0) {
+        return (void *)ggml_backend_cuda_mapped_alloc_fork;
     }
     if (strcmp(name, "ggml_backend_cuda_obs_prompt_init_fork") == 0) {
         return (void *)ggml_backend_cuda_obs_prompt_init_fork;

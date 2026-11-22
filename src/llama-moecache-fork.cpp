@@ -53,6 +53,7 @@
 #include <vector>
 #include "llama-poolalloc-fork.h"
 #include "llama-poolv2-fork.h"   // pool v2 (fork/docs/pool-v2.md): the unit of an expert's views (pv2_shape_of)
+#include "llama-mapsync-fork.h"   // pool v2: expert tables to the card through a mapped ring
 #include "llama-moetopic-fork.h"
 #include "llama-passplan-fork.h"
 #include "llama-kvtier-fork.h"
@@ -5502,6 +5503,84 @@ static const layer_state * tbl_layer(const llama_moe_cache_layer_fork * pub) {
     GGML_ABORT("moe-cache: pool-v2: a device table of no layer and no shadow (layer %d)", pub->il);
 }
 
+// user 2026-11-22 ("make map sync cheap as our bell mech was"): pool-v2 tables reach the card through a ring in mapped pinned memory (src/llama-mapsync-fork.h):
+// the changed entries only, applied by one kernel on the compute stream, no copy call and no wait. --moe map-ring=0: the batched copies as before.
+// true: every table of d went this way (the guard's copies are kept here too)
+static bool mapsync_flush(std::vector<llama_moe_cache_layer_fork *> & d) {
+    static const bool on = [] { const char * x = moe_opt("map-ring"); return !x || atoi(x) != 0; }();
+    moe_cache * mc = g_cache;
+    if (!on || !mc || !mc->v2.on || d.empty() || mc->v2.ap_idx >= mc->alias.size()) { return false; }
+    struct ms_state {
+        bool tried = false, ok = false;
+        ggml_backend_t be = nullptr;
+        void (*apply)(ggml_backend_t, const void *, const void *, void *, uint64_t, int32_t * const *) = nullptr;
+        mapsync_ring r; mapsync_entry * e_dev = nullptr; uint64_t * ht_dev = nullptr;
+        int32_t ** tbl_host = nullptr; int32_t ** tbl_dev = nullptr; uint32_t n_tbl = 0;
+        std::map<const llama_moe_cache_layer_fork *, std::pair<uint32_t, std::vector<int32_t>>> sent;   // table slot, what the card holds
+    };
+    static ms_state st;
+    const ggml_backend_dev_t dev = mc->alias[mc->v2.ap_idx].dev;
+    if (!st.be) { for (int k = 0; k < MAX_LINKS; ++k) { if (mc->link_be[k] && mc->link_dev[k] == dev) { st.be = mc->link_be[k]; } } }
+    if (!st.be) { return false; }
+    if (!st.tried) {
+        st.tried = true;
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+        typedef void * (*alloc_t)(size_t, void **);
+        alloc_t al = reg ? (alloc_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_mapped_alloc_fork") : nullptr;
+        st.apply = reg ? (decltype(st.apply)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_mapsync_apply_fork") : nullptr;
+        const uint64_t cap = 1u << 16;   // 1 MiB of entries
+        void * de = nullptr, * dh = nullptr, * dt = nullptr;
+        void * he = al && st.apply ? al(cap * sizeof(mapsync_entry), &de) : nullptr;
+        void * hh = he ? al(2 * sizeof(uint64_t), &dh) : nullptr;
+        void * ht = hh ? al(4096 * sizeof(int32_t *), &dt) : nullptr;
+        if (!ht) { LLAMA_LOG_WARN("moe-cache: pool-v2: no mapped memory for the table ring: tables go by copies\n"); return false; }
+        st.r = { (mapsync_entry *) he, (uint64_t *) hh, (uint64_t *) hh + 1, cap };
+        st.e_dev = (mapsync_entry *) de; st.ht_dev = (uint64_t *) dh;
+        st.tbl_host = (int32_t **) ht; st.tbl_dev = (int32_t **) dt;
+        st.ok = true;
+    }
+    if (!st.ok) { return false; }
+    std::vector<mapsync_entry> es;
+    std::vector<int32_t> v;
+    for (auto * pub : d) {
+        const layer_state * tl = tbl_layer(pub);
+        if (!tl || !tl->v2u || ggml_backend_buffer_get_type(pub->dev_table->buffer) == nullptr) { return false; }   // not a heap table: the copies take all
+    }
+    std::vector<std::pair<const llama_moe_cache_layer_fork *, std::vector<int32_t>>> fresh;   // tables the card never got from the ring: copied whole once
+    for (auto * pub : d) {
+        const layer_state * tl = tbl_layer(pub);
+        const int32_t * h = (const int32_t *) pub->host_table->data;
+        v.assign(h, h + ggml_nelements(pub->dev_table));
+        for (auto & x : v) { x = x >= pub->n_slots ? -1 : tl->at[(size_t) x]; }
+        auto it = st.sent.find(pub);
+        if (it == st.sent.end()) {
+            if (st.n_tbl >= 4096) { return false; }
+            st.tbl_host[st.n_tbl] = (int32_t *) pub->dev_table->data;
+            st.sent[pub] = { st.n_tbl++, v };
+            fresh.push_back({ pub, v });
+        } else {
+            mapsync_diff(it->second.first, v.data(), it->second.second.data(), v.size(), es);
+        }
+        if (guard_level() > 0) {
+            std::vector<int32_t> g(h, h + ggml_nelements(pub->dev_table));
+            for (auto & x : g) { x = x >= pub->n_slots ? -1 : x; }
+            std::lock_guard<std::mutex> lk(g_gtbl_mu); g_gtbl[pub] = g;
+        }
+    }
+    for (auto & [pub, vals] : fresh) {   // first sight: on the compute stream, ahead of the ring kernel
+        ggml_backend_tensor_set_async(st.be, pub->dev_table, vals.data(), 0, vals.size() * sizeof(int32_t));
+    }
+    if (!fresh.empty()) { ggml_backend_synchronize(st.be); }   // the source vectors die here; once per table for the whole run
+    if (!mapsync_push(st.r, es)) {   // ring full (the card ran far behind): wait, copy the changed tables whole, restart the ring empty
+        ggml_backend_synchronize(st.be);
+        for (auto * pub : d) { const auto & sv = st.sent[pub].second; ggml_backend_tensor_set(pub->dev_table, sv.data(), 0, sv.size() * sizeof(int32_t)); }
+        *st.r.tail = *st.r.head;
+        return true;
+    }
+    if (!es.empty()) { st.apply(st.be, st.e_dev, st.ht_dev, st.ht_dev + 1, st.r.cap, st.tbl_dev); }
+    return true;
+}
+
 void flush_tables() {
     // cstream: a table written beside the compute stream changes what a layer still to run reads (the host is layers ahead of the GPU); cs_end flushes after a sync
     if (g_cs_live.load(std::memory_order_relaxed)) { return; }
@@ -5512,6 +5591,7 @@ void flush_tables() {
     }
     // every table of this flush in one transfer (ggml_backend_tensor_set_batch_begin_fork: the bytes are copied at each call). One blocking transfer a
     // table was 116 us a decode token after the graph, while the card waits for the next one (perf, Qwen3.8, 8 to 12 tables a step, 2026-11-19)
+    if (mapsync_flush(d)) { return; }
     struct one_batch { one_batch() { ggml_backend_tensor_set_batch_begin_fork(); } ~one_batch() { ggml_backend_tensor_set_batch_end_fork(); } } batch;
     std::vector<int32_t> v, u;
     for (auto * pub : d) {
