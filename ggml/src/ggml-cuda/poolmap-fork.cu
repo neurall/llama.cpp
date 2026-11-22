@@ -185,7 +185,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
                 S.pick = 1; S.pidx = l; S.cur++;
                 break;
             }
-            if (S.pick == 1) { pm_take_inplace(c, S.pidx, a, id, hot, pin, res); }
+            if (S.pick == 1) { res->path = 1; pm_take_inplace(c, S.pidx, a, id, hot, pin, res); }
         }
         __syncthreads();
         if (S.pick == 1) { return; }
@@ -223,7 +223,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
             const pm_entry w = v[vi];
             if (w.off == s && w.size == n) {
                 __syncthreads();
-                if (threadIdx.x == 0) { pm_take_inplace(c, vi, a, id, hot, pin, res); S.nofree = 1; }   // !left: an expert (no free bytes changed)
+                if (threadIdx.x == 0) { res->path = 2; pm_take_inplace(c, vi, a, id, hot, pin, res); S.nofree = 1; }   // !left: an expert (no free bytes changed)
                 __syncthreads();
                 return;
             }
@@ -242,7 +242,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
     }
     __syncthreads();
     if (s == ~0ull) {
-        if (threadIdx.x == 0) { res->s = UINT64_MAX; res->n_mv = 0; res->n_fr = 0; res->overflow = 0; __threadfence_system(); res->done = 1; S.nofree = 1; }   // no free bytes held it, the map is unchanged
+        if (threadIdx.x == 0) { res->s = UINT64_MAX; res->n_mv = 0; res->n_fr = 0; res->overflow = 0; res->path = 4; __threadfence_system(); res->done = 1; S.nofree = 1; }   // no free bytes held it, the map is unchanged
         __syncthreads();
         return;
     }
@@ -311,7 +311,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
     if (kind == PM_ALLOC_KV || kind == PM_ALLOC_WRK) { ne.type = kind == PM_ALLOC_KV ? PM_KV : PM_WRK; ne.id = -1; ne.hot = 0; ne.flags = PM_PIN; }   // held: KV never moves, work never in a pass
     if (!pm_place(c, s, ne, &sh_idx)) { if (threadIdx.x == 0) { ovf = 2; } __syncthreads(); }
     if (threadIdx.x == 0) {
-        res->s = s; res->n_mv = n_mv; res->n_fr = n_fr; res->overflow = ovf;
+        res->s = s; res->n_mv = n_mv; res->n_fr = n_fr; res->overflow = ovf; res->path = 3;
         __threadfence_system();
         res->done = 1;
     }
@@ -328,7 +328,9 @@ static __global__ void __launch_bounds__(PM_T) k_pm_alloc(pm_entry * v, uint32_t
     __syncthreads();
     for (uint32_t k = 0; k < n_rq; ++k) {
         const pm_req q = rq[k];
+        uint64_t t0 = 0; if (threadIdx.x == 0) { asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t0)); }
         pm_alloc_one(c, S, q.n, q.a, q.id, q.hot, q.pin, q.kind, res + k, cd);
+        if (threadIdx.x == 0) { uint64_t t1; asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t1)); res[k].ns = t1 - t0; }
     }
 }
 

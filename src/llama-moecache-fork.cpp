@@ -14161,7 +14161,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
         const int32_t q = lj < mc->cs_pos.size() ? mc->cs_pos[lj] : -1;
         return !ahead && q >= 0 && (size_t) q >= p;
     };
-    static int64_t t_map = 0, t_send = 0, t_bank = 0, t_spin = 0, t_rest = 0, n_b = 0, n_r = 0, n_mvs = 0, n_frs = 0, n_withmv = 0, n_nofr = 0, n_none = 0;   // where a batch's host time goes (dev timing, logged per 16 batches)
+    static int64_t t_map = 0, t_send = 0, t_bank = 0, t_spin = 0, t_rest = 0, n_b = 0, n_r = 0, n_mvs = 0, n_frs = 0, n_withmv = 0, n_nofr = 0, n_none = 0, p_n[5] = {}, p_ns[5] = {};   // where a batch's host time goes (dev timing, logged per 16 batches)
     int64_t tq = ggml_time_us();
     auto lap = [&](int64_t & acc) { const int64_t t = ggml_time_us(); acc += t - tq; tq = t; };
     std::vector<pm_entry> m = pm_map_of(mc, busy);
@@ -14194,6 +14194,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     for (uint32_t j = 0; j < k; ++j) {
         const int32_t e = want[j];
         const pm_result & r = rs[j];
+        { const uint32_t pp = r.path < 5 ? r.path : 0; p_n[pp]++; p_ns[pp] += (int64_t) r.ns; }
         GGML_ASSERT(!r.overflow && "pool-v2: gpu-alloc report overflow");
         if (r.s == UINT64_MAX) { left.push_back(e); n_none++; continue; }
         n_mvs += r.n_mv; n_frs += r.n_fr; n_withmv += r.n_mv > 0; n_nofr += r.n_fr == 0;
@@ -14260,7 +14261,10 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     lap(t_rest); n_r += k;
     if (++n_b % 16 == 0) { LLAMA_LOG_WARN("pool-v2: gpu-alloc host time, %lld batches of %lld allocs: map %.1f ms, send %.1f ms, bank wait %.1f ms, report wait %.1f ms, replay+apply %.1f ms; %lld moves (%lld allocs with any), %lld frees, %lld allocs in free bytes, %lld refused, map %zu entries\n",
             (long long) n_b, (long long) n_r, t_map / 1e3, t_send / 1e3, t_bank / 1e3, t_spin / 1e3, t_rest / 1e3, (long long) n_mvs, (long long) n_withmv, (long long) n_frs,
-            (long long) n_nofr, (long long) n_none, m.size()); }
+            (long long) n_nofr, (long long) n_none, m.size());
+        LLAMA_LOG_WARN("pool-v2: gpu-alloc card time by path: popped %lld (%.1f us each), scan+in place %lld (%.1f), free bytes/moves %lld (%.1f), refused %lld (%.1f), other %lld\n",
+            (long long) p_n[1], p_ns[1] / 1e3 / std::max<int64_t>(1, p_n[1]), (long long) p_n[2], p_ns[2] / 1e3 / std::max<int64_t>(1, p_n[2]),
+            (long long) p_n[3], p_ns[3] / 1e3 / std::max<int64_t>(1, p_n[3]), (long long) p_n[4], p_ns[4] / 1e3 / std::max<int64_t>(1, p_n[4]), (long long) p_n[0]); }
     static const bool check = [] { const char * x = moe_opt("map-check"); return x && atoi(x) != 0; }();
     if (check) {
         uint32_t c2 = 0;

@@ -41,6 +41,9 @@ struct pm_result {
     uint32_t n_mv, n_fr;
     uint32_t overflow;   // more moves or frees than the lists hold: the host reads the whole map back
     uint32_t done;       // set last (the host spins on it, bell style)
+    uint32_t path;       // dev timing: 1 popped from the sorted list, 2 scan then in place, 3 free bytes / moves, 4 refused
+    uint32_t pad_;
+    uint64_t ns;         // dev timing: the card's time for this request (globaltimer)
     pm_mv    mv[PM_MAX_MV];
     pm_fr    fr[PM_MAX_FR];
 };
