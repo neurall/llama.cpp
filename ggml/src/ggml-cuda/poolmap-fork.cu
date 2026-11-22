@@ -207,15 +207,22 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
                 if (st + n <= off + sz && st < best) { best = st; }
             } else if (!left && ty == PM_MOE && !(fl & PM_PIN)) {
                 const uint64_t k = pm_key(v[i].hot, i);
-                if (sz == n && off % a == 0) { if (k < same) { same = k; } }
-                else if (k < key && pm_window_ok(c, i, pm_align(off, a), n)) { key = k; }
+                if (sz == n && off % a == 0 && k < same) { same = k; }
             }
         }
         if (threadIdx.x == 0) { S.sh_same = ~0ull; }
         __syncthreads();
         if (best != ~0ull) { atomicMin(&sh_best, best); }
-        if (key != ~0ull) { atomicMin(&sh_key, key); }
         if (same != ~0ull) { atomicMin(&S.sh_same, same); }
+        __syncthreads();
+        if (sh_best == ~0ull && S.sh_same == ~0ull && !left) {   // windows (a walk each) only when no free bytes and no same-size expert hold it
+            for (uint32_t i = threadIdx.x; i < nc; i += PM_T) {
+                if (v[i].type != PM_MOE || (v[i].flags & PM_PIN)) { continue; }
+                const uint64_t k = pm_key(v[i].hot, i);
+                if (k < key && pm_window_ok(c, i, pm_align(v[i].off, a), n)) { key = k; }
+            }
+            if (key != ~0ull) { atomicMin(&sh_key, key); }
+        }
     }
     __syncthreads();
     if (sh_best == ~0ull && !left && S.sh_same != ~0ull) { sh_key = S.sh_same; }   // uniform: every thread reads the same shared values
