@@ -447,6 +447,7 @@ public:
     const llama_ubatch & get_ubatch() const override;
 
     bool replay_fork(uint32_t i) override;   // fork: layer-major prompt
+    bool replay_ok_fork() const override { return status == LLAMA_MEMORY_STATUS_SUCCESS && !ubatches.empty(); }
 
     //
     // llama_kv_cache_context specific API

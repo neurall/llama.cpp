@@ -670,6 +670,16 @@ bool llm_graph_input_batch_idxs::can_reuse(const llm_graph_params & params) {
     return idxs->ne[0] == params.ubatch.n_tokens;
 }
 
+void llm_graph_input_carry::set_input(const llama_ubatch * ubatch) {
+    GGML_ASSERT(src != nullptr && t->ne[1] == (int64_t) ubatch->n_tokens);
+    ggml_backend_tensor_set(t, src, 0, ggml_nbytes(t));
+}
+
+bool llm_graph_input_carry::can_reuse(const llm_graph_params & params) {
+    src = params.lm_carry;   // the next chunk's rows
+    return src != nullptr && t->ne[1] == (int64_t) params.ubatch.n_tokens;
+}
+
 void llm_graph_input_pos::set_input(const llama_ubatch * ubatch) {
     if (ubatch->pos && pos) {
         const int64_t n_tokens = ubatch->n_tokens;
@@ -1837,6 +1847,7 @@ void llm_graph_result::reset() {
     t_h_nextn     = nullptr;
     t_mtp_dsa_sel  = nullptr;
     t_mtp_dsa_mask = nullptr;
+    t_carry        = nullptr;
 
     t_layer_inp.resize(LLAMA_MAX_LAYERS + 1);
     std::fill(t_layer_inp.begin(), t_layer_inp.end(), nullptr);
@@ -2046,6 +2057,9 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     hdmd             (params.hdmd),
     layer_inp_dev    (params.layer_inp_dev),
     layer_inp_src    (params.layer_inp_src),
+    lm_beg           (params.lm_beg),
+    lm_end           (params.lm_end >= 0 ? params.lm_end : (int32_t) n_layer),
+    lm_carry         (params.lm_carry),
     samplers         (params.samplers),
     cb_func          (params.cb),
     res              (params.res),
@@ -4509,6 +4523,27 @@ ggml_tensor * llm_graph_context::build_inp_embd(ggml_tensor * tok_embd, float to
     ggml_build_forward_expand(gf, cur);
 
     return cur;
+}
+
+ggml_tensor * llm_graph_context::build_inp_carry() const {
+    auto inp = std::make_unique<llm_graph_input_carry>(lm_carry);
+
+    inp->t = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_embd, n_tokens);
+    ggml_set_input(inp->t);
+    ggml_set_name(inp->t, "lm_carry_in");
+
+    ggml_tensor * cur = inp->t;
+    res->add_input(std::move(inp));
+    ggml_build_forward_expand(gf, cur);   // in the graph before the layers, as the embeddings are
+
+    return cur;
+}
+
+void llm_graph_context::build_out_carry(ggml_tensor * cur) const {
+    GGML_ASSERT(cur->type == GGML_TYPE_F32 && cur->ne[0] == n_embd && cur->ne[1] == n_tokens && ggml_is_contiguous(cur));
+    ggml_set_output(cur);   // kept to the graph's end: the context copies it to the call's rows after the graph
+    res->t_carry = cur;
+    ggml_build_forward_expand(gf, cur);
 }
 
 ggml_tensor * llm_graph_context::build_inp_pos() const {

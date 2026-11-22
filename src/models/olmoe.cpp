@@ -59,16 +59,17 @@ llama_model_olmoe::graph::graph(const llm_graph_params & params) : llm_graph_con
     ggml_tensor * cur;
     ggml_tensor * inpL;
 
-    inpL = build_inp_embd(model.tok_embd);
+    // fork (layer-major prompt): a graph of layers [lm_beg, lm_end); past layer 0 the hidden state comes in, short of the last layer it goes out
+    inpL = lm_beg > 0 ? build_inp_carry() : build_inp_embd(model.tok_embd);
 
     // inp_pos - contains the positions
     ggml_tensor * inp_pos = build_inp_pos();
 
     auto * inp_attn = build_attn_inp_kv();
 
-    ggml_tensor * inp_out_ids = build_inp_out_ids();
+    ggml_tensor * inp_out_ids = lm_end == n_layer ? build_inp_out_ids() : nullptr;
 
-    for (int il = 0; il < n_layer; ++il) {
+    for (int il = lm_beg; il < lm_end; ++il) {
         ggml_tensor * inpSA = inpL;
 
         // norm
@@ -144,6 +145,10 @@ llama_model_olmoe::graph::graph(const llm_graph_params & params) : llm_graph_con
 
         // input for next layer
         inpL = cur;
+    }
+    if (lm_end < n_layer) {
+        build_out_carry(inpL);
+        return;
     }
     cur = inpL;
 

@@ -7088,6 +7088,13 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         }
     }
 
+    if (node->op == GGML_OP_CONCAT) {   // fork: a decode token's delta-net conv chain in one kernel (gdnconv-fork.cu, GGML_CUDA_GDN_CONV_FUSE=0 turns it off)
+        extern int ggml_cuda_try_fuse_gdn_conv_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i);
+        if (const int n = ggml_cuda_try_fuse_gdn_conv_fork(*cuda_ctx, cgraph, i)) {
+            return n;
+        }
+    }
+
 
     // fork, --moe fuse-off=GLU+MUL: the fusions that start at these ops stay apart, to name the one a bug needs (GGML_CUDA_DISABLE_FUSION parts all of them and changes the allocation too)
     static const std::string fuse_off = [] { const char * e = getenv("GGML_CUDA_FUSE_OFF"); return e ? "+" + std::string(e) + "+" : std::string(); }();
@@ -8890,6 +8897,17 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
                         }
                     }
                 }
+            }
+        }
+        // fork: the delta-net conv chain runs as one kernel (gdnconv-fork.cu). Its two inputs, the stored columns and qkv, stay allocated to its last
+        // node: else an output may be laid over qkv's freed block (the conv output has its size) while another block of the kernel still reads it
+        extern bool ggml_cuda_gdn_conv_chain_fork(const ggml_cgraph * g, int i, int idx[7]);
+        for (int i = 0; i < cgraph->n_nodes; ++i) {
+            int idx[7];
+            if (cgraph->nodes[i]->op == GGML_OP_CONCAT && ggml_cuda_gdn_conv_chain_fork(cgraph, i, idx)) {
+                params->add_alloc_dep(params->user_data, cgraph->nodes[i]->src[0], cgraph->nodes[idx[6]]);
+                params->add_alloc_dep(params->user_data, cgraph->nodes[i]->src[1], cgraph->nodes[idx[6]]);
+                i = idx[6];
             }
         }
     }

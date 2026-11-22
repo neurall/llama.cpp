@@ -1,7 +1,5 @@
 name,model,n,test,tokens,args,extra
-qni4-60k,qn_iq4xs,1,60k1k,1024,,
-qni4-60k-ps,qn_iq4xs,1,60k1k,1024,--moe pswap=1,
-qni4-60k-rh0,qn_iq4xs,1,60k1k,1024,--moe reheat=0,
-glm-60k,glm,1,60k1k,1024,,
-glm-60k-ps,glm,1,60k1k,1024,--moe pswap=1,
-glm-60k-rh0,glm,1,60k1k,1024,--moe reheat=0,
+1card-4k-2k,qwen38,2,pf12k1k,2048,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+1card-4k-2k-refillall,qwen38,2,pf12k1k,2048,"-bs --moe reheat-all=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+1card-15k-1k,qwen38,2,pf14k1k,1024,"-bs",--env CUDA_VISIBLE_DEVICES=0
+1card-15k-1k-refillall,qwen38,2,pf14k1k,1024,"-bs --moe reheat-all=1",--env CUDA_VISIBLE_DEVICES=0

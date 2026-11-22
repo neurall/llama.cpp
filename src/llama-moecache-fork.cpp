@@ -12900,6 +12900,9 @@ static double cs_k_call() {   // this call's multiplier: the planner's (ggml_bac
 bool llama_moe_cache_cs_pred_fork() {   // llama-graph.cpp: the graph of this call carries the rankings
     return g_cache && g_pp_cstream_call.load(std::memory_order_relaxed) && g_prompt_call.load(std::memory_order_relaxed) && cs_k_call() > 0.0;
 }
+bool llama_moe_cache_cs_call_fork() {   // llama-context.cpp: this prompt call streams into the cache's blocks (the layer-major prompt runs only on it)
+    return g_cache && g_pp_cstream_call.load(std::memory_order_relaxed) && g_prompt_call.load(std::memory_order_relaxed);
+}
 static constexpr int CS_PIO = 4;   // rankings and ids per kind in flight: T's ranking is read at the release of T-1, its ids at its own split
 struct cs_pio_rec  { int32_t * h = nullptr; int64_t ne0 = 0, ne1 = 0, s1 = 0; ggml_backend_event_t ev = nullptr; ggml_backend_dev_t dev = nullptr; uint32_t pass = 0; };
 struct cs_pio_pend { const ggml_tensor * t; ggml_backend_t be; int kind, il; };

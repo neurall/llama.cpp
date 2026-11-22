@@ -5728,7 +5728,9 @@ def build_jobs():
         avail = next(int(l.split()[1]) for l in open("/proc/meminfo") if l.startswith("MemAvailable:")) / 2**20
     except Exception:
         avail = 24.0
-    return max(4, min(os.cpu_count() or 8, int(avail // 3)))
+    h = time.localtime().tm_hour
+    cap = 8 if h >= 22 or h < 7 else (os.cpu_count() or 8)   # user 2026-11-22: night builds on 8 threads (quiet fans)
+    return max(4, min(cap, int(avail // 3)))
 
 def _build_stock(a):
     """upstream llama.cpp built exactly like upstream's release workflow (job ubuntu-cuda, x64, CUDA 12.8: nvidia/cuda:12.8.2-devel-ubuntu24.04, GCC 13,

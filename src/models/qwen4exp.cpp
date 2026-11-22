@@ -1627,10 +1627,6 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
     ggml_tensor * conv_input = build_conv_state_at(inp, conv_states_all, qkv_mixed,
             conv_kernel_size - 1, conv_channels, il);
 
-    ggml_tensor * state = build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs, llama_rs_inplace_getter_fork(inp, ubatch, cparams.n_rs_seq));
-    state = ggml_reshape_4d(ctx0, state, head_v_dim, head_v_dim, num_v_heads, n_seqs);
-    cb(state, "state_predelta", il);
-
     ggml_tensor * conv_output_proper = ggml_ssm_conv(ctx0, conv_input, conv_kernel);
     cb(conv_output_proper, "conv_output_raw", il);
 
@@ -1670,6 +1666,17 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
 
     q_conv = build_gdn_l2_norm(ctx0, q_conv, eps_norm);
     k_conv = build_gdn_l2_norm(ctx0, k_conv, eps_norm);
+
+    if (ggml_nbytes(z) <= ((size_t) 4 << 20)) {
+        // decode-sized: the conv chain (concat with the stored columns, their store, conv + silu, the q and k norms) enters the graph in one piece,
+        // ahead of the delta net's state read, so the CUDA backend runs it as one kernel (gdnconv-fork.cu)
+        ggml_build_forward_expand(gf, q_conv);
+        ggml_build_forward_expand(gf, k_conv);
+    }
+
+    ggml_tensor * state = build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs, llama_rs_inplace_getter_fork(inp, ubatch, cparams.n_rs_seq));
+    state = ggml_reshape_4d(ctx0, state, head_v_dim, head_v_dim, num_v_heads, n_seqs);
+    cb(state, "state_predelta", il);
 
     // repeat to match shapes when head keys != value keys; unneeded with the fused GDN
     if (num_k_heads != num_v_heads && (!cparams.fused_gdn_ar || !cparams.fused_gdn_ch)) {

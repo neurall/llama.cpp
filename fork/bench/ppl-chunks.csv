@@ -4372,3 +4372,561 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3828
 2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3937
 2026-11-19 13:08:53,hc_q8_load -np 1 --moe hc-q8=1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3913
+2026-11-19 17:10:04,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1266
+2026-11-19 17:10:04,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1091
+2026-11-19 17:10:04,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.145
+2026-11-19 17:10:04,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.221
+2026-11-19 17:10:04,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2591
+2026-11-19 17:10:04,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3257
+2026-11-19 17:10:04,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4092
+2026-11-19 17:10:04,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3865
+2026-11-19 17:10:04,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3968
+2026-11-19 17:10:04,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3931
+2026-11-19 17:12:50,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1325
+2026-11-19 17:12:50,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1093
+2026-11-19 17:12:50,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1436
+2026-11-19 17:12:50,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2189
+2026-11-19 17:12:50,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2549
+2026-11-19 17:12:50,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3202
+2026-11-19 17:12:50,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4054
+2026-11-19 17:12:50,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3829
+2026-11-19 17:12:50,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3934
+2026-11-19 17:12:50,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3901
+2026-11-19 17:16:40,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1284
+2026-11-19 17:16:40,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1133
+2026-11-19 17:16:40,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1432
+2026-11-19 17:16:40,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2232
+2026-11-19 17:16:40,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2636
+2026-11-19 17:16:40,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3301
+2026-11-19 17:16:40,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4162
+2026-11-19 17:16:40,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3918
+2026-11-19 17:16:40,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3994
+2026-11-19 17:16:40,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3966
+2026-11-19 17:19:24,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1304
+2026-11-19 17:19:24,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1136
+2026-11-19 17:19:24,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1431
+2026-11-19 17:19:24,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2204
+2026-11-19 17:19:24,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2609
+2026-11-19 17:19:24,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3289
+2026-11-19 17:19:24,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4133
+2026-11-19 17:19:24,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3885
+2026-11-19 17:19:24,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.396
+2026-11-19 17:19:24,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3934
+2026-11-19 17:23:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1367
+2026-11-19 17:23:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1151
+2026-11-19 17:23:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1407
+2026-11-19 17:23:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2242
+2026-11-19 17:23:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.264
+2026-11-19 17:23:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3302
+2026-11-19 17:23:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4131
+2026-11-19 17:23:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3899
+2026-11-19 17:23:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.397
+2026-11-19 17:23:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3938
+2026-11-19 17:25:55,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1334
+2026-11-19 17:25:55,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1111
+2026-11-19 17:25:55,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1397
+2026-11-19 17:25:55,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2199
+2026-11-19 17:25:55,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2607
+2026-11-19 17:25:55,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3287
+2026-11-19 17:25:55,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4108
+2026-11-19 17:25:55,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3878
+2026-11-19 17:25:55,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3956
+2026-11-19 17:25:55,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1,tail-skip=7",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3916
+2026-11-19 17:32:37,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1242
+2026-11-19 17:32:37,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1073
+2026-11-19 17:32:37,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1436
+2026-11-19 17:32:37,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2193
+2026-11-19 17:32:37,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2575
+2026-11-19 17:32:37,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3225
+2026-11-19 17:32:37,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4053
+2026-11-19 17:32:37,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3833
+2026-11-19 17:32:37,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3945
+2026-11-19 17:32:37,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3909
+2026-11-19 17:35:22,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1333
+2026-11-19 17:35:22,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1118
+2026-11-19 17:35:22,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1453
+2026-11-19 17:35:22,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2204
+2026-11-19 17:35:22,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2567
+2026-11-19 17:35:22,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3198
+2026-11-19 17:35:22,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4044
+2026-11-19 17:35:22,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3819
+2026-11-19 17:35:22,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3928
+2026-11-19 17:35:22,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3909
+2026-11-19 17:39:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.127
+2026-11-19 17:39:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1118
+2026-11-19 17:39:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1432
+2026-11-19 17:39:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2223
+2026-11-19 17:39:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2613
+2026-11-19 17:39:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3288
+2026-11-19 17:39:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4152
+2026-11-19 17:39:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3909
+2026-11-19 17:39:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3974
+2026-11-19 17:39:12,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3945
+2026-11-19 17:41:58,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.128
+2026-11-19 17:41:58,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1116
+2026-11-19 17:41:58,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1406
+2026-11-19 17:41:58,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2209
+2026-11-19 17:41:58,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.261
+2026-11-19 17:41:58,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3278
+2026-11-19 17:41:58,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4146
+2026-11-19 17:41:58,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3906
+2026-11-19 17:41:58,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3971
+2026-11-19 17:41:58,"q8r_hcf_default -np 1 --moe bell=1,bell-pool=32,sync=0,hc-q8=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3933
+2026-11-19 20:07:09,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1203
+2026-11-19 20:07:09,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1053
+2026-11-19 20:07:09,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1406
+2026-11-19 20:07:09,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2151
+2026-11-19 20:07:09,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2531
+2026-11-19 20:07:09,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3206
+2026-11-19 20:07:09,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4062
+2026-11-19 20:07:09,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3846
+2026-11-19 20:07:09,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3968
+2026-11-19 20:07:09,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3935
+2026-11-19 20:09:42,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1313
+2026-11-19 20:09:42,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1123
+2026-11-19 20:09:42,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1449
+2026-11-19 20:09:42,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2205
+2026-11-19 20:09:42,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2577
+2026-11-19 20:09:42,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3204
+2026-11-19 20:09:42,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4055
+2026-11-19 20:09:42,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3838
+2026-11-19 20:09:42,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3953
+2026-11-19 20:09:42,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3921
+2026-11-19 20:13:20,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1278
+2026-11-19 20:13:20,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1128
+2026-11-19 20:13:20,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1415
+2026-11-19 20:13:20,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2234
+2026-11-19 20:13:20,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2638
+2026-11-19 20:13:20,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3309
+2026-11-19 20:13:20,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4143
+2026-11-19 20:13:20,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3915
+2026-11-19 20:13:20,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.4001
+2026-11-19 20:13:20,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3978
+2026-11-19 20:16:27,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1316
+2026-11-19 20:16:27,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.115
+2026-11-19 20:16:27,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1443
+2026-11-19 20:16:27,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2244
+2026-11-19 20:16:27,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2643
+2026-11-19 20:16:27,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3299
+2026-11-19 20:16:27,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4132
+2026-11-19 20:16:27,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3902
+2026-11-19 20:16:27,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3976
+2026-11-19 20:16:27,"host_cut -np 1 --moe bell=0,bell-pool=0,sync=1,hc-q8=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3953
+2026-11-19 20:20:39,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1332
+2026-11-19 20:20:39,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1152
+2026-11-19 20:20:39,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.144
+2026-11-19 20:20:39,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2238
+2026-11-19 20:20:39,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2647
+2026-11-19 20:20:39,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3323
+2026-11-19 20:20:39,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4174
+2026-11-19 20:20:39,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3935
+2026-11-19 20:20:39,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3997
+2026-11-19 20:20:39,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3972
+2026-11-19 20:23:16,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1265
+2026-11-19 20:23:16,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1101
+2026-11-19 20:23:16,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1424
+2026-11-19 20:23:16,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2249
+2026-11-19 20:23:16,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2636
+2026-11-19 20:23:16,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.331
+2026-11-19 20:23:16,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4168
+2026-11-19 20:23:16,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3947
+2026-11-19 20:23:16,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.4028
+2026-11-19 20:23:16,host_cut -np 1 --moe hc-q8=0,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3993
+2026-11-19 20:26:58,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1305
+2026-11-19 20:26:58,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1128
+2026-11-19 20:26:58,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1415
+2026-11-19 20:26:58,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2209
+2026-11-19 20:26:58,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2614
+2026-11-19 20:26:58,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3274
+2026-11-19 20:26:58,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4124
+2026-11-19 20:26:58,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3893
+2026-11-19 20:26:58,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3976
+2026-11-19 20:26:58,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3951
+2026-11-19 20:29:31,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1261
+2026-11-19 20:29:31,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1129
+2026-11-19 20:29:31,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1431
+2026-11-19 20:29:31,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2213
+2026-11-19 20:29:31,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2619
+2026-11-19 20:29:31,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3315
+2026-11-19 20:29:31,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4162
+2026-11-19 20:29:31,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3924
+2026-11-19 20:29:31,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3996
+2026-11-19 20:29:31,host_cut -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3962
+2026-11-20 18:11:21,gdn_gates_first -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3718
+2026-11-20 18:11:21,gdn_gates_first -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.423
+2026-11-20 18:12:59,gdn_gates_first -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3694
+2026-11-20 18:12:59,gdn_gates_first -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4285
+2026-11-20 18:15:18,gdn_gates_first -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.466
+2026-11-20 18:15:18,gdn_gates_first -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5756
+2026-11-20 18:16:33,gdn_gates_first -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4496
+2026-11-20 18:16:33,gdn_gates_first -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.568
+2026-11-20 18:18:34,gdn_gates_first -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1333
+2026-11-20 18:18:34,gdn_gates_first -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1327
+2026-11-20 18:19:28,gdn_gates_first -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1406
+2026-11-20 18:19:28,gdn_gates_first -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1351
+2026-11-20 18:21:13,gdn_gates_first -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1314
+2026-11-20 18:21:13,gdn_gates_first -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1144
+2026-11-20 18:22:43,gdn_gates_first -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-20 18:22:43,gdn_gates_first -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-20 18:23:42,gdn_gates_first -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-20 18:23:42,gdn_gates_first -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-20 18:25:21,gdn_gates_first -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6651
+2026-11-20 18:25:21,gdn_gates_first -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5213
+2026-11-20 18:25:48,gdn_gates_first -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6658
+2026-11-20 18:25:48,gdn_gates_first -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5244
+2026-11-20 18:26:55,"gdn_gates_first -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9389
+2026-11-20 18:26:55,"gdn_gates_first -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9395
+2026-11-20 18:27:15,"gdn_gates_first -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9391
+2026-11-20 18:27:15,"gdn_gates_first -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9402
+2026-11-20 18:28:00,stock-b12588-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-20 18:28:00,stock-b12588-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-11-20 18:29:03,stock-b12588-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-20 18:29:03,stock-b12588-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-11-21 03:09:56,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6636
+2026-11-21 03:09:56,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5251
+2026-11-21 03:10:19,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6691
+2026-11-21 03:10:19,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5247
+2026-11-21 03:10:42,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6675
+2026-11-21 03:10:42,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5266
+2026-11-21 03:11:26,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6668
+2026-11-21 03:11:26,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5266
+2026-11-21 03:11:49,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6625
+2026-11-21 03:11:49,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5224
+2026-11-21 03:12:12,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6663
+2026-11-21 03:12:12,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.525
+2026-11-21 03:12:36,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6627
+2026-11-21 03:12:36,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5225
+2026-11-21 03:12:59,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6609
+2026-11-21 03:12:59,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5246
+2026-11-21 03:13:23,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6658
+2026-11-21 03:13:23,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5263
+2026-11-21 03:21:14,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.663
+2026-11-21 03:21:14,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5227
+2026-11-21 03:21:37,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6667
+2026-11-21 03:21:37,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5249
+2026-11-21 03:22:00,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6613
+2026-11-21 03:22:00,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5204
+2026-11-21 03:22:23,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6723
+2026-11-21 03:22:23,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5272
+2026-11-21 03:22:45,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6645
+2026-11-21 03:22:45,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5239
+2026-11-21 03:23:17,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.663
+2026-11-21 03:23:17,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5223
+2026-11-21 03:23:40,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6685
+2026-11-21 03:23:40,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.526
+2026-11-21 03:24:03,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6715
+2026-11-21 03:24:03,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5265
+2026-11-21 03:24:26,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6641
+2026-11-21 03:24:26,rel_multissd4 -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5247
+2026-11-21 03:26:07,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6653
+2026-11-21 03:26:07,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5263
+2026-11-21 03:26:32,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6684
+2026-11-21 03:26:32,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5248
+2026-11-21 03:26:54,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.663
+2026-11-21 03:26:54,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5237
+2026-11-21 03:27:18,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6643
+2026-11-21 03:27:18,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5221
+2026-11-21 03:27:41,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6622
+2026-11-21 03:27:41,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5204
+2026-11-21 03:28:12,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.665
+2026-11-21 03:28:12,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5246
+2026-11-21 03:28:35,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.672
+2026-11-21 03:28:35,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5274
+2026-11-21 03:28:58,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6673
+2026-11-21 03:28:58,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5242
+2026-11-21 03:29:22,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6649
+2026-11-21 03:29:22,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5276
+2026-11-21 03:29:45,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6713
+2026-11-21 03:29:45,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5275
+2026-11-21 03:30:08,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6709
+2026-11-21 03:30:08,rc_bell_kimi_clamp -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5271
+2026-11-21 03:32:57,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6646
+2026-11-21 03:32:57,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5224
+2026-11-21 03:33:21,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6696
+2026-11-21 03:33:21,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5266
+2026-11-21 03:33:45,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6674
+2026-11-21 03:33:45,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5241
+2026-11-21 03:34:08,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6664
+2026-11-21 03:34:08,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5254
+2026-11-21 03:34:32,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6641
+2026-11-21 03:34:32,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5248
+2026-11-21 03:34:56,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6671
+2026-11-21 03:34:56,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5232
+2026-11-21 03:35:19,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6673
+2026-11-21 03:35:19,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5253
+2026-11-21 03:35:43,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6669
+2026-11-21 03:35:43,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.523
+2026-11-21 03:36:06,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6656
+2026-11-21 03:36:06,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5238
+2026-11-21 03:36:29,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6646
+2026-11-21 03:36:29,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5268
+2026-11-21 03:36:52,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6686
+2026-11-21 03:36:52,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5255
+2026-11-21 03:37:15,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.665
+2026-11-21 03:37:15,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5253
+2026-11-21 03:37:39,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6625
+2026-11-21 03:37:39,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5223
+2026-11-21 03:38:03,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6666
+2026-11-21 03:38:03,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5234
+2026-11-21 03:38:26,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6672
+2026-11-21 03:38:26,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5254
+2026-11-21 03:38:50,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6688
+2026-11-21 03:38:50,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5251
+2026-11-21 03:39:45,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6655
+2026-11-21 03:39:45,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.526
+2026-11-21 03:40:08,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.665
+2026-11-21 03:40:08,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5234
+2026-11-21 03:40:31,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6694
+2026-11-21 03:40:31,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5251
+2026-11-21 03:40:54,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6651
+2026-11-21 03:40:54,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5237
+2026-11-21 03:41:17,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6674
+2026-11-21 03:41:17,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5231
+2026-11-21 03:41:41,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6634
+2026-11-21 03:41:41,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5214
+2026-11-21 03:42:04,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.667
+2026-11-21 03:42:04,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5253
+2026-11-21 03:42:27,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6659
+2026-11-21 03:42:27,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5211
+2026-11-21 03:42:50,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6654
+2026-11-21 03:42:50,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5247
+2026-11-21 03:43:13,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6643
+2026-11-21 03:43:13,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5221
+2026-11-21 03:43:37,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6651
+2026-11-21 03:43:37,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5217
+2026-11-21 03:44:01,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6599
+2026-11-21 03:44:01,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5211
+2026-11-21 03:44:24,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6698
+2026-11-21 03:44:24,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5258
+2026-11-21 03:44:48,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6678
+2026-11-21 03:44:48,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5232
+2026-11-21 03:45:12,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6661
+2026-11-21 03:45:12,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.524
+2026-11-21 03:45:35,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.66
+2026-11-21 03:45:35,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5199
+2026-11-21 03:49:24,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.664
+2026-11-21 03:49:24,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5251
+2026-11-21 03:49:48,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6667
+2026-11-21 03:49:48,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.525
+2026-11-21 03:50:11,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.666
+2026-11-21 03:50:11,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5239
+2026-11-21 03:51:52,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6666
+2026-11-21 03:51:52,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5261
+2026-11-21 03:52:16,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6644
+2026-11-21 03:52:16,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5232
+2026-11-21 03:52:40,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6633
+2026-11-21 03:52:40,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5229
+2026-11-21 03:53:04,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6574
+2026-11-21 03:53:04,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5206
+2026-11-21 03:54:37,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6676
+2026-11-21 03:54:37,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5251
+2026-11-21 03:55:02,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6602
+2026-11-21 03:55:02,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5207
+2026-11-21 03:55:25,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6677
+2026-11-21 03:55:25,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5245
+2026-11-21 03:55:48,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6634
+2026-11-21 03:55:48,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5217
+2026-11-21 03:57:21,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6652
+2026-11-21 03:57:21,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5245
+2026-11-21 03:57:46,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6659
+2026-11-21 03:57:46,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5252
+2026-11-21 03:58:09,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.669
+2026-11-21 03:58:09,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5248
+2026-11-21 03:58:32,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6673
+2026-11-21 03:58:32,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5261
+2026-11-21 04:00:05,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6648
+2026-11-21 04:00:05,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5244
+2026-11-21 04:00:29,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6698
+2026-11-21 04:00:29,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5267
+2026-11-21 04:00:52,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6663
+2026-11-21 04:00:52,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5254
+2026-11-21 04:01:15,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6678
+2026-11-21 04:01:15,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5257
+2026-11-21 04:02:48,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6612
+2026-11-21 04:02:48,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5216
+2026-11-21 04:03:12,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6719
+2026-11-21 04:03:12,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5279
+2026-11-21 04:03:35,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6674
+2026-11-21 04:03:35,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5256
+2026-11-21 04:03:58,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6681
+2026-11-21 04:03:58,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5256
+2026-11-21 04:05:32,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6695
+2026-11-21 04:05:32,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5261
+2026-11-21 04:05:56,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6653
+2026-11-21 04:05:56,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5262
+2026-11-21 04:06:19,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6648
+2026-11-21 04:06:19,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.523
+2026-11-21 04:06:42,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6683
+2026-11-21 04:06:42,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5259
+2026-11-21 04:08:15,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6597
+2026-11-21 04:08:15,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.522
+2026-11-21 04:08:39,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6673
+2026-11-21 04:08:39,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5224
+2026-11-21 04:09:02,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6681
+2026-11-21 04:09:02,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5245
+2026-11-21 04:09:25,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6654
+2026-11-21 04:09:25,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5253
+2026-11-21 04:10:58,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6673
+2026-11-21 04:10:58,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5231
+2026-11-21 04:11:22,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6573
+2026-11-21 04:11:22,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5213
+2026-11-21 04:11:45,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.665
+2026-11-21 04:11:45,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.524
+2026-11-21 04:12:08,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.666
+2026-11-21 04:12:08,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.524
+2026-11-21 04:13:41,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6686
+2026-11-21 04:13:41,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.523
+2026-11-21 04:14:06,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6664
+2026-11-21 04:14:06,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5235
+2026-11-21 04:14:29,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6658
+2026-11-21 04:14:29,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5217
+2026-11-21 04:14:52,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6648
+2026-11-21 04:14:52,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5225
+2026-11-21 04:16:25,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6619
+2026-11-21 04:16:25,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5199
+2026-11-21 04:16:50,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6651
+2026-11-21 04:16:50,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5246
+2026-11-21 04:17:13,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.667
+2026-11-21 04:17:13,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5274
+2026-11-21 04:17:36,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6627
+2026-11-21 04:17:36,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5209
+2026-11-21 04:19:09,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6676
+2026-11-21 04:19:09,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5242
+2026-11-21 04:19:33,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6627
+2026-11-21 04:19:33,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5225
+2026-11-21 04:19:56,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6699
+2026-11-21 04:19:56,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5262
+2026-11-21 04:20:19,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6648
+2026-11-21 04:20:19,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5231
+2026-11-21 04:22:01,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6672
+2026-11-21 04:22:01,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5254
+2026-11-21 04:22:30,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6621
+2026-11-21 04:22:30,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5212
+2026-11-21 04:22:58,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6655
+2026-11-21 04:22:58,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5235
+2026-11-21 04:23:26,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6745
+2026-11-21 04:23:26,tree_key_last -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.528
+2026-11-21 04:25:05,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6671
+2026-11-21 04:25:05,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.526
+2026-11-21 04:25:35,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6627
+2026-11-21 04:25:35,load_progress_no_dead_stack -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.523
+2026-11-21 11:43:05,refill_nowait_switch -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3699
+2026-11-21 11:43:05,refill_nowait_switch -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4228
+2026-11-21 11:44:43,refill_nowait_switch -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.379
+2026-11-21 11:44:43,refill_nowait_switch -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4319
+2026-11-21 11:46:59,refill_nowait_switch -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4499
+2026-11-21 11:46:59,refill_nowait_switch -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5641
+2026-11-21 11:48:15,refill_nowait_switch -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4485
+2026-11-21 11:48:15,refill_nowait_switch -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5654
+2026-11-21 11:50:08,refill_nowait_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1393
+2026-11-21 11:50:08,refill_nowait_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1329
+2026-11-21 11:51:03,refill_nowait_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1364
+2026-11-21 11:51:03,refill_nowait_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1312
+2026-11-21 11:52:36,refill_nowait_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1355
+2026-11-21 11:52:36,refill_nowait_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1163
+2026-11-21 11:53:27,refill_nowait_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1323
+2026-11-21 11:53:27,refill_nowait_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1117
+2026-11-21 11:54:57,refill_nowait_switch -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-21 11:54:57,refill_nowait_switch -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-21 11:55:55,refill_nowait_switch -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-21 11:55:55,refill_nowait_switch -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-21 11:57:33,refill_nowait_switch -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6698
+2026-11-21 11:57:33,refill_nowait_switch -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5272
+2026-11-21 11:57:58,refill_nowait_switch -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6671
+2026-11-21 11:57:58,refill_nowait_switch -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5235
+2026-11-21 11:59:00,"refill_nowait_switch -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9364
+2026-11-21 11:59:00,"refill_nowait_switch -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9393
+2026-11-21 11:59:14,"refill_nowait_switch -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9379
+2026-11-21 11:59:14,"refill_nowait_switch -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.942
+2026-11-21 12:00:00,stock-b12606-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-21 12:00:00,stock-b12606-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-11-21 12:01:01,stock-b12606-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-21 12:01:01,stock-b12606-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-11-21 12:58:37,ring_early_switch -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3721
+2026-11-21 12:58:37,ring_early_switch -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4192
+2026-11-21 13:00:14,ring_early_switch -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.365
+2026-11-21 13:00:14,ring_early_switch -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4158
+2026-11-21 13:02:29,ring_early_switch -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4586
+2026-11-21 13:02:29,ring_early_switch -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5796
+2026-11-21 13:03:43,ring_early_switch -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4546
+2026-11-21 13:03:43,ring_early_switch -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5713
+2026-11-21 13:05:38,ring_early_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1457
+2026-11-21 13:05:38,ring_early_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1331
+2026-11-21 13:06:32,ring_early_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1402
+2026-11-21 13:06:32,ring_early_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1313
+2026-11-21 13:08:07,ring_early_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1361
+2026-11-21 13:08:07,ring_early_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1166
+2026-11-21 13:08:58,ring_early_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1327
+2026-11-21 13:08:58,ring_early_switch -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1138
+2026-11-21 13:10:28,ring_early_switch -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-21 13:10:28,ring_early_switch -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-21 13:11:26,ring_early_switch -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-21 13:11:26,ring_early_switch -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-21 13:13:04,ring_early_switch -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6635
+2026-11-21 13:13:04,ring_early_switch -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.524
+2026-11-21 13:13:29,ring_early_switch -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.661
+2026-11-21 13:13:29,ring_early_switch -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5221
+2026-11-21 13:14:32,"ring_early_switch -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9406
+2026-11-21 13:14:32,"ring_early_switch -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9405
+2026-11-21 13:14:47,"ring_early_switch -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.941
+2026-11-21 13:14:47,"ring_early_switch -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9429
+2026-11-21 16:12:55,poolv2_unit_views -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3702
+2026-11-21 16:12:55,poolv2_unit_views -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4196
+2026-11-21 16:14:32,poolv2_unit_views -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3648
+2026-11-21 16:14:32,poolv2_unit_views -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4175
+2026-11-21 16:16:50,poolv2_unit_views -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4591
+2026-11-21 16:16:50,poolv2_unit_views -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5792
+2026-11-21 16:18:06,poolv2_unit_views -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4528
+2026-11-21 16:18:06,poolv2_unit_views -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5688
+2026-11-21 16:20:00,poolv2_unit_views -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1345
+2026-11-21 16:20:00,poolv2_unit_views -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1304
+2026-11-21 16:20:55,poolv2_unit_views -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1362
+2026-11-21 16:20:55,poolv2_unit_views -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1326
+2026-11-21 16:22:27,poolv2_unit_views -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1361
+2026-11-21 16:22:27,poolv2_unit_views -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1166
+2026-11-21 16:23:18,poolv2_unit_views -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1272
+2026-11-21 16:23:18,poolv2_unit_views -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1111
+2026-11-21 16:24:48,poolv2_unit_views -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-21 16:24:48,poolv2_unit_views -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-21 16:25:47,poolv2_unit_views -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-21 16:25:47,poolv2_unit_views -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-21 16:27:25,poolv2_unit_views -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6649
+2026-11-21 16:27:25,poolv2_unit_views -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5251
+2026-11-21 16:27:50,poolv2_unit_views -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6616
+2026-11-21 16:27:50,poolv2_unit_views -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5221
+2026-11-21 16:28:52,"poolv2_unit_views -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9391
+2026-11-21 16:28:52,"poolv2_unit_views -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9411
+2026-11-21 16:29:07,"poolv2_unit_views -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9376
+2026-11-21 16:29:07,"poolv2_unit_views -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9386
+2026-11-21 17:38:07,poolv2_shadow_heap -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3637
+2026-11-21 17:38:07,poolv2_shadow_heap -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4176
+2026-11-21 17:39:45,poolv2_shadow_heap -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.372
+2026-11-21 17:39:45,poolv2_shadow_heap -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.43
+2026-11-21 17:42:04,poolv2_shadow_heap -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4552
+2026-11-21 17:42:04,poolv2_shadow_heap -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5771
+2026-11-21 17:43:20,poolv2_shadow_heap -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.458
+2026-11-21 17:43:20,poolv2_shadow_heap -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5773
+2026-11-21 17:45:16,poolv2_shadow_heap -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1382
+2026-11-21 17:45:16,poolv2_shadow_heap -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1279
+2026-11-21 17:46:11,poolv2_shadow_heap -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1397
+2026-11-21 17:46:11,poolv2_shadow_heap -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1301
+2026-11-21 17:47:45,poolv2_shadow_heap -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1361
+2026-11-21 17:47:45,poolv2_shadow_heap -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1166
+2026-11-21 17:48:37,poolv2_shadow_heap -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1326
+2026-11-21 17:48:37,poolv2_shadow_heap -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1149
+2026-11-21 17:50:08,poolv2_shadow_heap -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-21 17:50:08,poolv2_shadow_heap -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-21 17:51:05,poolv2_shadow_heap -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-21 17:51:05,poolv2_shadow_heap -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-21 17:52:43,poolv2_shadow_heap -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6656
+2026-11-21 17:52:43,poolv2_shadow_heap -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5231
+2026-11-21 17:53:07,poolv2_shadow_heap -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6687
+2026-11-21 17:53:07,poolv2_shadow_heap -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5236
+2026-11-21 17:54:10,"poolv2_shadow_heap -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9384
+2026-11-21 17:54:10,"poolv2_shadow_heap -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9392
+2026-11-21 17:54:24,"poolv2_shadow_heap -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9379
+2026-11-21 17:54:24,"poolv2_shadow_heap -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9383
+2026-11-21 17:55:10,stock-b12608-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-21 17:55:10,stock-b12608-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-11-21 17:56:10,stock-b12608-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-21 17:56:10,stock-b12608-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422

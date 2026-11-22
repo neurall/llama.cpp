@@ -119,3 +119,14 @@ q1-tr4k,qwen38,1,pf12k1k,2048,"-bs","--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTO
 q1-tr14k,qwen38,1,pf14k1k,1024,"-bs","--env CUDA_VISIBLE_DEVICES=0 --wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none --delay=36 --duration=4 --kill=none -o /p/bw/data/nsys/q1tr14k-%p --force-overwrite=true'"
 q1-q8log2,qwen38,1,pf1k,256,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_Q8_REUSE_LOG=1
 q1-opprof,qwen38,1,pf1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_OP_PROFILE=128
+q1-strata-tr14k,qwen38,1,pf14k1k,1024,,--env CUDA_VISIBLE_DEVICES=0 --env STRATA_ROUTE_TAIL_SKIP=0 --env STRATA_NSYS_DELAY=40 --env STRATA_NSYS_S=20
+q1-treel-g2k,qwen38,2,pf12k1k,2048,"-bs --moe dynhot=tree,tree-key=last,hotmaps=/p/bw/data/hot/ab-last",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-treep-g2k,qwen38,2,pf12k1k,2048,"-bs --moe dynhot=tree,tree-key=pool,hotmaps=/p/bw/data/hot/ab-pool",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-p14k-trace,qwen38,1,pf14k1k,1024,"-bs --moe log=ck,trace-n=150",--env CUDA_VISIBLE_DEVICES=0
+q1-p14k-rnw0,qwen38,3,pf14k1k,1024,-bs,--env CUDA_VISIBLE_DEVICES=0
+q1-p14k-rnw1,qwen38,3,pf14k1k,1024,"-bs --moe refill-nowait=1",--env CUDA_VISIBLE_DEVICES=0
+q1-p14k-nsys,qwen38,1,pf14k1k,1024,-bs,"--env CUDA_VISIBLE_DEVICES=0 --wrap ""nsys profile --trace=cuda --sample=none -o /p/bw/data/nsys/refill-q38 --force-overwrite=true"""
+q1-p14k-re-vf,qwen38,1,pf14k1k,64,"-bs --moe ring-early=1,verify=2",--env CUDA_VISIBLE_DEVICES=0
+q1-p14k-re0,qwen38,3,pf14k1k,1024,-bs,--env CUDA_VISIBLE_DEVICES=0
+q1-p14k-re1,qwen38,3,pf14k1k,1024,"-bs --moe ring-early=1",--env CUDA_VISIBLE_DEVICES=0
+q1-p14k-jit1,qwen38,3,pf14k1k,1024,"-bs --moe jit-all=1",--env CUDA_VISIBLE_DEVICES=0

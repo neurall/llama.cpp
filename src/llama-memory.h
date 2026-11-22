@@ -99,6 +99,8 @@ struct llama_memory_context_i {
     // fork (layer-major prompt, fork/docs/layer-major-prompt.md): back to ubatch i, which was applied before; the next apply() gives the view its first apply
     // gave (what its graph reads) and leaves the memory alone. false: ubatch i was not applied, or this memory cannot (its calls run as passes)
     virtual bool replay_fork(uint32_t /* i */) { return false; }
+    // fork: whether replay_fork can go back to the ubatches of this context once they are applied (asked before a layer-major call starts)
+    virtual bool replay_ok_fork() const { return false; }
 };
 
 using llama_memory_context_ptr = std::unique_ptr<llama_memory_context_i>;

@@ -19,3 +19,20 @@ k31-i-mir-np,k31,2,pfbest1k,1024,"--moe bell-pred=0",--env LLAMA_MOE_MIRROR=/m2/
 k31-i-pred,k31,2,pfbest1k,1024,,
 k31-i-k32,k31,2,pfbest1k,1024,"--moe bell-pred-k=32",--env LLAMA_MOE_MIRROR=/m2/k
 k31-refresh,k31,1,pf1k,64,"--refresh-ssd",
+k31-i-mssd,k31,2,pfbest1k,1024,"--multissd /m2/k",
+ol-mssd-off,olmoe,1,pf1k,256,"--moe sim-vram=1280",
+ol-mssd,olmoe,1,pf1k,256,"--moe sim-vram=1280 --multissd /m2/m",
+k31-lend-a,k31,1,pf1k,16,,
+k31-lend-b,k31,1,pf1k,16,"--moe bell=0",
+k31-lend-c,k31,1,pf1k,16,,--env GGML_CUDA_STREAMS=0
+k31-lend-d,k31,1,pf1k,16,,--env GGML_CUDA_Q8_REUSE=0 --env GGML_CUDA_HC_FUSE=0
+k31-lend-e,k31,1,pf1k,16,"--moe sync=1,hc-q8=0",
+k31-lend-f,k31,1,pf1k,16,"--moe bell=0,sync=1,hc-q8=0",--env GGML_CUDA_STREAMS=0 --env GGML_CUDA_Q8_REUSE=0 --env GGML_CUDA_HC_FUSE=0
+k31-i-pred-b1m8,k31,2,pfbest1k,1024,,--env LLAMA_MOE_RD_BLK_KB=1024 --env LLAMA_MOE_RD_QD=8
+k31-i-pred-b1m32,k31,2,pfbest1k,1024,,--env LLAMA_MOE_RD_BLK_KB=1024 --env LLAMA_MOE_RD_QD=32
+k31-i-pred-rt16,k31,2,pfbest1k,1024,"--moe read-threads=16",
+k31-dec-mssd,k31,1,tetrisc,512,"--multissd /m2/k",--env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1
+k31-o-mssd,k31,2,pfbest1k,2048,"--multissd /m2/k",
+k31-o-mssd-p2,k31,2,pfbest1k,2048,"--multissd /m2/k --moe pred-top=16,pred=1,predict-ahead=2",
+k31-o-mssd-p4,k31,2,pfbest1k,2048,"--multissd /m2/k --moe pred-top=16,pred=1,predict-ahead=4",
+k31-dec-mssd-p2,k31,1,tetrisc,512,"--multissd /m2/k --moe pred-top=16,pred=1,predict-ahead=2",--env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1

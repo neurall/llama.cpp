@@ -5082,6 +5082,60 @@ struct test_ssm_conv_bias_silu : public test_case {
     }
 };
 
+// fork: one decode token's delta-net conv chain in the order qwen4exp builds it: the stored columns of the cache row and the new qkv column are
+// concatenated and stored back, then conv + silu and the l2 norms of the q and k heads. CUDA runs it as one kernel (gdnconv-fork.cu), the CPU op by op.
+struct test_gdn_conv_chain : public test_case {
+    const int64_t H, D, Hv;   // q (and k) heads, head size, v heads
+    ggml_tensor * store = nullptr;
+    ggml_tensor * y     = nullptr;
+    ggml_tensor * qn    = nullptr;
+    ggml_tensor * kn    = nullptr;
+
+    std::string vars() override { return VARS_TO_STR3(H, D, Hv); }
+    std::string op_desc(ggml_tensor * t) override { GGML_UNUSED(t); return "GDN_CONV_CHAIN"; }
+    bool run_whole_graph() override { return true; }
+    std::vector<ggml_tensor *> fusion_test_nodes() override { return { store, y, qn, kn }; }
+
+    test_gdn_conv_chain(int64_t H = 16, int64_t D = 128, int64_t Hv = 48) : H(H), D(D), Hv(Hv) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        const int64_t K = 4;
+        const int64_t C = 2 * H * D + Hv * D;
+        ggml_tensor * cache = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, (K - 1) * C, 1);   // one cell's stored conv columns
+        ggml_tensor * qkv   = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, C, 1, 1);
+        ggml_tensor * w     = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, K, C);
+        ggml_set_name(cache, "cache");
+        ggml_set_name(qkv, "qkv");
+        ggml_set_name(w, "conv_w");
+
+        ggml_tensor * state = ggml_reshape_3d(ctx, ggml_view_2d(ctx, cache, (K - 1) * C, 1, cache->nb[1], 0), K - 1, C, 1);
+        ggml_tensor * in    = ggml_concat(ctx, state, ggml_transpose(ctx, qkv), 0);
+        ggml_tensor * last  = ggml_view_3d(ctx, in, K - 1, C, 1, in->nb[1], in->nb[2], ggml_row_size(in->type, 1));
+        store = ggml_cpy(ctx, last, ggml_view_2d(ctx, cache, (K - 1) * C, 1, cache->nb[1], 0));   // in place, as the decode path's cell
+        if (mode == MODE_TEST) {
+            ggml_build_forward_expand(gf, store);
+        }
+
+        y = ggml_silu(ctx, ggml_ssm_conv(ctx, in, w));
+        const size_t nb1 = ggml_row_size(y->type, C);
+        const auto l2 = [&](size_t offs) {
+            ggml_tensor * h = ggml_view_4d(ctx, y, D, H, 1, 1, ggml_row_size(y->type, D), nb1, nb1, offs);
+            return ggml_scale(ctx, ggml_rms_norm(ctx, h, 1e-6f / D), 1.0f / sqrtf((float) D));
+        };
+        qn = l2(0);
+        if (mode == MODE_TEST) {
+            ggml_build_forward_expand(gf, qn);
+        }
+        kn = l2(ggml_row_size(y->type, H * D));
+        if (mode == MODE_TEST) {
+            ggml_build_forward_expand(gf, kn);
+        }
+        ggml_tensor * v = ggml_view_4d(ctx, y, D, Hv, 1, 1, ggml_row_size(y->type, D), nb1, nb1, ggml_row_size(y->type, 2 * H * D));
+        // every output is read past the chain, as the delta net and the next token read them
+        return ggml_add(ctx, ggml_add(ctx, ggml_sum(ctx, store), ggml_sum(ctx, v)), ggml_add(ctx, ggml_sum(ctx, qn), ggml_sum(ctx, kn)));
+    }
+};
+
 // GGML_OP_SSM_SCAN
 struct test_ssm_scan : public test_case {
     const ggml_type type;
@@ -11762,6 +11816,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             }
         }
     }
+
+    // fork: the delta-net conv chain of one decode token (gdnconv-fork.cu on CUDA)
+    test_cases.emplace_back(new test_gdn_conv_chain(16, 128, 48));   // Qwen3.8-Flash-Next
+    test_cases.emplace_back(new test_gdn_conv_chain(2, 32, 4));
 
     test_cases.emplace_back(new test_ssm_scan(GGML_TYPE_F32, 16, 1, 1024, 1, 32, 4)); // Mamba-1
     test_cases.emplace_back(new test_ssm_scan(GGML_TYPE_F32, 96, 64, 128, 8, 1, 1)); // Nemotron-3-Puzzle decode (scan path, unused warp in last block)

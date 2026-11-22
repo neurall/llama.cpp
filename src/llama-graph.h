@@ -187,6 +187,21 @@ public:
     ggml_tensor * idxs = nullptr; // I64 [n_batch]
 };
 
+// fork (layer-major prompt, fork/docs/layer-major-prompt.md): the hidden state a graph that starts past layer 0 takes in, the ubatch's rows of the call's hidden
+// state in host memory (llm_graph_params::lm_carry)
+class llm_graph_input_carry : public llm_graph_input_i {
+public:
+    llm_graph_input_carry(const float * src) : src(src) {}
+    virtual ~llm_graph_input_carry() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    bool can_reuse(const llm_graph_params & params) override;
+
+    ggml_tensor * t   = nullptr; // F32 [n_embd, n_batch]
+    const float * src = nullptr;
+};
+
 class llm_graph_input_pos : public llm_graph_input_i {
 public:
     llm_graph_input_pos(uint32_t n_pos_per_embd, llama_rope_section_order rope_section_order = LLAMA_ROPE_SECTION_ORDER_TYXZ)
@@ -837,6 +852,12 @@ struct llm_graph_params {
 
     llm_graph_result * res;
 
+    // fork (layer-major prompt, fork/docs/layer-major-prompt.md): the layers of this graph, [lm_beg, lm_end) (lm_end < 0: to the last). Past layer 0 the graph
+    // takes its hidden state from lm_carry (n_embd floats a token, the ubatch's rows); short of the last layer it leaves its own in res->t_carry
+    int32_t       lm_beg   = 0;
+    int32_t       lm_end   = -1;
+    const float * lm_carry = nullptr;
+
     // return true if the "other" params would result in a graph with the same topology as with the current params
     //   having the same topology allows us to reuse the graph in some cases
     bool allow_reuse(const llm_graph_params & other) const {
@@ -906,6 +927,7 @@ struct llm_graph_params {
             cparams.embeddings_nextn        == other.cparams.embeddings_nextn        &&
             cparams.embeddings_nextn_masked == other.cparams.embeddings_nextn_masked &&
             cparams.causal_attn             == other.cparams.causal_attn             &&
+            lm_beg == other.lm_beg && lm_end == other.lm_end &&   // fork: another layer window is another graph
             layer_inp_dev == other.layer_inp_dev &&
             layer_inp_src == other.layer_inp_src &&
             model == other.model &&
@@ -976,6 +998,7 @@ public:
     ggml_tensor * t_h_nextn     = nullptr; // [n_embd, n_outputs] hidden state before final output norm
     ggml_tensor * t_mtp_dsa_sel  = nullptr;
     ggml_tensor * t_mtp_dsa_mask = nullptr;
+    ggml_tensor * t_carry        = nullptr; // fork (layer-major prompt): [n_embd, n_tokens] the hidden state a graph short of the last layer leaves
 
     std::vector<ggml_tensor *> t_layer_inp;
 
@@ -1148,6 +1171,11 @@ struct llm_graph_context {
     ggml_tensor * layer_inp_dev;
     ggml_tensor * layer_inp_src;
 
+    // fork (layer-major prompt): this graph computes layers [lm_beg, lm_end) (the whole model: 0, n_layer); see llm_graph_params
+    const int32_t lm_beg;
+    const int32_t lm_end;
+    const float * lm_carry;
+
     std::map<llama_seq_id, llama_sampler *> samplers;
 
     const llm_graph_cb & cb_func;
@@ -1171,6 +1199,11 @@ struct llm_graph_context {
     bool crop_after_nextn(const ggml_tensor * inp_out_ids) const {
         return inp_out_ids != nullptr && cparams.embeddings_nextn && !cparams.embeddings_nextn_masked;
     }
+
+    // fork (layer-major prompt): a graph that starts past layer 0 takes the hidden state in ([n_embd, n_tokens] F32), one short of the last layer leaves cur
+    // as its own (res->t_carry). A model builds the window: its layer loop over [lm_beg, lm_end), the output head only when lm_end is n_layer
+    ggml_tensor * build_inp_carry() const;
+    void          build_out_carry(ggml_tensor * cur) const;
 
     //
     // common
