@@ -2760,12 +2760,12 @@ static void pv2_zone_sort(moe_cache * mc, size_t a, size_t b) {
 // place leaves with the stretch (pv2_take_range). Cache lock taken here; the caller (pv2_sync, not locked) has no graph running. --moe zone-move=0: off
 struct pool_move_fork { const char * src; char * dst; size_t bytes; int32_t * tbl; int32_t idx; int32_t val; };   // = ggml-cuda.cu
 typedef bool (*pool_move_t)(ggml_backend_t, const pool_move_fork *, size_t);
-static void pv2_zone_move(moe_cache * mc, size_t a, size_t b) {
+// cache lock held. be: the stream the moves go on (nullptr: the card's compute stream); a stream window goes on the ring's upload stream, ahead of the upload
+// that lands in the window. Returns the experts moved
+// gaps_only: moves only into free bytes, never over a colder expert (a kernel of the pass may still read that one: the stream's copy waits only for its own victims)
+static size_t pv2_zone_move_locked(moe_cache * mc, size_t a, size_t b, ggml_backend_t be = nullptr, bool gaps_only = false) {
     auto & v = mc->v2;
-    static const bool on = [] { const char * e = moe_opt("zone-move"); return !e || atoi(e) != 0; }();
-    if (!on || v.ap_idx >= mc->alias.size()) { return; }
-    optime_t _ot(OP_ZONE_SORT);
-    std::lock_guard<std::mutex> lk(mc->mtx);
+    if (v.ap_idx >= mc->alias.size()) { return 0; }
     auto busy = [&](int32_t id) {
         const layer_state & lq = mc->layers[(size_t) (id / v.E)];
         return lq.slot_in_flight[(size_t) (id % v.E)] || lq.queued[(size_t) (id % v.E)] != 0 || lq.at[(size_t) (id % v.E)] < 0;
@@ -2779,7 +2779,7 @@ static void pv2_zone_move(moe_cache * mc, size_t a, size_t b) {
         if (x < b && x + r.n > a) { mv.push_back({ score(r.id), x }); }
         else { cold[{ lq.v2n, lq.v2u }].push_back({ score(r.id), x }); }
     }
-    if (mv.empty()) { return; }
+    if (mv.empty()) { return 0; }
     std::sort(mv.begin(), mv.end(), [](const auto & p, const auto & q) { return p.first > q.first; });
     for (auto & [k, c] : cold) { std::sort(c.begin(), c.end()); }
     std::map<std::pair<size_t, size_t>, size_t> cur;
@@ -2788,7 +2788,8 @@ static void pv2_zone_move(moe_cache * mc, size_t a, size_t b) {
     size_t n_move = 0, n_free = 0; double b_move = 0.0;
     // the move kernel (CUDA): every copy and its table entry in one launch on the card's compute stream, no host copy per expert
     ggml_backend_t mbe = nullptr;
-    for (int k = 0; k < MAX_LINKS; ++k) { if (mc->link_be[k] && mc->link_dev[k] == ap.dev) { mbe = mc->link_be[k]; } }
+    for (int k = 0; !be && k < MAX_LINKS; ++k) { if (mc->link_be[k] && mc->link_dev[k] == ap.dev) { mbe = mc->link_be[k]; } }
+    if (be) { mbe = be; }
     ggml_backend_reg_t mreg = ap.dev ? ggml_backend_dev_backend_reg(ap.dev) : nullptr;
     static const bool kern = [] { const char * e = moe_opt("move-kernel"); return !e || atoi(e) != 0; }();
     pool_move_t mfn = kern && mbe && mreg ? (pool_move_t) ggml_backend_reg_get_proc_address(mreg, "ggml_backend_cuda_pool_move_fork") : nullptr;
@@ -2805,6 +2806,7 @@ static void pv2_zone_move(moe_cache * mc, size_t a, size_t b) {
             if (st + n <= gs + gn && (st >= b || st + n <= a)) { to = st; break; }
         }
         if (to != PV2_NONE) { n_free++; }
+        else if (gaps_only) { continue; }
         else {
             auto ci = cold.find({ n, lo.v2u });
             if (ci == cold.end()) { continue; }
@@ -2845,6 +2847,14 @@ static void pv2_zone_move(moe_cache * mc, size_t a, size_t b) {
         LLAMA_LOG_WARN("moe-cache: pool-v2: zone move before [%.0f, %.0f) MiB is taken: %zu of %zu experts moved out (%.2f GB, %zu into free gaps, the rest over colder ones)\n",
                 a / 1048576.0, b / 1048576.0, n_move, mv.size(), b_move / 1e9, n_free);
     }
+    return n_move;
+}
+static void pv2_zone_move(moe_cache * mc, size_t a, size_t b) {
+    static const bool on = [] { const char * e = moe_opt("zone-move"); return !e || atoi(e) != 0; }();
+    if (!on) { return; }
+    optime_t _ot(OP_ZONE_SORT);
+    std::lock_guard<std::mutex> lk(mc->mtx);
+    pv2_zone_move_locked(mc, a, b);
 }
 // The heap's held stretches follow the blocks the lend, the KV zone and CUDA's room hold (owner -2, -3, ROOM, of any class; the blocks stay the lend's and the
 // zone's bookkeeping): residents in a newly held stretch leave first (their uploads dropped or awaited, pv2_take_range), bytes no longer held come back free.
@@ -11939,7 +11949,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         // matmul reads all its experts in one launch, so the layer must be resident whole; a size only one layer has (Qwen3.8 IQ3_S layer 12) then
                         // finds room only over other sizes (1.5 s of planning a 15.5k prompt, 2013 i/s, 74.6 o/s). The landing area stays until the matmul runs in
                         // expert ranges (pv2_expert_ranges) and the ring can be range-sized.
-                        static const bool land = [] { const char * x = moe_opt("pv2-land"); return !x || atoi(x) != 0; }();
+                        static const bool land = [] { const char * x = moe_opt("pv2-land"); return x && atoi(x) != 0; }();   // user 2026-11-22: no landing area (--moe pv2-land=1: the 32 MiB one)
                         v.M = land ? (v.H > lay ? v.H - lay : 0) : v.H;   // not held below floor_end: the main heap above it is never lent, only the 32 MiB stay the landing area
                         v.ap_idx = mc->alias.size();
                         v.main = pv2_make(0, ap.tail_real);
@@ -14131,6 +14141,7 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
                 return ok_any(id) && (q < 0 || (size_t) q < p);
             };
             optime_t _oc(OP_PLAN_COLD);
+            bool from_win = false;
             if (ord_pass != mc->cs_pass) { cold[0].clear(); cold[1].clear(); cold_all[0] = cold_all[1] = {}; ord_pass = mc->cs_pass; }
             for (int t = 0; t < (cheap ? 1 : 2) && pk.s == PV2_NONE; ++t) {
                 auto ci = cold[t].find(ls.v2n);
@@ -14148,7 +14159,7 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
                     // the 512 coldest anchors at most; a search that found none is not repeated in this call (takeable residents only get fewer: 1.4 s of a 15.5k
                     // prompt's plan went to repeated full scans)
                     pk = t == 0 ? pv2_cold_window(v.main, ca.first, ca.second, ls.v2n, ls.v2u, ok_done, 512) : pv2_cold_window(v.main, ca.first, ca.second, ls.v2n, ls.v2u, ok_any, 512);
-                    if (pk.s == PV2_NONE) { win_failed[t] = true; }
+                    if (pk.s == PV2_NONE) { win_failed[t] = true; } else { from_win = true; }
                 }
             }
             if (pk.s == PV2_NONE) {   // every resident of its size is pinned or ahead: the entry waits for the next split
@@ -14190,7 +14201,16 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
                 for (int32_t x : placed) { pv2_out(mc, ls, x); }
                 return false;
             }
-            victim(v.main, pk);
+            victim(v.main, pk);   // waits for the kernels that read the window's residents, moved or not
+            if (from_win) {   // user 2026-11-22: the window's residents move to free bytes on the ring's stream (ahead of the upload into the window), the rest leave
+                ggml_backend_t rbe = nullptr;
+                for (int k = 0; k < mc->n_links; ++k) { if (mc->ring_be[k] && mc->link_dev[k] == mc->alias[v.ap_idx].dev) { rbe = mc->ring_be[k]; } }
+                static const bool wmove = [] { const char * x = moe_opt("pv2-win-move"); return !x || atoi(x) != 0; }();
+                if (rbe && wmove && pv2_zone_move_locked(mc, pk.s, pk.s + ls.v2n, rbe, true) > 0) {
+                    pk.evict.clear();
+                    for (const auto & [x, r] : v.main.res) { if (x < pk.s + ls.v2n && x + r.n > pk.s) { pk.evict.push_back(x); } }
+                }
+            }
             pv2_take(mc, v.main, pk, li, e, hx, true, &n_ev);
             n_land++;
         }
