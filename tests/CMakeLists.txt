@@ -187,6 +187,8 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-pool-fork.cpp)
     llama_build_and_test(test-poolv2-fork.cpp)    # pool v2: one byte heap in heat order, no size classes (src/llama-poolv2-fork.h); --sim replays recorded heat
     llama_build_and_test(test-mapsync-fork.cpp)   # pool v2: expert-table entries to the card through a mapped ring (src/llama-mapsync-fork.h)
+    llama_build_and_test(test-classtail-fork.cpp) # gapless classes: tail blocks given to KV, work, a neighbour class (src/llama-poolalloc-fork.h)
+    llama_build_and_test(test-classpick-fork.cpp) # class set and block size picks by padding (src/llama-classpick-fork.h)
     llama_build_and_test(test-poolmap-cuda-fork.cpp)   # pool v2: the card's pool-map alloc kernel against pv2_alloc_do (skips without CUDA)
     llama_build_and_test(test-rowread-fork.cpp)   # lazy row tables: a pass's rows from the read-ahead (src/llama-rowread-fork.h), no GPU
     llama_build_and_test(test-hist-fork.cpp)      # three last-10 histories + admission, thrash sim (ggml/src/ggml-hist-fork.h), no GPU

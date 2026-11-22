@@ -650,3 +650,44 @@ static void poolx_chain_scan(const PS & ps, bool grid, Fn fn) {
         if (o >= -1 || (grid && o == -4)) { fn(b, o); }
     }
 }
+
+// user 2026-11-22: classes stay (exact sizes, no padding) and stay gapless: a class is n blocks [0, n) of one size; the KV, the working blocks and a
+// neighbour class grow by taking blocks off its tail. poolx_tail_give: the k tail blocks leave the class; a tail expert hotter than the coldest expert
+// left inside moves onto it (that one leaves the card), the rest of the tail leaves. heat < 0: an empty block; pinned blocks neither move nor are moved over.
+// Returns the moves (from, to) and the evicted blocks; give.n_left = n - k. A pinned tail block stops the give at it (n_left > n - k).
+struct poolx_give { std::vector<std::pair<int32_t, int32_t>> moves; std::vector<int32_t> evict; int32_t n_left = 0; };
+static inline poolx_give poolx_tail_give(const std::vector<double> & heat, const std::vector<uint8_t> & pin, int32_t k) {
+    poolx_give g;
+    const int32_t n = (int32_t) heat.size();
+    int32_t cut = std::max(0, n - k);
+    for (int32_t b = n - 1; b >= cut; --b) { if (pin[(size_t) b]) { cut = b + 1; break; } }   // never past a pinned block
+    g.n_left = cut;
+    std::vector<int32_t> in;   // destinations inside: unpinned, coldest (empty first) first
+    for (int32_t b = 0; b < cut; ++b) { if (!pin[(size_t) b]) { in.push_back(b); } }
+    std::stable_sort(in.begin(), in.end(), [&](int32_t x, int32_t y) { return heat[(size_t) x] < heat[(size_t) y]; });
+    std::vector<int32_t> out;   // the tail's experts, hottest first
+    for (int32_t b = cut; b < n; ++b) { if (heat[(size_t) b] >= 0) { out.push_back(b); } }
+    std::stable_sort(out.begin(), out.end(), [&](int32_t x, int32_t y) { return heat[(size_t) x] > heat[(size_t) y]; });
+    size_t j = 0;
+    for (int32_t b : out) {
+        if (j < in.size() && heat[(size_t) b] > heat[(size_t) in[j]]) {
+            if (heat[(size_t) in[j]] >= 0) { g.evict.push_back(in[j]); }
+            g.moves.push_back({ b, in[j++] });
+        } else {
+            g.evict.push_back(b);
+        }
+    }
+    return g;
+}
+// which class gives the next bytes: the one whose coldest unpinned expert has the least heat per byte (an empty block: 0, given first); -1: none can give
+static inline int poolx_class_gives(const std::vector<std::vector<double>> & heat, const std::vector<std::vector<uint8_t>> & pin, const std::vector<size_t> & B) {
+    int best = -1; double bv = 0;
+    for (size_t c = 0; c < heat.size(); ++c) {
+        for (size_t b = 0; b < heat[c].size(); ++b) {
+            if (pin[c][b]) { continue; }
+            const double v = std::max(0.0, heat[c][b]) / (double) B[c];
+            if (best < 0 || v < bv) { best = (int) c; bv = v; }
+        }
+    }
+    return best;
+}
