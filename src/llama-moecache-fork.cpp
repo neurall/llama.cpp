@@ -17936,6 +17936,19 @@ extern "C" { GGML_API void ggml_backend_set_link_rate_fork(ggml_backend_dev_t de
 static void pv2_switch(moe_cache * mc) {
     optime_t _ot(OP_SWITCH);
     auto & v = mc->v2;
+    if (v.tiered && !v.hv.empty()) {   // dev: what the prompt left in the heap, by the layer's place in the pass (8 bins): decode tier / prompt only
+        size_t t[8] = {}, q[8] = {};
+        const size_t np = std::max<size_t>(1, mc->cs_order.size());
+        for (const auto & [x, r] : v.main.res) {
+            if (r.id < 0) { continue; }
+            const size_t li = (size_t) (r.id / v.E);
+            const int32_t ps = li < mc->cs_pos.size() ? mc->cs_pos[li] : -1;
+            const size_t b = ps < 0 ? 0 : std::min<size_t>(7, (size_t) ps * 8 / np);
+            (v.hv[(size_t) r.id] >= 1000000000000000ll ? t : q)[b]++;
+        }
+        LLAMA_LOG_WARN("pool-v2: prompt end residue by pass eighth (decode tier/prompt only): %zu/%zu %zu/%zu %zu/%zu %zu/%zu %zu/%zu %zu/%zu %zu/%zu %zu/%zu\n",
+                t[0], q[0], t[1], q[1], t[2], q[2], t[3], q[3], t[4], q[4], t[5], q[5], t[6], q[6], t[7], q[7]);
+    }
     for (pv2_heap * h : { &v.main, &v.land }) {
         for (auto & [x, r] : h->res) { if (r.id >= 0) { r.pin = mc->layers[(size_t) (r.id / v.E)].slot_in_flight[r.id % v.E]; } }
     }
