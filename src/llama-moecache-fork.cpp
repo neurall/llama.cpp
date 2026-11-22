@@ -2750,180 +2750,6 @@ void pv2_give_range(moe_cache * mc, size_t a, size_t b) {
     if (b > v.H) { pv2_unhold(v.main, std::max(a, v.H), b); }
     if (a < v.H && b > v.M) { pv2_unhold(v.land, std::max(a, v.M), std::min(b, v.H)); }
 }
-// A stretch [a, b) is about to be taken by the KV zone, a lend or CUDA's room (user 2026-11-21): every resident in [0, b) would leave, hot or not (a 15.5k prompt threw
-// out 348 experts above the 90th percentile of decode heat and 1.7k above the median). First the hot ones move above b by device copies (pv2_sort_range: a free window,
-// else over a colder resident, which is the one that leaves): bytes copied inside the pool buffer, the table entry rewritten after each copy (the device tables are flushed
-// before the next graph). Cache lock taken here; the caller (pv2_sync, not locked) has no graph running and no worker copying into the stretch
-static void pv2_zone_sort(moe_cache * mc, size_t a, size_t b) {
-    auto & v = mc->v2;
-    const bool from_low_end = a <= v.main.lo || (!v.held.empty() && v.held[0].first <= v.main.lo && v.held[0].second >= a);   // only a zone growing up from the heap's low end (a room or lend at the top takes what is there)
-    if (!from_low_end) { return; }
-    static const bool off = [] { const char * e = moe_opt("zone-sort"); return !(e && atoi(e) != 0); }();   // --moe zone-sort=1: on (off by default: it keeps 1.7k hot experts but showed no decode gain, 254 ms more prompt)
-    if (off || v.ap_idx >= mc->alias.size()) { return; }
-    optime_t _ot(OP_ZONE_SORT);
-    std::lock_guard<std::mutex> lk(mc->mtx);
-    pv2_refresh(mc, false, true);   // every resident's keep rank now
-    pv2_heap hp = v.main;   // an expert whose upload is queued, running or not yet published stays where it is (a worker copies into its place)
-    for (auto & [x, r] : hp.res) {
-        if (r.id < 0) { continue; }
-        const layer_state & lq = mc->layers[(size_t) (r.id / v.E)];
-        r.u = std::max<size_t>(1, lq.v2u);   // the residents carry no unit in the engine's heap: a move must land on a multiple of its layer's unit (the table holds start / unit)
-        if (lq.slot_in_flight[(size_t) (r.id % v.E)] || lq.queued[(size_t) (r.id % v.E)]) { r.pin = true; }
-    }
-    const pv2_zone zp = pv2_sort_range(hp, b, (size_t) 4 << 30, 0);
-    if (zp.steps.empty()) { return; }
-    auto & ap = mc->alias[v.ap_idx];
-    uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf);
-    size_t n_move = 0, n_evict = 0; double b_move = 0.0;
-    for (const auto & st : zp.steps) {
-        layer_state & lo = mc->layers[(size_t) (st.id / v.E)];
-        const int32_t e = st.id % v.E;
-        if (st.to == PV2_NONE) {   // the colder resident above the stretch that makes room
-            evict_slot(mc, lo, e);
-            pv2_out(mc, lo, e);
-            lo.queued[e] = 0;
-            n_evict++;
-            continue;
-        }
-        const size_t len = lo.v2n;
-        ggml_tensor ta = {}, tb = {};
-        for (ggml_tensor * t : { &ta, &tb }) {
-            t->type = GGML_TYPE_I8; t->buffer = ap.buf;
-            t->ne[0] = (int64_t) len; t->ne[1] = t->ne[2] = t->ne[3] = 1;
-            t->nb[0] = 1; t->nb[1] = t->nb[2] = t->nb[3] = len;
-        }
-        ta.data = base + st.from; tb.data = base + st.to;
-        ggml_backend_tensor_copy(&ta, &tb);   // a step may overlap its own source: the copy runs toward the destination
-        const pv2_res r = pv2_drop(v.main, st.from);
-        const bool ok = pv2_add(v.main, st.to, r);
-        GGML_ASSERT(ok && "pool-v2: a zone-sort step into bytes that are not free");
-        lo.at[(size_t) e] = (int32_t) (st.to / lo.v2u);
-        pv2_log("zmove", st.id, st.from, st.to, lo.v2n);
-        set_table_entry(lo.pub, e, e);
-        n_move++; b_move += (double) len;
-    }
-    static int logged = 0;
-    if (logged++ < 24) {
-        LLAMA_LOG_WARN("moe-cache: pool-v2: zone sort before [0, %.0f) MiB is taken: %zu experts moved up (%.2f GB), %zu colder ones out\n", b / 1048576.0, n_move, b_move / 1e9, n_evict);
-    }
-}
-// user 2026-11-22: a stretch [a, b) the KV zone, a lend or CUDA's room is about to take: each expert there (hottest first) moves by one device copy over the coldest
-// colder resident of its size outside the stretch, or into a free gap outside it; that resident leaves. No heap sort: one cold order per size. What finds no colder
-// place leaves with the stretch (pv2_take_range). Cache lock taken here; the caller (pv2_sync, not locked) has no graph running. --moe zone-move=0: off
-struct pool_move_fork { const char * src; char * dst; size_t bytes; int32_t * tbl; int32_t idx; int32_t val; };   // = ggml-cuda.cu
-typedef bool (*pool_move_t)(ggml_backend_t, const pool_move_fork *, size_t);
-// cache lock held. be: the stream the moves go on (nullptr: the card's compute stream); a stream window goes on the ring's upload stream, ahead of the upload
-// that lands in the window. Returns the experts moved
-// gaps_only: moves only into free bytes, never over a colder expert (a kernel of the pass may still read that one: the stream's copy waits only for its own victims)
-static size_t pv2_zone_move_locked(moe_cache * mc, size_t a, size_t b, ggml_backend_t be = nullptr, bool gaps_only = false) {
-    auto & v = mc->v2;
-    if (v.ap_idx >= mc->alias.size()) { return 0; }
-    auto busy = [&](int32_t id) {
-        const layer_state & lq = mc->layers[(size_t) (id / v.E)];
-        return lq.slot_in_flight[(size_t) (id % v.E)] || lq.queued[(size_t) (id % v.E)] != 0 || lq.at[(size_t) (id % v.E)] < 0;
-    };
-    auto score = [&](int32_t id) { return std::llround(1e6 * xscore(mc, mc->layers[(size_t) (id / v.E)], id % v.E)); };
-    std::vector<std::pair<int64_t, size_t>> mv;                                   // (score, start) of the stretch's experts, hottest first
-    std::map<std::pair<size_t, size_t>, std::vector<std::pair<int64_t, size_t>>> cold;   // (bytes, unit) -> (score, start) outside the stretch, coldest first
-    for (const auto & [x, r] : v.main.res) {
-        if (r.id < 0 || r.pin || busy(r.id)) { continue; }
-        const layer_state & lq = mc->layers[(size_t) (r.id / v.E)];
-        if (x < b && x + r.n > a) { mv.push_back({ score(r.id), x }); }
-        else { cold[{ lq.v2n, lq.v2u }].push_back({ score(r.id), x }); }
-    }
-    if (mv.empty()) { return 0; }
-    std::sort(mv.begin(), mv.end(), [](const auto & p, const auto & q) { return p.first > q.first; });
-    for (auto & [k, c] : cold) { std::sort(c.begin(), c.end()); }
-    std::map<std::pair<size_t, size_t>, size_t> cur;
-    auto & ap = mc->alias[v.ap_idx];
-    uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf);
-    size_t n_move = 0, n_free = 0; double b_move = 0.0;
-    // the move kernel (CUDA): every copy and its table entry in one launch on the card's compute stream, no host copy per expert
-    ggml_backend_t mbe = nullptr;
-    for (int k = 0; !be && k < MAX_LINKS; ++k) { if (mc->link_be[k] && mc->link_dev[k] == ap.dev) { mbe = mc->link_be[k]; } }
-    if (be) { mbe = be; }
-    ggml_backend_reg_t mreg = ap.dev ? ggml_backend_dev_backend_reg(ap.dev) : nullptr;
-    static const bool kern = [] { const char * e = moe_opt("move-kernel"); return !e || atoi(e) != 0; }();
-    pool_move_t mfn = kern && mbe && mreg ? (pool_move_t) ggml_backend_reg_get_proc_address(mreg, "ggml_backend_cuda_pool_move_fork") : nullptr;
-    std::vector<pool_move_fork> mvk;
-    std::vector<std::pair<size_t, size_t>> mvr;   // the byte ranges the pending launch reads and writes
-    for (const auto & [sc, from] : mv) {
-        const pv2_res & rr = v.main.res.at(from);
-        const int32_t id = rr.id;
-        layer_state & lo = mc->layers[(size_t) (id / v.E)];
-        const int32_t e = id % v.E;
-        const size_t n = lo.v2n, u = std::max<size_t>(1, lo.v2u);
-        size_t to = PV2_NONE;
-        for (const auto & [gs, gn] : v.main.gaps) {   // a free gap outside the stretch first
-            const size_t st = (gs + u - 1) / u * u;
-            if (st + n <= gs + gn && (st >= b || st + n <= a)) { to = st; break; }
-        }
-        if (to != PV2_NONE) { n_free++; }
-        else if (gaps_only) { continue; }
-        else {
-            auto ci = cold.find({ n, lo.v2u });
-            if (ci == cold.end()) { continue; }
-            size_t & cx = cur[{ n, lo.v2u }];
-            while (cx < ci->second.size()) {   // still there, still the same expert (an earlier move replaced none of the cold ones twice: each taken once)
-                const auto it = v.main.res.find(ci->second[cx].second);
-                if (it != v.main.res.end() && it->second.id >= 0 && !it->second.pin && !busy(it->second.id)) { break; }
-                ++cx;
-            }
-            if (cx >= ci->second.size() || ci->second[cx].first >= sc) { continue; }   // nothing colder of its size: it leaves with the stretch
-            to = ci->second[cx].second; ++cx;
-            const int32_t vid = v.main.res.at(to).id;
-            layer_state & lv = mc->layers[(size_t) (vid / v.E)];
-            evict_slot(mc, lv, vid % v.E);
-            pv2_out(mc, lv, vid % v.E);
-            lv.queued[vid % v.E] = 0;
-            if (mfn) { mvk.push_back({ nullptr, nullptr, 0, (int32_t *) lv.pub.dev_table->data, vid % v.E, -1 }); mapsync_card_wrote(&lv.pub, vid % v.E); }   // the victim's entry: a miss
-        }
-        ggml_tensor ta = {}, tb = {};
-        for (ggml_tensor * t : { &ta, &tb }) {
-            t->type = GGML_TYPE_I8; t->buffer = ap.buf;
-            t->ne[0] = (int64_t) n; t->ne[1] = t->ne[2] = t->ne[3] = 1;
-            t->nb[0] = 1; t->nb[1] = t->nb[2] = t->nb[3] = n;
-        }
-        ta.data = base + from; tb.data = base + to;
-        if (mfn) {
-            // one launch runs its moves as parallel blocks: a move whose bytes overlap an earlier move's of the same launch (its destination was that one's source,
-            // or it reads what that one writes) goes into the next launch, which the stream orders after this one
-            auto hit = [&](size_t x0, size_t x1) { for (const auto & r : mvr) { if (x0 < r.second && r.first < x1) { return true; } } return false; };
-            if (hit(from, from + n) || hit(to, to + n)) {
-                if (!mvk.empty() && !mfn(mbe, mvk.data(), mvk.size())) { GGML_ABORT("pool-v2: the move kernel refused %zu moves", mvk.size()); }
-                mvk.clear(); mvr.clear();
-            }
-            mvr.push_back({ from, from + n }); mvr.push_back({ to, to + n });
-            mvk.push_back({ (const char *) ta.data, (char *) tb.data, n, (int32_t *) lo.pub.dev_table->data, e, (int32_t) (to / u) });
-            mapsync_card_wrote(&lo.pub, e);
-        }
-        else { ggml_backend_tensor_copy(&ta, &tb); }
-        const pv2_res r = pv2_drop(v.main, from);
-        const bool ok = pv2_add(v.main, to, r);
-        GGML_ASSERT(ok && "pool-v2: a zone move into bytes that are not free");
-        lo.at[(size_t) e] = (int32_t) (to / u);
-        pv2_log("zmove2", (int32_t) (&lo - mc->layers.data()) * v.E + e, from, to, lo.v2n);
-        set_table_entry(lo.pub, e, e);
-        n_move++; b_move += (double) n;
-    }
-    if (mfn && !mvk.empty() && !mfn(mbe, mvk.data(), mvk.size())) { GGML_ABORT("pool-v2: the move kernel refused %zu moves", mvk.size()); }
-    // the launch only queues: an upload the host starts next into a vacated source (or a read of a destination) must not run before it. The host copy path returned finished
-    // also on the ring's stream (window moves): Qwen3.8 IQ4_XS 12k, L32 e75 moved out of the window came out with 132306 of 704000 up bytes differing (NaN)
-    if (mfn && n_move > 0) { ggml_backend_synchronize(mbe); }
-    static int logged = 0;
-    if (logged++ < 24) {
-        LLAMA_LOG_WARN("moe-cache: pool-v2: zone move before [%.0f, %.0f) MiB is taken: %zu of %zu experts moved out (%.2f GB, %zu into free gaps, the rest over colder ones)\n",
-                a / 1048576.0, b / 1048576.0, n_move, mv.size(), b_move / 1e9, n_free);
-    }
-    return n_move;
-}
-static void pv2_zone_move(moe_cache * mc, size_t a, size_t b) {
-    static const bool on = [] { const char * e = moe_opt("zone-move"); return !e || atoi(e) != 0; }();
-    if (!on) { return; }
-    optime_t _ot(OP_ZONE_SORT);
-    std::lock_guard<std::mutex> lk(mc->mtx);
-    pv2_zone_move_locked(mc, a, b);
-}
 // The heap's held stretches follow the blocks the lend, the KV zone and CUDA's room hold (owner -2, -3, ROOM, of any class; the blocks stay the lend's and the
 // zone's bookkeeping): residents in a newly held stretch leave first (their uploads dropped or awaited, pv2_take_range), bytes no longer held come back free.
 // locked (cache lock held): only gives back. false: an upload into a new stretch did not finish in 10 s. *n_ev: the residents that left
@@ -2953,8 +2779,7 @@ static bool pv2_sync(moe_cache * mc, bool locked, size_t * n_ev = nullptr) {
         for (const auto & q : v.held) { old = old || (q.first <= r.first && r.second <= q.second); }
         if (old) { continue; }
         GGML_ASSERT(!locked && "pool-v2: a lend or zone grew where the heap is synced under the cache lock");
-        pv2_zone_sort(mc, r.first, r.second);
-        pv2_zone_move(mc, r.first, r.second);
+        // user 2026-11-22: the host moves nothing in VRAM (its moves raced the kernels: heap NaN); residents of a new stretch leave, the card's alloc moves
         if (!pv2_take_range(mc, r.first, r.second, n_ev)) { return false; }
     }
     std::unique_lock<std::mutex> lk(mc->mtx, std::defer_lock);
@@ -14468,7 +14293,7 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
     int n_fail_run = 0;
     std::set<std::pair<int, size_t>> rebuilt;   // no landing area: the cold orders rebuilt in this call (per tier and size), the every-size order per tier
     bool rebuilt_all[2] = { false, false }, win_failed[2] = { false, false };
-    static const bool gpu_alloc = [] { const char * x = moe_opt("gpu-alloc"); return x && atoi(x) != 0; }();
+    static const bool gpu_alloc = [] { const char * x = moe_opt("gpu-alloc"); return !x || atoi(x) != 0; }();   // user 2026-11-22: the card places and moves, default on
     std::vector<int32_t> want_all;   // gpu-alloc: every expert of the entry (want keeps those left to the host's picks)
     if (gpu_alloc && v.H == v.M && pm_setup(mc)) {
         want_all = want;
@@ -14532,7 +14357,6 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
                 return ok_any(id) && (q < 0 || (size_t) q < p);
             };
             optime_t _oc(OP_PLAN_COLD);
-            bool from_win = false;
             static std::map<size_t, std::vector<pv2_cold_t>> parked[2];   // per size: residents refused so far this pass (a layer ahead, uploading), heat order
             if (ord_pass != mc->cs_pass) { cold[0].clear(); cold[1].clear(); parked[0].clear(); parked[1].clear(); cold_all[0] = cold_all[1] = {}; ord_pass = mc->cs_pass; }
             for (int t = 0; t < (cheap ? 1 : 2) && pk.s == PV2_NONE; ++t) {
@@ -14559,7 +14383,7 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
                     // the 512 coldest anchors at most; a search that found none is not repeated in this call (takeable residents only get fewer: 1.4 s of a 15.5k
                     // prompt's plan went to repeated full scans)
                     pk = t == 0 ? pv2_cold_window(v.main, ca.first, ca.second, ls.v2n, ls.v2u, ok_done, 512) : pv2_cold_window(v.main, ca.first, ca.second, ls.v2n, ls.v2u, ok_any, 512);
-                    if (pk.s == PV2_NONE) { win_failed[t] = true; } else { from_win = true; }
+                    if (pk.s == PV2_NONE) { win_failed[t] = true; }
                 }
             }
             if (pk.s == PV2_NONE) {   // every resident of its size is pinned or ahead: the entry waits for the next split
@@ -14602,15 +14426,6 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
                 return false;
             }
             victim(v.main, pk);   // waits for the kernels that read the window's residents, moved or not
-            if (from_win) {   // user 2026-11-22: the window's residents move to free bytes on the ring's stream (ahead of the upload into the window), the rest leave
-                ggml_backend_t rbe = nullptr;
-                for (int k = 0; k < mc->n_links; ++k) { if (mc->ring_be[k] && mc->link_dev[k] == mc->alias[v.ap_idx].dev) { rbe = mc->ring_be[k]; } }
-                static const bool wmove = [] { const char * x = moe_opt("pv2-win-move"); return !x || atoi(x) != 0; }();
-                if (rbe && wmove && pv2_zone_move_locked(mc, pk.s, pk.s + ls.v2n, rbe, true) > 0) {
-                    pk.evict.clear();
-                    for (const auto & [x, r] : v.main.res) { if (x < pk.s + ls.v2n && x + r.n > pk.s) { pk.evict.push_back(x); } }
-                }
-            }
             pv2_take(mc, v.main, pk, li, e, hx, true, &n_ev);
             n_land++;
         }
