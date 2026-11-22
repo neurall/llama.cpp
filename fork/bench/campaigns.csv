@@ -11115,3 +11115,6 @@ poolv2_ff-pv2-qni4-on-pf12k1k,2026-11-22 06:27:23,bench /m/q/4/Qwen3.8-Flash-Nex
 poolv2_landdiag-pv2-glm35-on-pf12k1k,2026-11-22 06:32:22,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds poolv2_landdiag variants v test pf12k n=2,,
 poolv2_landdiag-pv2-glm35-on-pf12k1k,2026-11-22 06:36:38,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds poolv2_landdiag variants v test pf12k n=3,,
 poolv2_landdiag-pv2-q-on-tr-pf14k1k,2026-11-22 06:45:08,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_landdiag variants v test pf14k n=2,,
+poolv2_landdiag-pv2-q-on-pf14k1k,2026-11-22 06:49:18,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_landdiag variants v test pf14k n=3,,
+poolv2_landdiag-pv2-q-on-tr-pf14k1k,2026-11-22 06:51:27,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_landdiag variants v test pf14k n=3,,
+poolv2_landdiag-pv2-q-on-tailref-pf14k1k,2026-11-22 06:53:43,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds poolv2_landdiag variants v test pf14k n=3,,

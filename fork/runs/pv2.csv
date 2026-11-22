@@ -17,3 +17,4 @@ pv2-mimo-off,mimo,2,pf12k1k,1024,-bs,--env CUDA_VISIBLE_DEVICES=0
 pv2-mimo-on,mimo,2,pf12k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
 pv2-q-on-tr,qwen38,1,pf14k1k,1024,"-bs --moe pool-v2=1,log=ck,trace-n=150",--env CUDA_VISIBLE_DEVICES=0
 pv2-q-on-tailref,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,tail-refill=1",--env CUDA_VISIBLE_DEVICES=0
+pv2-q-on-zsort,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,zone-sort=1",--env CUDA_VISIBLE_DEVICES=0
