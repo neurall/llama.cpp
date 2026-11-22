@@ -740,9 +740,9 @@ static inline std::vector<pv2_erange> pv2_expert_ranges(int32_t n, int32_t range
 // place of the globally coldest resident not pinned, keep rank in r.heat): (heat, start, id), built once and consumed with a cursor; pv2_coldest skips entries
 // gone stale since (the start holds another expert or none, it got pinned, its size differs, the start is off the newcomer's unit, ok(id) refuses: an upload on its way)
 struct pv2_cold_t { int64_t heat; size_t s; int32_t id; };
-static inline std::vector<pv2_cold_t> pv2_cold_order(const pv2_heap & h) {
+static inline std::vector<pv2_cold_t> pv2_cold_order(const pv2_heap & h, size_t n = 0) {   // n: residents of n bytes only (0: all); a cursor per size never skips another size's
     std::vector<pv2_cold_t> r;
-    for (const auto & [s, x] : h.res) { if (x.id >= 0 && !x.pin) { r.push_back({ x.heat, s, x.id }); } }
+    for (const auto & [s, x] : h.res) { if (x.id >= 0 && !x.pin && (n == 0 || x.n == n)) { r.push_back({ x.heat, s, x.id }); } }
     std::sort(r.begin(), r.end(), [](const pv2_cold_t & a, const pv2_cold_t & b) { return a.heat != b.heat ? a.heat < b.heat : a.s < b.s; });
     return r;
 }

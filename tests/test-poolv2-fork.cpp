@@ -1282,6 +1282,8 @@ static void test_coldest() {
     check("coldest: stale entry and refused id skipped", b.s == 0);
     pv2_pick c = pv2_coldest(h, ord, cur, 100, 10, all);
     check("coldest: exhausted, nothing", c.s == PV2_NONE && c.evict.empty());
+    auto o200 = pv2_cold_order(h, 200);
+    check("cold order: size filter", o200.size() == 1 && o200[0].id == 4);
     size_t c2 = 0;
     check("coldest: a start off the newcomer's unit skipped", pv2_coldest(h, ord, c2, 100, 7, all).s == 0);
 }

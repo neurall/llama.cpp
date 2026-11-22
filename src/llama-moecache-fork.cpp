@@ -11815,7 +11815,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         size_t lay = 0;
                         for (const auto & l : mc->layers) { if (l.v2u) { lay = std::max(lay, 2 * l.at.size() * l.v2p);   /* the layer computing and the next one copying ahead */ } }
                         v.H = ap.tail_end;
-                        v.M = std::min<size_t>(ap.floor_end, v.H > lay ? v.H - lay : 0);
+                        // user 2026-11-22: no layer-sized landing area; the whole heap holds experts by heat, a streamed expert with no place near its target takes
+                        // the place of the globally coldest resident (pv2_coldest). --moe pv2-land=1: the landing area as before (A/B)
+                        static const bool land = [] { const char * x = moe_opt("pv2-land"); return x && atoi(x) != 0; }();
+                        v.M = land ? std::min<size_t>(ap.floor_end, v.H > lay ? v.H - lay : 0) : v.H;
                         v.ap_idx = mc->alias.size();
                         v.main = pv2_make(0, ap.tail_real);
                         pv2_hold(v.main, v.M, v.H);
@@ -13928,10 +13931,12 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
     }
     if (want.empty()) { return true; }
     // the landing area must hold what the main heap may not take: its free bytes and its residents not pinned (a fragment may still refuse one: undone below)
-    size_t room = 0;
-    for (const auto & [g, n] : v.land.gaps) { room += n; }
-    for (const auto & [x, r] : v.land.res) { room += r.pin ? 0 : r.n; }
-    if (room < want.size() * ls.v2p) { return false; }
+    if (v.H > v.M) {
+        size_t room = 0;
+        for (const auto & [g, n] : v.land.gaps) { room += n; }
+        for (const auto & [x, r] : v.land.res) { room += r.pin ? 0 : r.n; }
+        if (room < want.size() * ls.v2p) { return false; }
+    }
     double lsum = 0.0;
     for (uint64_t c : ls.glob_count) { lsum += (double) c; }
     const size_t done = mc->cs_done[ls.link];
@@ -13956,6 +13961,32 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
             victim(v.main, pk);
             pv2_take(mc, v.main, pk, li, e, hx, true, &n_ev);
             n_heat++; b_heat += ls.v2n;
+        } else if (v.H == v.M) {   // no landing area: the globally coldest resident of the same size not pinned, not uploading, not of a layer still ahead in this pass
+            static std::map<size_t, std::pair<std::vector<pv2_cold_t>, size_t>> cold;   // per expert size: the coldest first, its cursor (rebuilt each pass)
+            static uint64_t ord_pass = UINT64_MAX;
+            auto ok = [&](int32_t id) {
+                const size_t lj = (size_t) (id / v.E);
+                const int32_t x = id % v.E;
+                const layer_state & lq = mc->layers[lj];
+                if (lq.slot_in_flight[(size_t) x] || lq.queued[(size_t) x] || lq.at[(size_t) x] < 0) { return false; }
+                const int32_t q = lj < mc->cs_pos.size() ? mc->cs_pos[lj] : -1;
+                return q < 0 || (size_t) q < p;
+            };
+            if (ord_pass != mc->cs_pass) { cold.clear(); ord_pass = mc->cs_pass; }
+            auto ci = cold.find(ls.v2n);
+            if (ci == cold.end()) { ci = cold.emplace(ls.v2n, std::make_pair(pv2_cold_order(v.main, ls.v2n), (size_t) 0)).first; }
+            pk = pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok);
+            if (pk.s == PV2_NONE) {   // residents skipped earlier (pinned, ahead) may be free now
+                ci->second = { pv2_cold_order(v.main, ls.v2n), 0 };
+                pk = pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok);
+            }
+            if (pk.s == PV2_NONE) {   // every resident of its size is pinned or ahead: the entry waits for the next split
+                for (int32_t x : placed) { pv2_out(mc, ls, x); }
+                return false;
+            }
+            victim(v.main, pk);
+            pv2_take(mc, v.main, pk, li, e, hx, true, &n_ev);
+            n_land++;
         } else {
             const size_t t = v.cur < v.M || v.cur + ls.v2n > v.H ? v.M : v.cur;
             pk = pv2_place(v.land, t, ls.v2n, ls.v2u, std::numeric_limits<int64_t>::max() - 1, v.H - v.M, false);
@@ -17342,7 +17373,35 @@ static void pv2_switch(moe_cache * mc) {
     }
     std::stable_sort(miss.begin(), miss.end(), [](const pv2_cand & a, const pv2_cand & b) { return a.heat > b.heat; });
     std::vector<pv2_res> left;
-    const std::vector<pv2_cand> up = pv2_refill(v.land, miss, &left);
+    std::vector<pv2_cand> up = pv2_refill(v.land, miss, &left);
+    std::vector<upload_job> jobs;
+    size_t b_up = 0;
+    if (v.H == v.M) {   // no landing area: the hottest missing take the places of the coldest residents colder than them (pv2_coldest), anywhere in the heap
+        std::map<size_t, std::pair<std::vector<pv2_cold_t>, size_t>> cold;   // per expert size: coldest first, its cursor
+        size_t n_ev = 0;
+        auto ok = [&](int32_t id) {
+            const layer_state & lq = mc->layers[(size_t) (id / v.E)];
+            const int32_t x = id % v.E;
+            return !lq.slot_in_flight[(size_t) x] && !lq.queued[(size_t) x] && lq.at[(size_t) x] >= 0;
+        };
+        std::set<size_t> done_n;   // sizes with nothing colder left
+        for (const auto & c : miss) {   // hottest first
+            if (done_n.count(c.n)) { continue; }
+            auto ci = cold.find(c.n);
+            if (ci == cold.end()) { ci = cold.emplace(c.n, std::make_pair(pv2_cold_order(v.main, c.n), (size_t) 0)).first; }
+            size_t c0 = ci->second.second;
+            pv2_pick pk = pv2_coldest(v.main, ci->second.first, c0, c.n, c.u, ok);
+            if (pk.s == PV2_NONE || v.main.res.at(pk.s).heat >= c.heat) { done_n.insert(c.n); continue; }   // the coldest of its size is hotter than it: the rest are colder still
+            ci->second.second = c0;
+            const size_t li = (size_t) (c.id / v.E);
+            const int32_t e = c.id % v.E;
+            pv2_take(mc, v.main, pk, li, e, c.heat, true, &n_ev);   // pinned until its upload is published
+            jobs.push_back(pv2_job(mc, li, e, wait, part[c.id]));
+            b_up += c.n;
+            up.push_back(c);
+        }
+        v.n_evict += n_ev;
+    }
     for (const auto & r : left) {   // its bytes are the refill's now: out of the tables
         layer_state & lo = mc->layers[(size_t) (r.id / v.E)];
         const int32_t x = r.id % v.E;
@@ -17352,9 +17411,8 @@ static void pv2_switch(moe_cache * mc) {
     }
     std::unordered_map<int32_t, size_t> where;
     for (const auto & [x, r] : v.land.res) { where[r.id] = x; }
-    std::vector<upload_job> jobs;
-    size_t b_up = 0;
     for (const auto & c : up) {
+        if (v.H == v.M) { break; }   // placed and queued above
         const size_t li = (size_t) (c.id / v.E);
         const int32_t e = c.id % v.E;
         layer_state & ls = mc->layers[li];
