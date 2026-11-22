@@ -7501,3 +7501,5 @@ ts,commit,line
 2026-11-22 12:41:35,ad01a674ab,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:40.73 3:40.93 -> 3 (not sure: the value in use stays, 8 slices each)"
 2026-11-22 12:43:23,ad01a674ab,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
 2026-11-22 12:44:40,ad01a674ab,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 12:47:35,ad01a674ab,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts
+2026-11-22 12:48:50,ad01a674ab,moe-cache: self-tune: 0 of 4 knobs start at their stored verdicts

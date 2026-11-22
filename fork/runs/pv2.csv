@@ -56,3 +56,5 @@ hk-nokv,qn_iq4xs,1,scific,8,"--moe verify=2,kv-keep-hot=0",
 hk-nomk,qn_iq4xs,1,scific,8,"--moe verify=2,move-kernel=0",
 hk-none,qn_iq4xs,1,scific,8,"--moe verify=2,move-kernel=0,kv-keep-hot=0",
 gv-ledger,glm35,1,pf12k1k,64,"-bs --moe pool-v2=1,verify=2,ledger=1",--env CUDA_VISIBLE_DEVICES=0
+q6v-v2check,qwen36,1,pf12k1k,64,"-bs --moe pool-v2=1,verify=2",--env CUDA_VISIBLE_DEVICES=0
+q4v-v2check,qn_iq4xs,1,pf12k1k,64,"-bs --moe pool-v2=1,verify=2",--env CUDA_VISIBLE_DEVICES=0
