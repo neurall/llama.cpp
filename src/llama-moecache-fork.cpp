@@ -11815,9 +11815,12 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         size_t lay = 0;
                         for (const auto & l : mc->layers) { if (l.v2u) { lay = std::max(lay, 2 * l.at.size() * l.v2p);   /* the layer computing and the next one copying ahead */ } }
                         v.H = ap.tail_end;
-                        // user 2026-11-22: no layer-sized landing area; the whole heap holds experts by heat, a streamed expert with no place near its target takes
-                        // the place of the globally coldest resident (pv2_coldest). --moe pv2-land=1: the landing area as before (A/B)
-                        static const bool land = [] { const char * x = moe_opt("pv2-land"); return x && atoi(x) != 0; }();
+                        // --moe pv2-land=0: no layer-sized landing area; the whole heap holds experts by heat, a streamed expert with no place near its target takes
+                        // the place of the globally coldest resident (pv2_coldest). Off by default (user 2026-11-22, "range launches first"): a full-stream layer's
+                        // matmul reads all its experts in one launch, so the layer must be resident whole; a size only one layer has (Qwen3.8 IQ3_S layer 12) then
+                        // finds room only over other sizes (1.5 s of planning a 15.5k prompt, 2013 i/s, 74.6 o/s). The landing area stays until the matmul runs in
+                        // expert ranges (pv2_expert_ranges) and the ring can be range-sized.
+                        static const bool land = [] { const char * x = moe_opt("pv2-land"); return !x || atoi(x) != 0; }();
                         v.M = land ? std::min<size_t>(ap.floor_end, v.H > lay ? v.H - lay : 0) : v.H;
                         v.ap_idx = mc->alias.size();
                         v.main = pv2_make(0, ap.tail_real);
