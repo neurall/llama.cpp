@@ -1379,11 +1379,176 @@ static void test_defrag_plan() {
     check("defrag: max_moves 0 finds none", z.s == PV2_NONE);
 }
 
+// every byte of [s, s + n) is free or an expert that may leave (not pinned, not held)
+static bool pv2t_takeable(const pv2_heap & h, size_t s, size_t n) {
+    if (s < h.lo || s + n > h.hi) { return false; }
+    for (const auto & [x, r] : h.res) {
+        if (x < s + n && x + r.n > s && (r.pin || r.id == PV2_HOLD)) { return false; }
+    }
+    return true;
+}
+// a random heap: experts (some pinned), movable held blocks (KV pages, working blocks), fixed held blocks, free gaps; sizes in units of 10
+static pv2_heap pv2t_random(std::mt19937 & rng, size_t slots, int p_free, int p_pin, int p_mov, int p_fix) {
+    pv2_heap h = pv2_make(0, slots * 10);
+    for (size_t i = 0; i < slots; ) {
+        const size_t k = 1 + rng() % 3, n = std::min(k, slots - i) * 10, x = i * 10;
+        const int c = (int) (rng() % 100);
+        pv2_res r; r.n = n; r.heat = (int64_t) (rng() % 1000);
+        if (c < p_free) { i += k; continue; }
+        if (c < p_free + p_mov) { r.id = PV2_HOLD; r.pin = true; r.mov = true; r.heat = INT64_MAX; }
+        else if (c < p_free + p_mov + p_fix) { r.id = PV2_HOLD; r.pin = true; r.heat = INT64_MAX; }
+        else { r.id = (int32_t) x; r.pin = (int) (rng() % 100) < p_pin; }
+        pv2_add(h, x, r);
+        i += k;
+    }
+    return h;
+}
+
+static void test_alloc_cases() {
+    // the free gap wins over a colder expert
+    {
+        pv2_heap h = pv2_make(0, 60);
+        pv2_res e; e.id = 0; e.n = 10; e.heat = 0; pv2_add(h, 0, e);
+        check("alloc: free gap before coldest", pv2_alloc_window(h, 10, 1) == 10);
+    }
+    // a window may not cover a fixed held block (KV/working) nor a pinned expert, even when colder bytes sit around them
+    {
+        pv2_heap h = pv2_make(0, 40);
+        pv2_res a; a.id = 0;  a.n = 10; a.heat = 0; pv2_add(h, 0, a);
+        pv2_res k; k.id = PV2_HOLD; k.n = 10; k.pin = true; k.heat = INT64_MAX; pv2_add(h, 10, k);
+        pv2_res b; b.id = 20; b.n = 10; b.heat = 1; pv2_add(h, 20, b);
+        pv2_res c; c.id = 30; c.n = 10; c.heat = 2; c.pin = true; pv2_add(h, 30, c);
+        check("alloc: one expert fits at the coldest", pv2_alloc_window(h, 10, 1) == 0);
+        check("alloc: two experts never span the held block or the pinned one", pv2_alloc_window(h, 20, 1) == PV2_NONE);
+    }
+    // a window covering part of a big expert takes it whole: still a valid window (the caller frees the rest)
+    {
+        pv2_heap h = pv2_make(0, 40);
+        pv2_res a; a.id = 0; a.n = 30; a.heat = 0; pv2_add(h, 0, a);
+        pv2_res b; b.id = 30; b.n = 10; b.heat = 5; b.pin = true; pv2_add(h, 30, b);
+        check("alloc: part of a bigger expert", pv2_alloc_window(h, 10, 1) == 0);
+    }
+    // alignment: start rounded up to the unit, rejected when the rounded window runs into a held block
+    {
+        pv2_heap h = pv2_make(0, 64);
+        pv2_res k; k.id = PV2_HOLD; k.n = 4; k.pin = true; k.heat = INT64_MAX; pv2_add(h, 0, k);
+        check("alloc: aligned free start", pv2_alloc_window(h, 16, 16) == 16);
+        pv2_res k2; k2.id = PV2_HOLD; k2.n = 44; k2.pin = true; k2.heat = INT64_MAX; pv2_add(h, 20, k2);
+        check("alloc: aligned start finds nothing", pv2_alloc_window(h, 16, 16) == PV2_NONE);
+    }
+}
+
+static void test_alloc_random() {
+    std::mt19937 rng(1234);
+    int bad = 0, found = 0, none_ok = 0;
+    for (int it = 0; it < 3000; ++it) {
+        pv2_heap h = pv2t_random(rng, 40, 10, 20, 15, 15);
+        const size_t n = (1 + rng() % 4) * 10, a = (rng() % 2) ? 10 : 20;
+        const size_t s = pv2_alloc_window(h, n, a);
+        if (s != PV2_NONE) {
+            found++;
+            if (s % a != 0 || !pv2t_takeable(h, s, n)) { bad++; }
+        } else {   // brute force: no aligned window exists
+            bool any = false;
+            for (size_t x = 0; x + n <= h.hi && !any; x += a) { any = pv2t_takeable(h, x, n); }
+            // pv2_alloc_window anchors only at free starts and cold residents: a window that exists must start at one of them, rounded up
+            if (!any) { none_ok++; } else {
+                bool anchored = false;
+                for (const auto & [g, gn] : h.gaps) { const size_t x = (g + a - 1) / a * a; anchored |= x + n <= h.hi && pv2t_takeable(h, x, n); }
+                for (const auto & [x0, r] : h.res) { const size_t x = (x0 + a - 1) / a * a; anchored |= !r.pin && r.id != PV2_HOLD && pv2t_takeable(h, x, n); }
+                if (anchored) { bad++; }
+            }
+        }
+    }
+    check("alloc random: every window valid and aligned, none missed at an anchor", bad == 0);
+    check("alloc random: both outcomes seen", found > 100 && none_ok > 10);
+}
+
+// apply a defrag plan to a copy: each block moves, the window is then takeable
+static bool pv2t_defrag_ok(const pv2_heap & h, const pv2_defrag & d, size_t n, size_t a, size_t max_moves) {
+    if (d.s == PV2_NONE) { return true; }
+    if (d.s % a != 0 || d.moves.size() > max_moves || d.moves.empty()) { return false; }
+    pv2_heap t = h;
+    std::vector<std::pair<size_t, size_t>> dst;
+    for (const auto & [from, to] : d.moves) {
+        const auto it = t.res.find(from);
+        if (it == t.res.end() || it->second.id != PV2_HOLD || !it->second.mov) { return false; }   // only movable held blocks move
+        const pv2_res r = it->second;
+        if (from < d.s || from + r.n > d.s + n) { return false; }                                  // moved blocks were inside the window
+        if (to < d.s + n && to + r.n > d.s) { return false; }                                       // and land outside it
+        if (to % std::max<size_t>(1, r.u) != 0) { return false; }
+        for (const auto & [x, m] : dst) { if (to < x + m && to + r.n > x) { return false; } }      // destinations never overlap
+        dst.push_back({ to, r.n });
+        pv2_drop(t, from);
+    }
+    for (const auto & [to, m] : dst) {   // a destination covers only free bytes or experts that may leave (as the window does)
+        if (!pv2t_takeable(t, to, m)) { return false; }
+    }
+    return pv2t_takeable(t, d.s, n);
+}
+
+static void test_defrag_cases() {
+    // three experts' worth needed, pages split the free/cold runs: at most one page moves (fewest moves)
+    {
+        pv2_heap h = pv2_make(0, 100);
+        auto page = [&](size_t s, bool mov) { pv2_res r; r.id = PV2_HOLD; r.n = 10; r.pin = true; r.heat = INT64_MAX; r.mov = mov; pv2_add(h, s, r); };
+        auto exp_ = [&](size_t s, int64_t heat) { pv2_res r; r.id = (int32_t) s; r.n = 10; r.heat = heat; pv2_add(h, s, r); };
+        exp_(0, 1); page(10, true); exp_(20, 2); page(30, true); exp_(40, 3); page(50, true); exp_(60, 4); page(70, false); page(80, false); page(90, false);
+        const pv2_defrag d = pv2_defrag_plan(h, 30, 1);
+        check("defrag case: a plan", d.s != PV2_NONE);
+        check("defrag case: one page moves", d.moves.size() == 1);
+        check("defrag case: plan valid", pv2t_defrag_ok(h, d, 30, 1, 3));
+    }
+    // two pages in every 30-byte window: max_moves 1 refuses, 2 accepts
+    {
+        pv2_heap h = pv2_make(0, 120);
+        auto page = [&](size_t s, bool mov) { pv2_res r; r.id = PV2_HOLD; r.n = 10; r.pin = true; r.heat = INT64_MAX; r.mov = mov; pv2_add(h, s, r); };
+        auto exp_ = [&](size_t s) { pv2_res r; r.id = (int32_t) s; r.n = 10; r.heat = 1; pv2_add(h, s, r); };
+        for (size_t x = 0; x < 90; x += 30) { page(x, true); page(x + 10, true); exp_(x + 20); }
+        exp_(90); exp_(100); exp_(110);   // room for the moved pages
+        // the tail [90,120) is a valid alloc already: block it to force defrag
+        h.res[90].pin = true; h.res[100].pin = true;
+        check("defrag case: alloc fails", pv2_alloc_window(h, 30, 1) == PV2_NONE);
+        check("defrag case: 1 move not enough", pv2_defrag_plan(h, 30, 1, 1).s == PV2_NONE);
+        const pv2_defrag d = pv2_defrag_plan(h, 30, 1, 2);
+        check("defrag case: 2 moves", d.s != PV2_NONE && d.moves.size() == 2 && pv2t_defrag_ok(h, d, 30, 1, 2));
+    }
+    // a page straddling the window's edge is never cut: the window shifts to hold it whole
+    {
+        pv2_heap h = pv2_make(0, 60);
+        pv2_res pg; pg.id = PV2_HOLD; pg.n = 20; pg.pin = true; pg.heat = INT64_MAX; pg.mov = true; pv2_add(h, 0, pg);
+        pv2_res fx; fx.id = PV2_HOLD; fx.n = 10; fx.pin = true; fx.heat = INT64_MAX; pv2_add(h, 30, fx);
+        pv2_res e1; e1.id = 20; e1.n = 10; e1.heat = 1; pv2_add(h, 20, e1);
+        pv2_res e2; e2.id = 40; e2.n = 20; e2.heat = 1; pv2_add(h, 40, e2);
+        const pv2_defrag d = pv2_defrag_plan(h, 30, 1);
+        check("defrag case: straddle plan valid", pv2t_defrag_ok(h, d, 30, 1, 3) && d.s != PV2_NONE && d.s == 0);
+    }
+}
+
+static void test_defrag_random() {
+    std::mt19937 rng(99);
+    int bad = 0, plans = 0;
+    for (int it = 0; it < 2000; ++it) {
+        pv2_heap h = pv2t_random(rng, 30, 5, 30, 30, 15);
+        const size_t n = (1 + rng() % 4) * 10, a = 10, k = 1 + rng() % 3;
+        if (pv2_alloc_window(h, n, a) != PV2_NONE) { continue; }
+        const pv2_defrag d = pv2_defrag_plan(h, n, a, k);
+        if (d.s != PV2_NONE) { plans++; }
+        if (!pv2t_defrag_ok(h, d, n, a, k)) { bad++; }
+    }
+    check("defrag random: every plan valid (only movable blocks, max moves, outside window, no overlap, window takeable)", bad == 0);
+    check("defrag random: plans seen", plans > 50);
+}
+
 int main(int argc, char ** argv) {
     test_first_fit();
     test_free_at();
     test_alloc_window();
     test_defrag_plan();
+    test_alloc_cases();
+    test_alloc_random();
+    test_defrag_cases();
+    test_defrag_random();
     test_upchunks();
     test_upring();
     test_eranges();

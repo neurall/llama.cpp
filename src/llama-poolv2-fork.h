@@ -812,18 +812,25 @@ struct pv2_ff_t { size_t n, u; };
 // coldest resident whose window [start, start + n) covers only free bytes and residents that may leave (not pinned, not held); the caller moves the residents
 // in front of it over the next coldest ones elsewhere (pv2_zone_move), the rest leave, the window is held; a resident the window only partly covers leaves
 // whole, its bytes past the window come back free. PV2_NONE: no free extent, no coldest anchor fits
-static inline size_t pv2_alloc_window(const pv2_heap & h, size_t n, size_t a) {
+static inline size_t pv2_alloc_window(const pv2_heap & h, size_t n, size_t a, size_t max_anchors = 256) {
     a = std::max<size_t>(1, a);
     for (const auto & [gs, gn] : h.gaps) {
         const size_t st = (gs + a - 1) / a * a;
         if (st + n <= gs + gn) { return st; }
     }
+    // user 2026-11-22: anchored at the coldest takeable expert (its neighbours in the window move over colder ones elsewhere: pv2_zone_move); the
+    // max_anchors coldest are tried coldest first, the first window that covers only takeable bytes wins; then every free extent's start (a window may
+    // begin in free bytes and run on over experts)
     std::vector<std::pair<int64_t, size_t>> cold;
     for (const auto & [x, r] : h.res) { if (!r.pin && r.id != PV2_HOLD) { cold.push_back({ r.heat, x }); } }
+    if (cold.size() > max_anchors) { std::nth_element(cold.begin(), cold.begin() + max_anchors, cold.end()); cold.resize(max_anchors); }
     std::sort(cold.begin(), cold.end());
-    for (const auto & [ht, x] : cold) {
+    std::vector<size_t> anchors;
+    for (const auto & c : cold) { anchors.push_back(c.second); }
+    for (const auto & [gs, gn] : h.gaps) { anchors.push_back(gs); }
+    for (size_t x : anchors) {
         const size_t s = (x + a - 1) / a * a;
-        if (s + n > h.hi) { continue; }
+        if (s < h.lo || s + n > h.hi) { continue; }
         size_t at = s; bool ok = true;
         while (ok && at < s + n) {
             auto g = h.gaps.upper_bound(at);
