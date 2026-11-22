@@ -1267,10 +1267,29 @@ static void test_eranges() {
     check("eranges: unused experts skipped, empty ranges dropped", c.size() == 2 && c[0].ids == std::vector<int32_t>({5, 6}) && c[1].ids == std::vector<int32_t>({200}));
     check("eranges: no experts / no range, nothing", pv2_expert_ranges(0, 32, {}).empty() && pv2_expert_ranges(10, 0, {}).empty());
 }
+static void test_coldest() {
+    pv2_heap h = pv2_make(0, 1000);
+    auto put = [&](size_t s, int32_t id, size_t n, int64_t heat, bool pin = false) { h.gaps.clear(); h.res[s] = { id, n, heat, pin, 10 }; };
+    put(0, 1, 100, 50); put(100, 2, 100, 5); put(200, 3, 100, 7, true); put(300, 4, 200, 1); put(500, 5, 100, 9); put(600, 6, 100, 3);
+    auto ord = pv2_cold_order(h);
+    check("cold order: pinned left out, coldest first", ord.size() == 5 && ord[0].id == 4 && ord[1].id == 6 && ord[2].id == 2 && ord[3].id == 5 && ord[4].id == 1);
+    size_t cur = 0;
+    auto all = [](int32_t) { return true; };
+    pv2_pick a = pv2_coldest(h, ord, cur, 100, 10, all);
+    check("coldest: same size only (id 4 is 200 bytes), coldest of them", a.s == 600 && a.evict == std::vector<size_t>({600}));
+    h.res[100].id = 9;   // start 100 now holds another expert (an earlier pick replaced id 2)
+    pv2_pick b = pv2_coldest(h, ord, cur, 100, 10, [](int32_t id) { return id != 5; });
+    check("coldest: stale entry and refused id skipped", b.s == 0);
+    pv2_pick c = pv2_coldest(h, ord, cur, 100, 10, all);
+    check("coldest: exhausted, nothing", c.s == PV2_NONE && c.evict.empty());
+    size_t c2 = 0;
+    check("coldest: a start off the newcomer's unit skipped", pv2_coldest(h, ord, c2, 100, 7, all).s == 0);
+}
 int main(int argc, char ** argv) {
     test_upchunks();
     test_upring();
     test_eranges();
+    test_coldest();
     if (argc > 1 && strcmp(argv[1], "--sim") == 0) {
         std::vector<std::string> pos;
         std::string mode = "own";

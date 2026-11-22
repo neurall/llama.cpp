@@ -735,3 +735,26 @@ static inline std::vector<pv2_erange> pv2_expert_ranges(int32_t n, int32_t range
     }
     return r;
 }
+
+// The heap's coldest residents, coldest first (user 2026-11-22: no layer-sized landing area; an expert the main heap has no place for near its target takes the
+// place of the globally coldest resident not pinned, keep rank in r.heat): (heat, start, id), built once and consumed with a cursor; pv2_coldest skips entries
+// gone stale since (the start holds another expert or none, it got pinned, its size differs, the start is off the newcomer's unit, ok(id) refuses: an upload on its way)
+struct pv2_cold_t { int64_t heat; size_t s; int32_t id; };
+static inline std::vector<pv2_cold_t> pv2_cold_order(const pv2_heap & h) {
+    std::vector<pv2_cold_t> r;
+    for (const auto & [s, x] : h.res) { if (x.id >= 0 && !x.pin) { r.push_back({ x.heat, s, x.id }); } }
+    std::sort(r.begin(), r.end(), [](const pv2_cold_t & a, const pv2_cold_t & b) { return a.heat != b.heat ? a.heat < b.heat : a.s < b.s; });
+    return r;
+}
+template <typename OK>
+static inline pv2_pick pv2_coldest(const pv2_heap & h, const std::vector<pv2_cold_t> & ord, size_t & cur, size_t n, size_t u, OK ok) {
+    pv2_pick p;
+    for (; cur < ord.size(); ++cur) {
+        const auto it = h.res.find(ord[cur].s);
+        if (it == h.res.end() || it->second.id != ord[cur].id || it->second.pin || it->second.n != n || ord[cur].s % u != 0 || !ok(it->second.id)) { continue; }
+        p.s = ord[cur].s; p.evict = { ord[cur].s };
+        ++cur;
+        break;
+    }
+    return p;
+}
