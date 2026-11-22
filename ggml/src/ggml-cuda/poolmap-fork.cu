@@ -349,7 +349,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
     if (kind == PM_ALLOC_KV || kind == PM_ALLOC_WRK) { ne.type = kind == PM_ALLOC_KV ? PM_KV : PM_WRK; ne.id = -1; ne.hot = 0; ne.flags = PM_PIN; }   // held: KV never moves, work never in a pass
     if (!pm_place(c, s, ne, &sh_idx)) { if (threadIdx.x == 0) { ovf = 2; } __syncthreads(); }
     if (threadIdx.x == 0) {
-        res->s = s; res->n_mv = n_mv; res->n_fr = n_fr; res->overflow = ovf; res->path = 3; S.stale = 1;   // moved or placed experts are not in the lists
+        res->s = s; res->n_mv = n_mv; res->n_fr = n_fr; res->overflow = ovf; res->path = n_cov ? 3 : 5; S.stale = 1;   // 5 ("other" in the host log): a fit in free bytes, no window   // moved or placed experts are not in the lists
         __threadfence_system();
         res->done = 1;
     }
