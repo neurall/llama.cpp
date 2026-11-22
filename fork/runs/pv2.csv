@@ -78,3 +78,8 @@ qc-alloc4,qwen38,4,pf14k1k,16,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
 qc-nogpu4,qwen38,4,pf14k1k,16,"-bs --moe pool-v2=1,gpu-alloc=0",--env CUDA_VISIBLE_DEVICES=0
 qc-nogpu-speed,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,gpu-alloc=0",--env CUDA_VISIBLE_DEVICES=0
 qc-v1-speed,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=0",--env CUDA_VISIBLE_DEVICES=0
+qc-lazy,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
+qc-fastdec,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,reheat-all=1",--env CUDA_VISIBLE_DEVICES=0
+qc-keepdec,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,keep-dec=1",--env CUDA_VISIBLE_DEVICES=0
+qc-keepfast,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,keep-dec=1,reheat-all=1",--env CUDA_VISIBLE_DEVICES=0
+qc-v1-ref,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=0",--env CUDA_VISIBLE_DEVICES=0
