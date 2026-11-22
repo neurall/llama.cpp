@@ -14071,6 +14071,17 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
                         }
                     }
                     for (const auto & [g, n] : v.main.gaps) { free_fit += n >= ls.v2n + ls.v2u ? 1 : 0; }
+                    if (v.H > v.M) {   // the landing area by state: what kept the stream out
+                        size_t l_pin = 0, l_busy = 0, l_other = 0, l_res = 0, l_free = 0, l_gmax = 0, l_ng = 0;
+                        for (const auto & [x, r] : v.land.res) {
+                            l_res++;
+                            const bool busy = r.id >= 0 && (mc->layers[(size_t) (r.id / v.E)].slot_in_flight[(size_t) (r.id % v.E)] || mc->layers[(size_t) (r.id / v.E)].queued[r.id % v.E]);
+                            if (r.pin) { l_pin += r.n; } else if (busy) { l_busy += r.n; } else { l_other += r.n; }
+                        }
+                        for (const auto & [g, n] : v.land.gaps) { l_free += n; l_gmax = std::max(l_gmax, n); l_ng++; }
+                        LLAMA_LOG_WARN("moe-cache: pool-v2: landing [%zu, %zu) MiB: %zu residents, pinned %.1f MiB, uploading or queued %.1f MiB, other %.1f MiB, free %.1f MiB in %zu gaps (largest %.2f MiB), cursor at %.1f MiB\n",
+                                v.M >> 20, v.H >> 20, l_res, l_pin / 1048576.0, l_busy / 1048576.0, l_other / 1048576.0, l_free / 1048576.0, l_ng, l_gmax / 1048576.0, v.cur / 1048576.0);
+                    }
                     LLAMA_LOG_WARN("moe-cache: pool-v2: layer %d (entry %zu of the pass, %s): no place for an expert of %zu bytes; residents of that size %zu: %zu pinned (%zu its own), "
                             "%zu uploading, %zu queued, %zu of layers still ahead, %zu takeable; %.2f GB takeable of other sizes; %zu free gaps that fit; placed %zu of %zu wanted\n",
                             ls.pub.il, p, cheap ? "ahead" : "next", ls.v2n, tot, pin, own, fl, qd, ahead, take, b_take_other / 1e9, free_fit, placed.size(), want.size());
