@@ -309,9 +309,19 @@ void ggml_cuda_poolmap_alloc_batch_fork(cudaStream_t st, pm_entry * v, uint32_t 
     if (n_rq == 0) { return; }
     k_pm_alloc<<<1, PM_T, 0, st>>>(v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev);
     CUDA_CHECK(cudaGetLastError());
-    if (ev) { CUDA_CHECK(cudaEventRecord(ev, st)); CUDA_CHECK(cudaStreamWaitEvent(st_apply, ev, 0)); } else { st_apply = st; }
+    if (ev) { CUDA_CHECK(cudaEventRecord(ev, st)); }
+    if (!st_apply && ev) { return; }   // the caller queues the applies itself (ggml_cuda_poolmap_apply_fork) once it knows what they wait for
+    if (ev) { CUDA_CHECK(cudaStreamWaitEvent(st_apply, ev, 0)); } else { st_apply = st; }
     for (uint32_t k = 0; k < n_rq; ++k) {
         k_pm_apply<<<dim3(PM_MAX_FR, 1), 256, 0, st_apply>>>(res_dev + k, base, tables, E);
+        CUDA_CHECK(cudaGetLastError());
+    }
+}
+// the applies of a batch whose alloc recorded ev, on st (after what the caller queued there: the compute the freed and moved experts' layers wait for)
+void ggml_cuda_poolmap_apply_fork(cudaStream_t st, cudaEvent_t ev, const pm_result * res_dev, uint32_t n_rq, char * base, int32_t * const * tables, int32_t E) {
+    if (ev) { CUDA_CHECK(cudaStreamWaitEvent(st, ev, 0)); }
+    for (uint32_t k = 0; k < n_rq; ++k) {
+        k_pm_apply<<<dim3(PM_MAX_FR, 1), 256, 0, st>>>(res_dev + k, base, tables, E);
         CUDA_CHECK(cudaGetLastError());
     }
 }

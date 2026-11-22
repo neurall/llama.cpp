@@ -14097,6 +14097,7 @@ struct pm_dev {
     ggml_backend_t be = nullptr;
     void (*batch)(ggml_backend_t, pm_entry *, uint32_t *, uint32_t, uint64_t, uint64_t, const pm_req *, uint32_t, pm_result *, char *, int32_t * const *, int32_t) = nullptr;
     void (*io)(ggml_backend_t, void *, void *, size_t, int) = nullptr;
+    void (*apply)(ggml_backend_t, const pm_result *, uint32_t, char *, int32_t * const *, int32_t) = nullptr;
     ggml_backend_buffer_t buf = nullptr;   // the map vector + its count on the card
     pm_entry * v_dev = nullptr; uint32_t * cnt_dev = nullptr; uint32_t cap = 0;
     pm_req * rq = nullptr, * rq_dev = nullptr; pm_result * rs = nullptr, * rs_dev = nullptr; uint32_t max_rq = 0;
@@ -14114,7 +14115,8 @@ static bool pm_setup(moe_cache * mc) {
     alloc_t al = reg ? (alloc_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_mapped_alloc_fork") : nullptr;
     g_pm.batch = reg ? (decltype(g_pm.batch)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_poolmap_alloc_batch_fork") : nullptr;
     g_pm.io = reg ? (decltype(g_pm.io)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_poolmap_io_fork") : nullptr;
-    if (!g_pm.be || !al || !g_pm.batch || !g_pm.io) { LLAMA_LOG_WARN("moe-cache: pool-v2: gpu-alloc needs the CUDA pool-map kernels and the ring stream: host picks\n"); return false; }
+    g_pm.apply = reg ? (decltype(g_pm.apply)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_poolmap_apply_fork") : nullptr;
+    if (!g_pm.be || !al || !g_pm.batch || !g_pm.io || !g_pm.apply) { LLAMA_LOG_WARN("moe-cache: pool-v2: gpu-alloc needs the CUDA pool-map kernels and the ring stream: host picks\n"); return false; }
     g_pm.cap = (uint32_t) std::max<size_t>(1u << 16, 4 * (v.main.res.size() + v.main.gaps.size()) + 4096);
     g_pm.buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), (size_t) g_pm.cap * sizeof(pm_entry) + 256);
     if (!g_pm.buf) { LLAMA_LOG_WARN("moe-cache: pool-v2: gpu-alloc: no room for the map (%.1f MiB): host picks\n", g_pm.cap * sizeof(pm_entry) / 1048576.0); return false; }
@@ -14213,6 +14215,9 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
         placed.push_back(e);
     }
     for (uint32_t j = k; j < want.size(); ++j) { left.push_back(want[j]); }
+    // the applies wait on the ring for the compute of every layer whose experts they free or move (cs_done counts queued layers, not finished ones)
+    if (wait_at > 0) { ggml_backend_event_wait(g_pm.be, csl(mc, mc->cs_order[wait_at - 1]).cs_done_ev); }
+    g_pm.apply(g_pm.be, g_pm.rs_dev, k, base, g_pm.tbl_dev, v.E);
     static const bool check = [] { const char * x = moe_opt("map-check"); return x && atoi(x) != 0; }();
     if (check) {
         uint32_t c2 = 0;

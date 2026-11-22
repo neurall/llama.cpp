@@ -10303,9 +10303,16 @@ static void ggml_backend_cuda_poolmap_alloc_batch_fork(ggml_backend_t backend, p
     ggml_cuda_set_device(ctx->device);
     // user 2026-11-22: the alloc runs on its own stream, not behind the ring's queued uploads; the ring waits for its moves on an event, the host for no upload
     cudaStream_t st = ggml_cuda_poolmap_stream_fork(ctx->device);
-    // the applies (moves, table writes) on the ring stream behind the alloc: in order with its table flushes and uploads (on the alloc stream they raced a
-    // flush queued earlier on the ring, which wrote a freed expert's old entry back: NaN at token 0)
-    ggml_cuda_poolmap_alloc_batch_fork(st, v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev, base, tables, E, ctx->stream(), g_pm_ev_fork[ctx->device]);
+    // the alloc only: the applies (moves, table writes) go on the ring through ggml_backend_cuda_poolmap_apply_fork once the host knows from the reports
+    // which compute they wait for (a freed expert's layer may still run: its table entry turned -1 under its kernels gave NaN at token 0)
+    ggml_cuda_poolmap_alloc_batch_fork(st, v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev, base, tables, E, nullptr, g_pm_ev_fork[ctx->device]);
+}
+void ggml_cuda_poolmap_apply_fork(cudaStream_t st, cudaEvent_t ev, const pm_result * res_dev, uint32_t n_rq, char * base, int32_t * const * tables, int32_t E);
+// the last batch's applies on this backend's stream (the ring), behind what the caller queued there and the alloc's event
+static void ggml_backend_cuda_poolmap_apply_fork(ggml_backend_t backend, const pm_result * res_dev, uint32_t n_rq, char * base, int32_t * const * tables, int32_t E) {
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_set_device(ctx->device);
+    ggml_cuda_poolmap_apply_fork(ctx->stream(), g_pm_ev_fork[ctx->device], res_dev, n_rq, base, tables, E);
 }
 // the map to and from the card (set at start and for --moe map-check=1, a debug read after every alloc): synchronous
 static void ggml_backend_cuda_poolmap_io_fork(ggml_backend_t backend, void * dev, void * host, size_t bytes, int to_dev) {
@@ -10450,6 +10457,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_poolmap_alloc_batch_fork") == 0) {
         return (void *)ggml_backend_cuda_poolmap_alloc_batch_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_poolmap_apply_fork") == 0) {
+        return (void *)ggml_backend_cuda_poolmap_apply_fork;
     }
     if (strcmp(name, "ggml_backend_cuda_poolmap_io_fork") == 0) {
         return (void *)ggml_backend_cuda_poolmap_io_fork;
