@@ -2679,7 +2679,7 @@ void pv2_refresh(moe_cache * mc, bool prompt, bool tiered) {
 // bytes [a, b) of the card's buffer leave the heap for a while (a graph's lend, the KV zone, a retype's staging): queued uploads of the experts placed there are
 // dropped, finished unpublished ones discarded, running ones awaited; the experts there leave, the bytes are held. Takes the locks (upload queue, then cache).
 // false: an upload did not finish in 10 s (nothing held)
-static void pm_relocate(moe_cache * mc, size_t a, size_t b, std::vector<int32_t> & ids);   // below, by the card allocator
+static void (*g_pm_relocate)(moe_cache * mc, size_t a, size_t b, std::vector<int32_t> & ids) = nullptr;   // pm_relocate, set below (it lives in a nested anonymous namespace)
 bool pv2_take_range(moe_cache * mc, size_t a, size_t b, size_t * n_evict = nullptr, bool relocate = false) {
     auto & v = mc->v2;
     a = std::max(a, v.main.lo); b = std::min(b, v.main.hi);
@@ -2727,7 +2727,7 @@ bool pv2_take_range(moe_cache * mc, size_t a, size_t b, size_t * n_evict = nullp
                     LLAMA_LOG_WARN("moe-cache: pool-v2: stretch [%.0f, %.0f) MiB taken: %zu residents out (%.2f GB), %zu above the heap's median decode score, %zu above its 90th percentile\n",
                             a / 1048576.0, b / 1048576.0, ids.size(), bytes / 1e9, above_med, above_p90);
                 }
-                if (relocate) { pm_relocate(mc, a, b, ids); }   // the hot ones move on the card, the rest leave
+                if (relocate && g_pm_relocate) { g_pm_relocate(mc, a, b, ids); }   // the hot ones move on the card, the rest leave
                 for (int32_t id : ids) {
                     layer_state & lo = mc->layers[(size_t) (id / v.E)];
                     evict_slot(mc, lo, id % v.E);
@@ -14256,6 +14256,7 @@ static void pm_relocate(moe_cache * mc, size_t a, size_t b, std::vector<int32_t>
             a / 1048576.0, b / 1048576.0, n_mv, b_mv / 1e9, (ggml_time_us() - t0) / 1e3, n_fr, ids.size()); }
     (void) n_no;
 }
+static const bool g_pm_relocate_set = (g_pm_relocate = pm_relocate, true);
 // one batch for want's experts of layer li; ahead: experts of layers still ahead in the pass may be taken
 static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t> & want, std::vector<int32_t> & placed, std::vector<int32_t> & left,
                            size_t done, size_t & wait_at, size_t & n_ev, size_t p, bool ahead, const std::function<int64_t(int32_t)> & heat_of, bool keep_dec = false) {
