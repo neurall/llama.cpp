@@ -25,7 +25,7 @@ struct pm_entry {
 };
 static_assert(sizeof(pm_entry) == 40, "pm_entry layout is shared with the kernel");
 
-struct pm_mv { uint64_t from, to, n; int32_t id; int32_t pad; };
+struct pm_mv { uint64_t from, to, n; int32_t id; uint32_t u; };   // u: the mover's unit (its table entry = to / u)
 struct pm_fr { uint64_t s, n; int32_t id; int32_t pad; };
 static constexpr int PM_MAX_MV = 64, PM_MAX_FR = 128;
 struct pm_result {

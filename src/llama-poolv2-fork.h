@@ -815,7 +815,7 @@ struct pv2_ff_t { size_t n, u; };
 // coldest resident whose window [start, start + n) covers only free bytes and residents that may leave (not pinned, not held); the caller moves the residents
 // in front of it over the next coldest ones elsewhere (pv2_zone_move), the rest leave, the window is held; a resident the window only partly covers leaves
 // whole, its bytes past the window come back free. PV2_NONE: no free extent, no coldest anchor fits
-static inline size_t pv2_alloc_window(const pv2_heap & h, size_t n, size_t a, size_t max_anchors = 256) {
+static inline size_t pv2_alloc_window(const pv2_heap & h, size_t n, size_t a, size_t max_anchors = SIZE_MAX) {   // user: every takeable expert is an anchor (a linear scan of the heat counters)
     a = std::max<size_t>(1, a);
     for (const auto & [gs, gn] : h.gaps) {
         const size_t st = (gs + a - 1) / a * a;

@@ -10268,6 +10268,24 @@ static void * ggml_backend_cuda_mapped_alloc_fork(size_t bytes, void ** dev) {
     return p;
 }
 
+// fork: pool map alloc (poolmap-fork.cu): alloc + byte moves + table writes on the stream; the report lands in mapped memory (res_host->done set last)
+#include "../../../src/llama-poolmap-fork.h"
+void ggml_cuda_poolmap_alloc_fork(cudaStream_t st, pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, uint64_t n, uint64_t a,
+                                  int32_t id, int64_t hot, int pin, pm_result * res_dev, char * base, int32_t * const * tables, int32_t E);
+static void ggml_backend_cuda_poolmap_alloc_fork(ggml_backend_t backend, pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, uint64_t n, uint64_t a,
+                                                 int32_t id, int64_t hot, int pin, pm_result * res_dev, char * base, int32_t * const * tables, int32_t E) {
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_set_device(ctx->device);
+    ggml_cuda_poolmap_alloc_fork(ctx->stream(), v, cnt, cap, lo, hi, n, a, id, hot, pin, res_dev, base, tables, E);
+}
+// the map to and from the card (set at start and for --moe map-check=1, a debug read after every alloc): synchronous
+static void ggml_backend_cuda_poolmap_io_fork(ggml_backend_t backend, void * dev, void * host, size_t bytes, int to_dev) {
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_set_device(ctx->device);
+    CUDA_CHECK(cudaMemcpyAsync(to_dev ? dev : host, to_dev ? host : dev, bytes, to_dev ? cudaMemcpyHostToDevice : cudaMemcpyDeviceToHost, ctx->stream()));
+    CUDA_CHECK(cudaStreamSynchronize(ctx->stream()));
+}
+
 extern int ggml_cuda_fattn_force_fork;   // fattn.cu
 static void ggml_backend_cuda_fattn_force_set_fork(int kernel) { ggml_cuda_fattn_force_fork = kernel; }
 extern bool ggml_cuda_fattn_rows_fork;   // fattn.cu
@@ -10373,6 +10391,12 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_mapped_alloc_fork") == 0) {
         return (void *)ggml_backend_cuda_mapped_alloc_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_poolmap_alloc_fork") == 0) {
+        return (void *)ggml_backend_cuda_poolmap_alloc_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_poolmap_io_fork") == 0) {
+        return (void *)ggml_backend_cuda_poolmap_io_fork;
     }
     if (strcmp(name, "ggml_backend_cuda_obs_prompt_init_fork") == 0) {
         return (void *)ggml_backend_cuda_obs_prompt_init_fork;
