@@ -22,7 +22,11 @@ pv2-glm35-on-land,glm35,2,pf12k1k,1024,"-bs --moe pool-v2=1,pv2-swap-land=1",--e
 pv2-q-on-land,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,pv2-swap-land=1",--env CUDA_VISIBLE_DEVICES=0
 pv2-q-hw,qwen38,1,pf14k1k,16,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0 --env GGML_GALLOC_HW=1
 qa-classes,qwen38,2,pf14k1k,1024,-bs,--env CUDA_VISIBLE_DEVICES=0
-qa-heap,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
-qa-heapnoinpl,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_MOE_WEIGHT_INPLACE=0
+qa-heap-all,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
+qa-heap-oldland,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,pv2-land-mb=100000",--env CUDA_VISIBLE_DEVICES=0
+qa-heap-fullcold,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,pv2-cold-k=100000000",--env CUDA_VISIBLE_DEVICES=0
+qa-heap-noinpl,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_MOE_WEIGHT_INPLACE=0
 ga-classes,glm35,2,pf12k1k,1024,-bs,--env CUDA_VISIBLE_DEVICES=0
-ga-heap,glm35,2,pf12k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
+ga-heap-all,glm35,2,pf12k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
+ga-heap-oldland,glm35,2,pf12k1k,1024,"-bs --moe pool-v2=1,pv2-land-mb=100000",--env CUDA_VISIBLE_DEVICES=0
+ga-heap-noinpl,glm35,2,pf12k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_MOE_WEIGHT_INPLACE=0
