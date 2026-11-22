@@ -73,3 +73,6 @@ qc-iq4,qn_iq4xs,2,pf12k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=
 qc-nogpu,qwen38,1,pf14k1k,16,"-bs --moe pool-v2=1,gpu-alloc=0",--env CUDA_VISIBLE_DEVICES=0
 qc-mapchk,qwen38,1,pf14k1k,16,"-bs --moe pool-v2=1,map-check=1",--env CUDA_VISIBLE_DEVICES=0
 qc-alloc16,qwen38,1,pf14k1k,16,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
+qc-alloc-nsys,qwen38,1,pf14k1k,16,"-bs --moe pool-v2=1","--env CUDA_VISIBLE_DEVICES=0 --wrap 'nsys profile --trace=cuda --sample=none -o /home/o/.claude/jobs/44ecfe4e/tmp/pmall --force-overwrite=true'"
+qc-alloc4,qwen38,4,pf14k1k,16,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
+qc-nogpu4,qwen38,4,pf14k1k,16,"-bs --moe pool-v2=1,gpu-alloc=0",--env CUDA_VISIBLE_DEVICES=0
