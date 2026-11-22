@@ -3950,7 +3950,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 ggml_backend_sched_set_tensor_backend(sched, e, b);
             }
             if (!weight_before_ffn) {
-                e = ggml_mul(ctx0, e, w ? w : weights);
+                // in place: the expert outputs have no other reader, and a 15.5k pass held both (2 x 1.5 GB, the graph's peak on Qwen3.8; the lend evicted them from the cache)
+                static const bool inpl = [] { const char * x = getenv("LLAMA_MOE_WEIGHT_INPLACE"); return !x || atoi(x) != 0; }();
+                e = inpl ? ggml_mul_inplace(ctx0, e, w ? w : weights) : ggml_mul(ctx0, e, w ? w : weights);
                 ggml_backend_sched_set_tensor_backend(sched, e, b);
                 first = first ? first : e;
             }
