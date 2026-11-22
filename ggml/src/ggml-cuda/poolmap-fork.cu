@@ -150,8 +150,8 @@ static __device__ uint32_t & pm_class_cur(pm_shared & S, const pm_cands & cd, ui
     return cu;
 }
 // thread 0, after an in-place take: a newcomer colder than its class's next listed entry would be the reference's next pick but is not in the list
-static __device__ void pm_class_check(pm_shared & S, const pm_cands & cd, int64_t hot) {
-    if (!cd.key || S.cls >= PM_NCLS || S.stale) { return; }
+static __device__ void pm_class_check(pm_shared & S, const pm_cands & cd, int64_t hot, int pin) {
+    if (pin || !cd.key || S.cls >= PM_NCLS || S.stale) { return; }   // a pinned newcomer is no victim in this batch: the list stays current
     const uint32_t cu = pm_class_cur(S, cd, S.cls);
     if (cu < cd.n && (cd.key[cu] >> 54) == (int64_t) S.cls && pm_heat54(hot) < (cd.key[cu] & PM_HEAT_MASK)) { S.stale = 1; }
 }
@@ -209,7 +209,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
                 const bool ok = l < nc && v[l].off == o && v[l].type == PM_MOE && !(v[l].flags & PM_PIN) && v[l].size == n && pm_heat54(v[l].hot) == (k & PM_HEAT_MASK) && v[l].hot < cap_hot;
                 if (ok) { S.pick = 1; S.pidx = l; break; }
             }
-            if (S.pick == 1) { res->path = 1; pm_take_inplace(c, S.pidx, a, id, hot, pin, res); pm_class_check(S, cd, hot); }
+            if (S.pick == 1) { res->path = 1; pm_take_inplace(c, S.pidx, a, id, hot, pin, res); pm_class_check(S, cd, hot, pin); }
         }
         __syncthreads();
         if (S.pick == 1) { return; }
@@ -261,7 +261,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
             const pm_entry w = v[vi];
             if (w.off == s && w.size == n) {
                 __syncthreads();
-                if (threadIdx.x == 0) { res->path = 2; pm_take_inplace(c, vi, a, id, hot, pin, res); S.nofree = 1; pm_class_check(S, cd, hot); }   // !left: an expert (no free bytes changed)
+                if (threadIdx.x == 0) { res->path = 2; pm_take_inplace(c, vi, a, id, hot, pin, res); S.nofree = 1; pm_class_check(S, cd, hot, pin); }   // !left: an expert (no free bytes changed)
                 __syncthreads();
                 return;
             }
