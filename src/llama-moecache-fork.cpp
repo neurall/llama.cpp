@@ -14376,8 +14376,10 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
         placed.push_back(e);
     }
     for (uint32_t j = k; j < want.size(); ++j) { left.push_back(want[j]); }
+    static int64_t t_rp = 0, t_ew = 0, t_ops = 0; int64_t tr0 = ggml_time_us(); t_rp += tr0 - tq;   // dev: replay, the ring's wait queued, the ops' launches
     // the applies wait on the ring for the compute of every layer whose experts they free or move (cs_done counts queued layers, not finished ones)
     if (wait_at > 0) { ggml_backend_event_wait(g_pm.be, csl(mc, mc->cs_order[wait_at - 1]).cs_done_ev); }
+    { const int64_t t = ggml_time_us(); t_ew += t - tr0; tr0 = t; }
     {
         std::vector<pm_mv> list;
         for (uint32_t j = 0; j < k; ++j) {
@@ -14387,10 +14389,11 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
             for (uint32_t f = 0; f < r.n_fr; ++f) { if (r.fr[f].id >= 0) { list.push_back(pm_mv { r.fr[f].s, UINT64_MAX, 0, r.fr[f].id, 0 }); } }
         }
         t_bank += pm_apply_ops(mc, list, base);
+        t_ops += ggml_time_us() - tr0;
     }
     lap(t_rest); n_r += k;
-    if (++n_b % 16 == 0) { LLAMA_LOG_WARN("pool-v2: gpu-alloc host time, %lld batches of %lld allocs: map %.1f ms, send %.1f ms, bank wait %.1f ms, report wait %.1f ms (to the first %.1f ms, minus its card time %.1f ms), replay+apply %.1f ms; %lld moves (%lld allocs with any), %lld frees, %lld allocs in free bytes, %lld refused, map %zu entries\n",
-            (long long) n_b, (long long) n_r, t_map / 1e3, t_send / 1e3, t_bank / 1e3, t_spin / 1e3, t_first / 1e3, t_fc / 1e3, t_rest / 1e3, (long long) n_mvs, (long long) n_withmv, (long long) n_frs,
+    if (++n_b % 16 == 0) { LLAMA_LOG_WARN("pool-v2: gpu-alloc host time, %lld batches of %lld allocs: map %.1f ms, send %.1f ms, bank wait %.1f ms, report wait %.1f ms (to the first %.1f ms, minus its card time %.1f ms), replay+apply %.1f ms (replay %.1f, ring wait queued %.1f, ops launched %.1f); %lld moves (%lld allocs with any), %lld frees, %lld allocs in free bytes, %lld refused, map %zu entries\n",
+            (long long) n_b, (long long) n_r, t_map / 1e3, t_send / 1e3, t_bank / 1e3, t_spin / 1e3, t_first / 1e3, t_fc / 1e3, t_rest / 1e3, t_rp / 1e3, t_ew / 1e3, t_ops / 1e3, (long long) n_mvs, (long long) n_withmv, (long long) n_frs,
             (long long) n_nofr, (long long) n_none, m.size());
         LLAMA_LOG_WARN("pool-v2: gpu-alloc card time by path: popped %lld (%.1f us each), scan+in place %lld (%.1f), free bytes/moves %lld (%.1f), refused %lld (%.1f), free-bytes fit %lld (%.1f); victims: %lld of the decode set (%lld taken by a newcomer outside it), %lld others; those by victim layer: outside the pass %lld, before this entry %lld, this entry or later %lld; by path 1-4: %lld %lld %lld %lld\n",
             (long long) p_n[1], p_ns[1] / 1e3 / std::max<int64_t>(1, p_n[1]), (long long) p_n[2], p_ns[2] / 1e3 / std::max<int64_t>(1, p_n[2]),
