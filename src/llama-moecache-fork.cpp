@@ -15425,6 +15425,31 @@ void llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     size_t n_read = 0, n_bad = 0, n_bad_past = 0;
     int said = 0;
     std::lock_guard<std::mutex> lk(mc->mtx);
+    if (mc->v2.on) {   // the card's tables against the host's places (a stale map ring entry reads another expert while every expert's bytes are right)
+        std::vector<llama_moe_cache_layer_fork *> dirty;
+        { std::lock_guard<std::mutex> tl(g_tbl_mtx); dirty = g_tbl_dirty; }
+        size_t n_tb = 0, n_mis = 0;
+        std::vector<int32_t> card;
+        for (size_t li = 0; li < mc->layers.size(); ++li) {
+            const layer_state & ls = mc->layers[li];
+            if (!ls.v2u || !ls.pub.dev_table || std::find(dirty.begin(), dirty.end(), &ls.pub) != dirty.end()) { continue; }
+            const int64_t n = ggml_nelements(ls.pub.dev_table);
+            card.resize((size_t) n);
+            ggml_backend_tensor_get(ls.pub.dev_table, card.data(), 0, (size_t) n * sizeof(int32_t));
+            const int32_t * h = (const int32_t *) ls.pub.host_table->data;
+            n_tb++;
+            for (int64_t e = 0; e < n; ++e) {
+                const int32_t want = h[e] >= ls.pub.n_slots || h[e] < 0 ? -1 : ls.at[(size_t) h[e]];
+                if (card[(size_t) e] == want || (want < 0 && card[(size_t) e] < 0)) { continue; }
+                if (n_mis++ < 12) {
+                    LLAMA_LOG_ERROR("pool-v2 TABLE: L%zu e%lld: the card's table says unit %d, the host's place is %d (host table %d, at %d)\n", li, (long long) e, card[(size_t) e], want,
+                            h[e], ls.at[(size_t) e]);
+                    if (n_mis <= 2) { pv2_log_dump(mc, pv2_id(mc, li, (int32_t) e), 0, 0, 8); }
+                }
+            }
+        }
+        LLAMA_LOG_WARN("pool-v2: table check: %zu tables, %zu entries differ from the host's places\n", n_tb, n_mis);
+    }
     if (mc->v2.on) {   // collision audit: two cached experts of the heap must never share a byte
         std::vector<std::tuple<size_t, size_t, int32_t>> iv;
         for (size_t li = 0; li < mc->layers.size(); ++li) {
