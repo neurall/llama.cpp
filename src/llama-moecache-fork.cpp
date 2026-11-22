@@ -14110,10 +14110,11 @@ struct pm_dev {
 static pm_dev g_pm;
 static bool pm_setup(moe_cache * mc) {
     if (g_pm.tried) { return g_pm.ok; }
-    g_pm.tried = true;
     auto & v = mc->v2;
     const ggml_backend_dev_t dev = mc->alias[v.ap_idx].dev;
     for (int k = 0; k < mc->n_links; ++k) { if (mc->ring_be[k] && mc->link_dev[k] == dev) { g_pm.be = mc->ring_be[k]; } }
+    if (!g_pm.be) { return false; }   // the ring stream comes later (the KV's first stretch is taken before it): try again then, not for good
+    g_pm.tried = true;
     ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
     typedef void * (*alloc_t)(size_t, void **);
     alloc_t al = reg ? (alloc_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_mapped_alloc_fork") : nullptr;
