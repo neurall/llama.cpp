@@ -118,6 +118,33 @@ int main() {
         check("stream: card map equals reference", pm_same(back, pm_from_heap(ref)));
         printf("stream: %u requests on a %u-entry map, %d failures; %.1f us a request\n", k, ne, g_bad - bad0, 1000.0 * ms / k);
     }
+    // kv-move (pin bit 3): a resident moving out of a KV stretch takes only free bytes or a colder same-size expert, never a window; else refused
+    {
+        pm_req * rq, * rq_dev; pm_result * rs, * rs_dev;
+        CUDA_CHECK(cudaHostAlloc((void **) &rq, sizeof(pm_req), cudaHostAllocMapped)); CUDA_CHECK(cudaHostGetDevicePointer((void **) &rq_dev, rq, 0));
+        CUDA_CHECK(cudaHostAlloc((void **) &rs, sizeof(pm_result), cudaHostAllocMapped)); CUDA_CHECK(cudaHostGetDevicePointer((void **) &rs_dev, rs, 0));
+        int bad0 = g_bad, n_ok = 0, n_ref = 0;
+        for (int it = 0; it < 400; ++it) {
+            pv2_heap h = random_heap(rng, 60);
+            std::vector<pm_entry> v = pm_from_heap(h); uint32_t cnt = (uint32_t) v.size();
+            const int64_t hot = (int64_t) (rng() % 1000);
+            cudaMemcpy(v_dev, v.data(), v.size() * sizeof(pm_entry), cudaMemcpyHostToDevice); cudaMemcpy(cnt_dev, &cnt, 4, cudaMemcpyHostToDevice);
+            rq[0] = { 10, 10, hot, 3000000 + it, 1 | 2 | 8, 0 };
+            memset(rs, 0, sizeof(pm_result));
+            ggml_cuda_poolmap_alloc_batch_fork(0, v_dev, cnt_dev, cap, h.lo, h.hi, rq_dev, 1, rs_dev, nullptr, nullptr, 1, 0, nullptr, g_scr ? scr : nullptr);
+            CUDA_CHECK(cudaDeviceSynchronize());
+            check("kv-move: done", rs[0].done == 1);
+            check("kv-move: no window movers", rs[0].n_mv == 0);
+            bool colder = true;
+            for (uint32_t f = 0; f < rs[0].n_fr; ++f) {
+                auto it2 = h.res.find((size_t) rs[0].fr[f].s);
+                colder = colder && it2 != h.res.end() && it2->second.heat < hot;
+            }
+            check("kv-move: victims colder than the mover", colder);
+            if (rs[0].s == UINT64_MAX) { n_ref++; } else { n_ok++; }
+        }
+        printf("kv-move: %d placed, %d refused, %d failures\n", n_ok, n_ref, g_bad - bad0);
+    }
     printf("runs %d moves %d freed %d none %d; alloc+apply on ~1000-entry maps %.1f us avg\n", runs, moved, freed, none, 1000.0 * tsum / std::max(1, tn));
     printf(g_bad ? "FAIL: %d failure(s)\n" : "OK: 0 failure(s)\n", g_bad);
     return g_bad != 0;

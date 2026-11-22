@@ -2679,7 +2679,8 @@ void pv2_refresh(moe_cache * mc, bool prompt, bool tiered) {
 // bytes [a, b) of the card's buffer leave the heap for a while (a graph's lend, the KV zone, a retype's staging): queued uploads of the experts placed there are
 // dropped, finished unpublished ones discarded, running ones awaited; the experts there leave, the bytes are held. Takes the locks (upload queue, then cache).
 // false: an upload did not finish in 10 s (nothing held)
-bool pv2_take_range(moe_cache * mc, size_t a, size_t b, size_t * n_evict = nullptr) {
+static void pm_relocate(moe_cache * mc, size_t a, size_t b, std::vector<int32_t> & ids);   // below, by the card allocator
+bool pv2_take_range(moe_cache * mc, size_t a, size_t b, size_t * n_evict = nullptr, bool relocate = false) {
     auto & v = mc->v2;
     a = std::max(a, v.main.lo); b = std::min(b, v.main.hi);
     if (a >= b) { return true; }
@@ -2726,6 +2727,7 @@ bool pv2_take_range(moe_cache * mc, size_t a, size_t b, size_t * n_evict = nullp
                     LLAMA_LOG_WARN("moe-cache: pool-v2: stretch [%.0f, %.0f) MiB taken: %zu residents out (%.2f GB), %zu above the heap's median decode score, %zu above its 90th percentile\n",
                             a / 1048576.0, b / 1048576.0, ids.size(), bytes / 1e9, above_med, above_p90);
                 }
+                if (relocate) { pm_relocate(mc, a, b, ids); }   // the hot ones move on the card, the rest leave
                 for (int32_t id : ids) {
                     layer_state & lo = mc->layers[(size_t) (id / v.E)];
                     evict_slot(mc, lo, id % v.E);
@@ -2753,7 +2755,7 @@ void pv2_give_range(moe_cache * mc, size_t a, size_t b) {
 // The heap's held stretches follow the blocks the lend, the KV zone and CUDA's room hold (owner -2, -3, ROOM, of any class; the blocks stay the lend's and the
 // zone's bookkeeping): residents in a newly held stretch leave first (their uploads dropped or awaited, pv2_take_range), bytes no longer held come back free.
 // locked (cache lock held): only gives back. false: an upload into a new stretch did not finish in 10 s. *n_ev: the residents that left
-static bool pv2_sync(moe_cache * mc, bool locked, size_t * n_ev = nullptr) {
+static bool pv2_sync(moe_cache * mc, bool locked, size_t * n_ev = nullptr, bool relocate = false) {
     optime_t _ot(OP_SYNC);
     auto & v = mc->v2;
     if (!v.on || v.ap_idx >= mc->alias.size()) { return true; }
@@ -2780,7 +2782,7 @@ static bool pv2_sync(moe_cache * mc, bool locked, size_t * n_ev = nullptr) {
         if (old) { continue; }
         GGML_ASSERT(!locked && "pool-v2: a lend or zone grew where the heap is synced under the cache lock");
         // user 2026-11-22: the host moves nothing in VRAM (its moves raced the kernels: heap NaN); residents of a new stretch leave, the card's alloc moves
-        if (!pv2_take_range(mc, r.first, r.second, n_ev)) { return false; }
+        if (!pv2_take_range(mc, r.first, r.second, n_ev, relocate)) { return false; }
     }
     std::unique_lock<std::mutex> lk(mc->mtx, std::defer_lock);
     if (!locked) { lk.lock(); }
@@ -6532,7 +6534,7 @@ static void kv_blocks_apply(moe_cache * mc, moe_cache::alias_pool & ap, size_t l
     }
     if (mc->v2.on) {   // pool-v2: the heap's experts in the zone leave, what it gave back is the heap's again
         size_t n_ev = 0;
-        GGML_ASSERT(pv2_sync(mc, false, &n_ev) && "kv-tail: pool-v2: an upload into the bytes taken for the KV never finished");
+        GGML_ASSERT(pv2_sync(mc, false, &n_ev, true) && "kv-tail: pool-v2: an upload into the bytes taken for the KV never finished");
         n_evict += n_ev;
     }
     if (mc->v2.shadow) { std::lock_guard<std::mutex> lk(mc->mtx); pv2_shadow_held(mc); }   // pool-v2: the shadow hears the zone (and the room)
@@ -14149,6 +14151,111 @@ static std::vector<pm_entry> pm_map_of(moe_cache * mc, BUSY busy) {
     }
     return m;
 }
+// the moves and frees of a batch as flat ops on the alloc stream, one launch per run of independent ops (an op that touches an id or bytes an earlier op of the
+// run touched starts a new run); returns the host's wait for the bank, us
+static int64_t pm_apply_ops(moe_cache * mc, const std::vector<pm_mv> & list, char * base) {
+    auto & v = mc->v2;
+    int64_t t_bank = 0;
+    int bk = g_pm.bank; g_pm.bank = (bk + 1) % pm_dev::NB;
+    { const int64_t tb = ggml_time_us(); ggml_backend_event_synchronize(g_pm.bank_ev[bk]); t_bank += ggml_time_us() - tb; }   // this bank's last ops ran
+    pm_mv * ops = g_pm.ops + (size_t) bk * pm_dev::NOPS; const pm_mv * ops_dev = g_pm.ops_dev + (size_t) bk * pm_dev::NOPS;
+    uint32_t n0 = 0, n = 0;   // the open run: ops[n0, n)
+    std::set<int32_t> ids; std::vector<std::pair<uint64_t, uint64_t>> spans;   // what the open run touched
+    auto flush = [&]() { if (n > n0) { g_pm.apply(g_pm.be, ops_dev + n0, n - n0, base, g_pm.tbl_dev, v.E); } n0 = n; ids.clear(); spans.clear(); };
+    auto hits = [&](uint64_t a, uint64_t len) { for (const auto & sp : spans) { if (a < sp.first + sp.second && sp.first < a + len) { return true; } } return false; };
+    for (const pm_mv & op : list) {
+        const bool dep = (op.id >= 0 && ids.count(op.id)) || (op.n && (hits(op.from, op.n) || hits(op.to, op.n)));
+        if (dep) { flush(); }
+        if (n == pm_dev::NOPS) {   // the bank is full: run what it holds, wait for it (rare: a batch of more than NOPS moves and frees)
+            flush(); ggml_backend_event_record(g_pm.bank_ev[bk], g_pm.be); ggml_backend_event_synchronize(g_pm.bank_ev[bk]); n0 = n = 0;
+        }
+        ops[n++] = op;
+        if (op.id >= 0) { ids.insert(op.id); }
+        if (op.n) { spans.push_back({ op.from, op.n }); spans.push_back({ op.to, op.n }); }
+    }
+    flush();
+    if (n == 0) { g_pm.apply(g_pm.be, nullptr, 0, base, g_pm.tbl_dev, v.E); }   // no ops: the ring still waits for the alloc (the uploads land where it chose)
+    ggml_backend_event_record(g_pm.bank_ev[bk], g_pm.be);
+    return t_bank;
+}
+// user 2026-11-22 (the card moves, nothing hot leaves for a stretch): the residents of a stretch the KV takes [a, b) move on the card, hottest first, each into
+// free bytes or the place of the coldest same-size expert colder than it outside the stretch (the alloc kernel picks, its apply kernel copies and writes
+// the table); ids keeps those with no such place, they leave as before. Cache lock held; the KV's writes into the stretch come after the moves ran.
+static void pm_relocate(moe_cache * mc, size_t a, size_t b, std::vector<int32_t> & ids) {
+    auto & v = mc->v2;
+    static const bool on = [] { const char * x = moe_opt("kv-move"); const char * g = moe_opt("gpu-alloc"); return (!x || atoi(x) != 0) && (!g || atoi(g) != 0); }();
+    if (!on || ids.empty() || v.H != v.M || !pm_setup(mc)) { return; }
+    auto busy = [&](int32_t id) {
+        const layer_state & lq = mc->layers[(size_t) (id / v.E)]; const int32_t x = id % v.E;
+        return lq.slot_in_flight[(size_t) x] || lq.queued[(size_t) x] || lq.at[(size_t) x] < 0;
+    };
+    auto start_of = [&](int32_t id) { const layer_state & lq = mc->layers[(size_t) (id / v.E)]; return (size_t) lq.at[(size_t) (id % v.E)] * lq.v2u; };
+    std::vector<std::pair<int64_t, int32_t>> order;   // main-heap residents only, hottest first
+    std::vector<int32_t> keep;
+    for (int32_t id : ids) {
+        auto it = mc->layers[(size_t) (id / v.E)].at[(size_t) (id % v.E)] >= 0 ? v.main.res.find(start_of(id)) : v.main.res.end();
+        if (it == v.main.res.end() || it->second.id != id || busy(id)) { keep.push_back(id); continue; }
+        order.push_back({ it->second.heat, id });
+    }
+    std::stable_sort(order.begin(), order.end(), [](const auto & x, const auto & y) { return x.first > y.first; });
+    char * base = (char *) ggml_backend_buffer_get_base(mc->alias[v.ap_idx].buf);
+    size_t n_mv = 0, n_fr = 0, n_no = 0; double b_mv = 0.0;
+    const int64_t t0 = ggml_time_us();
+    for (size_t i0 = 0; i0 < order.size(); i0 += g_pm.max_rq) {
+        std::vector<pm_entry> m = pm_map_of(mc, busy);
+        if (m.empty() || m.size() > g_pm.cap) { for (size_t i = i0; i < order.size(); ++i) { keep.push_back(order[i].second); } break; }
+        for (pm_entry & e : m) {   // the stretch is no target: its free bytes held, its experts pinned
+            if (e.off < b && e.off + e.size > a) { if (e.type == PM_FREE) { e.type = PM_KV; } e.flags |= PM_PIN; }
+        }
+        uint32_t cnt = (uint32_t) m.size();
+        g_pm.io(g_pm.be, g_pm.v_dev, m.data(), m.size() * sizeof(pm_entry), 1);
+        g_pm.io(g_pm.be, g_pm.cnt_dev, &cnt, sizeof(cnt), 1);
+        const uint32_t k = (uint32_t) std::min<size_t>(order.size() - i0, g_pm.max_rq);
+        pm_result * const rs = g_pm.rs;
+        for (uint32_t j = 0; j < k; ++j) {
+            const int32_t id = order[i0 + j].second;
+            const layer_state & lq = mc->layers[(size_t) (id / v.E)];
+            g_pm.rq[j] = { lq.v2n, lq.v2u, order[i0 + j].first, id, 1 | 2 | 8 };   // pinned there for the batch, movers to free bytes only, bit 3: only a colder victim
+            rs[j].done = 0;
+        }
+        g_pm.batch(g_pm.be, g_pm.v_dev, g_pm.cnt_dev, g_pm.cap, v.main.lo, v.main.hi, g_pm.rq_dev, k, g_pm.rs_dev, base, g_pm.tbl_dev, v.E);
+        for (uint32_t j = 0; j < k; ++j) { while (__atomic_load_n(&rs[j].done, __ATOMIC_ACQUIRE) == 0) { } }
+        std::vector<pm_mv> list;
+        for (uint32_t j = 0; j < k; ++j) {
+            const int32_t id = order[i0 + j].second;
+            const pm_result & r = rs[j];
+            GGML_ASSERT(!r.overflow && "pool-v2: kv-move report overflow");
+            if (r.s == UINT64_MAX || r.n_mv) { keep.push_back(id); n_no++; continue; }   // no colder place (a window's movers: never asked for, bit 3 opens none)
+            for (uint32_t f = 0; f < r.n_fr; ++f) {
+                const int32_t vid = r.fr[f].id;
+                layer_state & lo = mc->layers[(size_t) (vid / v.E)];
+                mapsync_card_wrote(&lo.pub, vid % v.E);
+                evict_slot(mc, lo, vid % v.E);
+                pv2_out(mc, lo, vid % v.E);
+                if (vid >= 0) { list.push_back(pm_mv { r.fr[f].s, UINT64_MAX, 0, vid, 0 }); }
+                n_fr++;
+            }
+            layer_state & lo = mc->layers[(size_t) (id / v.E)];
+            const size_t from = start_of(id);
+            const pv2_res rr = pv2_drop(v.main, from);
+            const bool ok = pv2_add(v.main, (size_t) r.s, rr);
+            GGML_ASSERT(ok && "pool-v2: kv-move placed an expert onto bytes the host does not have free");
+            lo.at[(size_t) (id % v.E)] = (int32_t) (r.s / lo.v2u);
+            mapsync_card_wrote(&lo.pub, id % v.E);
+            set_table_entry(lo.pub, id % v.E, id % v.E);
+            pv2_log("kvmove", id, from, (size_t) r.s, lo.v2n);
+            list.push_back(pm_mv { from, r.s, lo.v2n, id, (uint32_t) lo.v2u });
+            n_mv++; b_mv += lo.v2n;
+        }
+        pm_apply_ops(mc, list, base);
+    }
+    ggml_backend_synchronize(g_pm.be);   // the KV's rows land in the stretch next: every copy out of it ran
+    ids.swap(keep);
+    static int said = 0;
+    if (said++ < 16) { LLAMA_LOG_WARN("pool-v2: kv-move [%.0f, %.0f) MiB: %zu experts moved on the card (%.2f GB) in %.1f ms, %zu colder ones out for them, %zu with no colder place leave\n",
+            a / 1048576.0, b / 1048576.0, n_mv, b_mv / 1e9, (ggml_time_us() - t0) / 1e3, n_fr, ids.size()); }
+    (void) n_no;
+}
 // one batch for want's experts of layer li; ahead: experts of layers still ahead in the pass may be taken
 static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t> & want, std::vector<int32_t> & placed, std::vector<int32_t> & left,
                            size_t done, size_t & wait_at, size_t & n_ev, size_t p, bool ahead, const std::function<int64_t(int32_t)> & heat_of, bool keep_dec = false) {
@@ -14234,33 +14341,15 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     for (uint32_t j = k; j < want.size(); ++j) { left.push_back(want[j]); }
     // the applies wait on the ring for the compute of every layer whose experts they free or move (cs_done counts queued layers, not finished ones)
     if (wait_at > 0) { ggml_backend_event_wait(g_pm.be, csl(mc, mc->cs_order[wait_at - 1]).cs_done_ev); }
-    {   // the batch's moves and frees as flat ops, one launch per run of independent ops (an op that touches an id or bytes an earlier op of the run touched starts a new run)
-        int bk = g_pm.bank; g_pm.bank = (bk + 1) % pm_dev::NB;
-        { const int64_t tb = ggml_time_us(); ggml_backend_event_synchronize(g_pm.bank_ev[bk]); t_bank += ggml_time_us() - tb; }   // this bank's last ops ran
-        pm_mv * ops = g_pm.ops + (size_t) bk * pm_dev::NOPS; const pm_mv * ops_dev = g_pm.ops_dev + (size_t) bk * pm_dev::NOPS;
-        uint32_t n0 = 0, n = 0;   // the open run: ops[n0, n)
-        std::set<int32_t> ids; std::vector<std::pair<uint64_t, uint64_t>> spans;   // what the open run touched
-        auto flush = [&]() { if (n > n0) { g_pm.apply(g_pm.be, ops_dev + n0, n - n0, base, g_pm.tbl_dev, v.E); } n0 = n; ids.clear(); spans.clear(); };
-        auto hits = [&](uint64_t a, uint64_t len) { for (const auto & sp : spans) { if (a < sp.first + sp.second && sp.first < a + len) { return true; } } return false; };
-        auto add = [&](const pm_mv & op) {
-            const bool dep = (op.id >= 0 && ids.count(op.id)) || (op.n && (hits(op.from, op.n) || hits(op.to, op.n)));
-            if (dep) { flush(); }
-            if (n == pm_dev::NOPS) {   // the bank is full: run what it holds, wait for it (rare: a batch of more than NOPS moves and frees)
-                flush(); ggml_backend_event_record(g_pm.bank_ev[bk], g_pm.be); ggml_backend_event_synchronize(g_pm.bank_ev[bk]); n0 = n = 0;
-            }
-            ops[n++] = op;
-            if (op.id >= 0) { ids.insert(op.id); }
-            if (op.n) { spans.push_back({ op.from, op.n }); spans.push_back({ op.to, op.n }); }
-        };
+    {
+        std::vector<pm_mv> list;
         for (uint32_t j = 0; j < k; ++j) {
             const pm_result & r = rs[j];
             if (r.s == UINT64_MAX) { continue; }
-            for (uint32_t q = 0; q < r.n_mv; ++q) { add(r.mv[q]); }
-            for (uint32_t f = 0; f < r.n_fr; ++f) { if (r.fr[f].id >= 0) { add(pm_mv { r.fr[f].s, UINT64_MAX, 0, r.fr[f].id, 0 }); } }
+            for (uint32_t q = 0; q < r.n_mv; ++q) { list.push_back(r.mv[q]); }
+            for (uint32_t f = 0; f < r.n_fr; ++f) { if (r.fr[f].id >= 0) { list.push_back(pm_mv { r.fr[f].s, UINT64_MAX, 0, r.fr[f].id, 0 }); } }
         }
-        flush();
-        if (n == 0) { g_pm.apply(g_pm.be, nullptr, 0, base, g_pm.tbl_dev, v.E); }   // no ops: the ring still waits for the alloc (the uploads land where it chose)
-        ggml_backend_event_record(g_pm.bank_ev[bk], g_pm.be);
+        t_bank += pm_apply_ops(mc, list, base);
     }
     lap(t_rest); n_r += k;
     if (++n_b % 16 == 0) { LLAMA_LOG_WARN("pool-v2: gpu-alloc host time, %lld batches of %lld allocs: map %.1f ms, send %.1f ms, bank wait %.1f ms, report wait %.1f ms, replay+apply %.1f ms; %lld moves (%lld allocs with any), %lld frees, %lld allocs in free bytes, %lld refused, map %zu entries\n",

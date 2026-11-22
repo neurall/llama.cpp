@@ -175,7 +175,7 @@ static __global__ void k_pm_cands(const pm_entry * v, const uint32_t * cnt, uint
 static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint64_t a, int32_t id, int64_t hot, int pin, int kind, pm_result * res, const pm_cands & cd) {
     const bool over = (pin & 2) == 0;   // pin bit 1: movers to free bytes only
     // pin bit 2 (user 2026-11-22, an entry planned ahead): a newcomer below the decode tier takes no expert of it (heat >= PM_TIER) and opens no window
-    const int64_t cap_hot = (pin & 4) && hot < PM_TIER ? PM_TIER : INT64_MAX;
+    const int64_t cap_hot = (pin & 8) ? hot : (pin & 4) && hot < PM_TIER ? PM_TIER : INT64_MAX;   // bit 3 (a KV stretch's resident moving out): only a victim colder than it
     pin &= 1;
     unsigned long long & sh_best = S.sh_best; unsigned long long & sh_key = S.sh_key; uint32_t & sh_idx = S.sh_idx;
     uint64_t * cov = S.cov; int64_t * cov_hot = S.cov_hot; uint32_t & n_cov = S.n_cov; uint32_t & n_mv = S.n_mv; uint32_t & n_fr = S.n_fr; uint32_t & ovf = S.ovf;
