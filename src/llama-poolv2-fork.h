@@ -720,3 +720,18 @@ static inline std::vector<pv2_ring_op> pv2_upring(size_t n_chunks, size_t slots)
     for (size_t c = 0; c < n_chunks; ++c) { r.push_back({ c, c % slots, c >= slots ? (int64_t) (c - slots) : -1 }); }
     return r;
 }
+
+// Expert-range launches (user 2026-11-22: unpin an expert once its matmul ran; K3.1's VRAM barely holds a layer): a layer's n experts are cut into ranges of
+// `range` experts; the matmul runs once per range (grid over the range's table entries) and an event after it unpins the range. The used experts only (used[e]
+// non-zero; an empty `used` = all) make a range; a range with none used is dropped (no launch, no upload). Ranges come back in id order.
+struct pv2_erange { int32_t e0, e1; std::vector<int32_t> ids; };   // [e0, e1) and the used experts in it
+static inline std::vector<pv2_erange> pv2_expert_ranges(int32_t n, int32_t range, const std::vector<uint8_t> & used) {
+    std::vector<pv2_erange> r;
+    if (n <= 0 || range <= 0) { return r; }
+    for (int32_t a = 0; a < n; a += range) {
+        pv2_erange g{ a, std::min(n, a + range), {} };
+        for (int32_t e = g.e0; e < g.e1; ++e) { if (used.empty() || (e < (int32_t) used.size() && used[(size_t) e])) { g.ids.push_back(e); } }
+        if (!g.ids.empty()) { r.push_back(std::move(g)); }
+    }
+    return r;
+}

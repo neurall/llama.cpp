@@ -1255,9 +1255,22 @@ static void test_upring() {
     check("upring: the first 'slots' uploads wait for nothing", pv2_upring(3, 8)[2].wait_scatter == -1);
     check("upring: no slots, no ops", pv2_upring(5, 0).empty());
 }
+static void test_eranges() {
+    auto a = pv2_expert_ranges(288, 32, {});
+    size_t n = 0; bool ok = a.size() == 9;
+    for (const auto & g : a) { ok = ok && g.e1 - g.e0 == 32 && (int) g.ids.size() == 32; n += g.ids.size(); }
+    check("eranges: 288 experts, 9 ranges of 32, every expert once", ok && n == 288);
+    auto b = pv2_expert_ranges(70, 32, {});
+    check("eranges: last range is short", b.size() == 3 && b[2].e0 == 64 && b[2].e1 == 70 && b[2].ids.size() == 6);
+    std::vector<uint8_t> u(288, 0); u[5] = u[6] = u[200] = 1;
+    auto c = pv2_expert_ranges(288, 32, u);
+    check("eranges: unused experts skipped, empty ranges dropped", c.size() == 2 && c[0].ids == std::vector<int32_t>({5, 6}) && c[1].ids == std::vector<int32_t>({200}));
+    check("eranges: no experts / no range, nothing", pv2_expert_ranges(0, 32, {}).empty() && pv2_expert_ranges(10, 0, {}).empty());
+}
 int main(int argc, char ** argv) {
     test_upchunks();
     test_upring();
+    test_eranges();
     if (argc > 1 && strcmp(argv[1], "--sim") == 0) {
         std::vector<std::string> pos;
         std::string mode = "own";
