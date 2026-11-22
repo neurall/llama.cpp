@@ -71,3 +71,4 @@ qz-noring,qwen38,1,pf14k1k,16,"-bs --moe pool-v2=1,map-ring=0",--env CUDA_VISIBL
 qc-speed,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
 qc-iq4,qn_iq4xs,2,pf12k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0
 qc-nogpu,qwen38,1,pf14k1k,16,"-bs --moe pool-v2=1,gpu-alloc=0",--env CUDA_VISIBLE_DEVICES=0
+qc-mapchk,qwen38,1,pf14k1k,16,"-bs --moe pool-v2=1,map-check=1",--env CUDA_VISIBLE_DEVICES=0
