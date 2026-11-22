@@ -10281,19 +10281,33 @@ static void ggml_backend_cuda_poolmap_alloc_fork(ggml_backend_t backend, pm_entr
 }
 void ggml_cuda_poolmap_alloc_batch_fork(cudaStream_t st, pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, const pm_req * rq_dev, uint32_t n_rq,
                                         pm_result * res_dev, char * base, int32_t * const * tables, int32_t E);
+static cudaStream_t g_pm_st_fork[GGML_CUDA_MAX_DEVICES] = {};
+static cudaEvent_t g_pm_ev_fork[GGML_CUDA_MAX_DEVICES] = {};
+static cudaStream_t ggml_cuda_poolmap_stream_fork(int device) {
+    if (!g_pm_st_fork[device]) {
+        CUDA_CHECK(cudaStreamCreateWithFlags(&g_pm_st_fork[device], cudaStreamNonBlocking));
+        CUDA_CHECK(cudaEventCreateWithFlags(&g_pm_ev_fork[device], cudaEventDisableTiming));
+    }
+    return g_pm_st_fork[device];
+}
 // a list of allocs (sizes may differ) in one launch; requests and reports in mapped memory, each report's done set last: the host goes on and reads them later
 static void ggml_backend_cuda_poolmap_alloc_batch_fork(ggml_backend_t backend, pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, const pm_req * rq_dev,
                                                        uint32_t n_rq, pm_result * res_dev, char * base, int32_t * const * tables, int32_t E) {
     ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
     ggml_cuda_set_device(ctx->device);
-    ggml_cuda_poolmap_alloc_batch_fork(ctx->stream(), v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev, base, tables, E);
+    // user 2026-11-22: the alloc runs on its own stream, not behind the ring's queued uploads; the ring waits for its moves on an event, the host for no upload
+    cudaStream_t st = ggml_cuda_poolmap_stream_fork(ctx->device);
+    ggml_cuda_poolmap_alloc_batch_fork(st, v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev, base, tables, E);
+    CUDA_CHECK(cudaEventRecord(g_pm_ev_fork[ctx->device], st));
+    CUDA_CHECK(cudaStreamWaitEvent(ctx->stream(), g_pm_ev_fork[ctx->device], 0));
 }
 // the map to and from the card (set at start and for --moe map-check=1, a debug read after every alloc): synchronous
 static void ggml_backend_cuda_poolmap_io_fork(ggml_backend_t backend, void * dev, void * host, size_t bytes, int to_dev) {
     ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
     ggml_cuda_set_device(ctx->device);
-    CUDA_CHECK(cudaMemcpyAsync(to_dev ? dev : host, to_dev ? host : dev, bytes, to_dev ? cudaMemcpyHostToDevice : cudaMemcpyDeviceToHost, ctx->stream()));
-    CUDA_CHECK(cudaStreamSynchronize(ctx->stream()));
+    cudaStream_t st = ggml_cuda_poolmap_stream_fork(ctx->device);   // ordered before the next batch on the same stream; a send waits for nothing
+    CUDA_CHECK(cudaMemcpyAsync(to_dev ? dev : host, to_dev ? host : dev, bytes, to_dev ? cudaMemcpyHostToDevice : cudaMemcpyDeviceToHost, st));
+    if (!to_dev) { CUDA_CHECK(cudaStreamSynchronize(st)); }
 }
 
 extern int ggml_cuda_fattn_force_fork;   // fattn.cu
