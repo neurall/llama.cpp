@@ -14045,7 +14045,7 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
                     ci->second = { pv2_cold_order(v.main, ls.v2n), 0 };
                     pk = t == 0 ? pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_done) : pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_any);
                 }
-                static const bool win = [] { const char * x = moe_opt("pv2-win"); return x && atoi(x) != 0; }();   // user 2026-11-22: same size only (other sizes leave gaps)
+                static const bool win = [] { const char * x = moe_opt("pv2-win"); return !x || atoi(x) != 0; }();   // last resort only: same size first (user 2026-11-22: other sizes leave gaps); with the 32 MiB landing area a size almost no layer has (Qwen3.8 IQ3_S layer 17: 3 residents, all pinned, 15 GB of other sizes takeable) finds room nowhere else and the pass aborted. --moe pv2-win=0: off
                 if (pk.s == PV2_NONE && win && !win_failed[t]) {   // --moe pv2-win=1: a window over residents of other sizes, anchored at the coldest
                     auto & ca = cold_all[t];
                     if (!rebuilt_all[t]) { ca = { pv2_cold_order(v.main), 0 }; rebuilt_all[t] = true; }   // once a call: windows see this call's placements
