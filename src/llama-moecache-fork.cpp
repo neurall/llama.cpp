@@ -2844,6 +2844,7 @@ static size_t pv2_zone_move_locked(moe_cache * mc, size_t a, size_t b, ggml_back
     static const bool kern = [] { const char * e = moe_opt("move-kernel"); return !e || atoi(e) != 0; }();
     pool_move_t mfn = kern && mbe && mreg ? (pool_move_t) ggml_backend_reg_get_proc_address(mreg, "ggml_backend_cuda_pool_move_fork") : nullptr;
     std::vector<pool_move_fork> mvk;
+    std::vector<std::pair<size_t, size_t>> mvr;   // the byte ranges the pending launch reads and writes
     for (const auto & [sc, from] : mv) {
         const pv2_res & rr = v.main.res.at(from);
         const int32_t id = rr.id;
@@ -2882,7 +2883,17 @@ static size_t pv2_zone_move_locked(moe_cache * mc, size_t a, size_t b, ggml_back
             t->nb[0] = 1; t->nb[1] = t->nb[2] = t->nb[3] = n;
         }
         ta.data = base + from; tb.data = base + to;
-        if (mfn) { mvk.push_back({ (const char *) ta.data, (char *) tb.data, n, (int32_t *) lo.pub.dev_table->data, e, (int32_t) (to / u) }); }
+        if (mfn) {
+            // one launch runs its moves as parallel blocks: a move whose bytes overlap an earlier move's of the same launch (its destination was that one's source,
+            // or it reads what that one writes) goes into the next launch, which the stream orders after this one
+            auto hit = [&](size_t x0, size_t x1) { for (const auto & r : mvr) { if (x0 < r.second && r.first < x1) { return true; } } return false; };
+            if (hit(from, from + n) || hit(to, to + n)) {
+                if (!mvk.empty() && !mfn(mbe, mvk.data(), mvk.size())) { GGML_ABORT("pool-v2: the move kernel refused %zu moves", mvk.size()); }
+                mvk.clear(); mvr.clear();
+            }
+            mvr.push_back({ from, from + n }); mvr.push_back({ to, to + n });
+            mvk.push_back({ (const char *) ta.data, (char *) tb.data, n, (int32_t *) lo.pub.dev_table->data, e, (int32_t) (to / u) });
+        }
         else { ggml_backend_tensor_copy(&ta, &tb); }
         const pv2_res r = pv2_drop(v.main, from);
         const bool ok = pv2_add(v.main, to, r);
