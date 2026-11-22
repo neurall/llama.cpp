@@ -1447,8 +1447,8 @@ static bool                g_cs_pred_built = false;    // the graph that runs ca
 static double              g_cs_k_pass = 0.0;          // the running cstream pass's prediction multiplier (cs_begin): 0 = the stream, every expert of an entry's range
 // user 2026-11-21: keep operation timestamps so a run shows where the time goes and what it waits on. optime_add(op, us) from scoped timers; llama_moe_cache_prompt_call_fork
 // prints the prompt call's table (ms, % of its wall time) and the decode steps' table every 128 steps, then clears them.
-enum optime_op { OP_SYNC, OP_TAKE_WAIT, OP_SWITCH, OP_PLAN_V2, OP_FILL_FREE, OP_REHEAT, OP_SWAP, OP_ZONE_SORT, OP_N };
-static const char * const optime_name[OP_N] = { "heap sync (lend/zone)", "range take wait", "switch to decode", "stream plan", "free-window fill", "reheat refill", "decode swap pick", "zone sort" };
+enum optime_op { OP_SYNC, OP_TAKE_WAIT, OP_SWITCH, OP_PLAN_V2, OP_FILL_FREE, OP_REHEAT, OP_SWAP, OP_ZONE_SORT, OP_SWAP_COLD, OP_N };
+static const char * const optime_name[OP_N] = { "heap sync (lend/zone)", "range take wait", "switch to decode", "stream plan", "free-window fill", "reheat refill", "decode swap pick", "zone sort", "swap cold-map rebuild" };
 static std::atomic<uint64_t> g_optime_us[OP_N];
 static std::atomic<uint64_t> g_optime_n[OP_N];
 struct optime_t { optime_op op; int64_t t0; explicit optime_t(optime_op o) : op(o), t0(ggml_time_us()) {} ~optime_t() { g_optime_us[op] += (uint64_t) (ggml_time_us() - t0); g_optime_n[op]++; } };
@@ -17050,7 +17050,13 @@ void llama_moe_cache_step_fork() {
                     static std::map<std::pair<size_t, size_t>, std::vector<std::tuple<int64_t, size_t, int32_t>>> cold;   // (bytes, unit) -> (decode score, start, id), coldest first
                     static std::map<std::pair<size_t, size_t>, size_t> cur;
                     static uint64_t cold_step = UINT64_MAX;
-                    if (cold_step != mc->n_steps) {
+                    // rebuilt every N steps (--moe pv2-cold-every=N, default 16; 1: every step as before): entries gone stale are skipped by still_ok, a score
+                    // N steps old ranks the victims (a rebuild walks and sorts every resident: on the decode thread between tokens)
+                    static const uint64_t cold_every = [] { const char * x = moe_opt("pv2-cold-every"); return (uint64_t) (x ? std::max(1, atoi(x)) : 16); }();
+                    auto ce = cold.find({ ls.v2n, ls.v2u });
+                    const bool spent = ce != cold.end() && cur[{ ls.v2n, ls.v2u }] >= ce->second.size();
+                    if (cold_step == UINT64_MAX || mc->n_steps >= cold_step + cold_every || mc->n_steps < cold_step || spent) {
+                        optime_t _oc(OP_SWAP_COLD);
                         cold.clear(); cur.clear(); cold_step = mc->n_steps;
                         for (const auto & [x, r] : mc->v2.main.res) {
                             if (r.id < 0 || r.pin) { continue; }
