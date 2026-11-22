@@ -104,7 +104,7 @@ int main() {
         for (uint32_t j = 0; j < k; ++j) { rq[j] = { 10, 10, (int64_t) (100000 + j), (int32_t) (ne + j), 1, 0 }; }
         memset(rs, 0, k * sizeof(pm_result));
         cudaEventRecord(e0);
-        if (getenv("PM_ALLOC_ONLY")) { k_pm_alloc<<<1, PM_T>>>(v2, c2, cap2, h.lo, h.hi, rq_dev, k, rs_dev, nullptr, nullptr); } else { ggml_cuda_poolmap_alloc_batch_fork(0, v2, c2, cap2, h.lo, h.hi, rq_dev, k, rs_dev, nullptr, nullptr, 1, 0, nullptr, g_scr ? scr2 : nullptr); }
+        if (getenv("PM_ALLOC_ONLY")) { k_pm_alloc<<<1, PM_T>>>(v2, c2, cap2, h.lo, h.hi, rq_dev, k, rs_dev, nullptr, nullptr, cap2); } else { ggml_cuda_poolmap_alloc_batch_fork(0, v2, c2, cap2, h.lo, h.hi, rq_dev, k, rs_dev, nullptr, nullptr, 1, 0, nullptr, g_scr ? scr2 : nullptr); }
         cudaEventRecord(e1);
         CUDA_CHECK(cudaDeviceSynchronize());
         float ms; cudaEventElapsedTime(&ms, e0, e1);

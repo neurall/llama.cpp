@@ -358,10 +358,10 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
 // user 2026-11-22: the host asks for a list of allocs (sizes may differ) in one launch and goes on; each gets its report, in order (later ones see the
 // earlier ones' map)
 static __global__ void __launch_bounds__(PM_T) k_pm_alloc(pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, const pm_req * rq, uint32_t n_rq, pm_result * res,
-                                                         const int64_t * ckey, const uint64_t * cval) {
+                                                         const int64_t * ckey, const uint64_t * cval, uint32_t n_cands) {
     __shared__ pm_shared S;
     pm_ctx c = { v, cnt, cap, lo, hi };
-    const pm_cands cd = { ckey, cval, cap };
+    const pm_cands cd = { ckey, cval, n_cands };
     if (threadIdx.x == 0) { S.cur = 0; S.nofree = 0; S.stale = 0; }
     for (uint32_t j = threadIdx.x; j < PM_NCLS; j += PM_T) { S.ccur[j] = UINT32_MAX; }
     __syncthreads();
@@ -402,19 +402,21 @@ static __global__ void k_pm_apply(const pm_result * resv, char * base, int32_t *
 // ev (optional): the alloc runs on st, the applies on st_apply after it (the table writes stay in order with that stream's table flushes and uploads)
 void ggml_cuda_poolmap_alloc_batch_fork(cudaStream_t st, pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, const pm_req * rq_dev, uint32_t n_rq,
                                         pm_result * res_dev, char * base, int32_t * const * tables, int32_t E, cudaStream_t st_apply = 0, cudaEvent_t ev = nullptr,
-                                        void * scratch = nullptr) {
+                                        void * scratch = nullptr, uint32_t n_sort = 0) {   // n_sort: the map's entry count as the host sent it (0: cap); the sort covers only those
     if (n_rq == 0) { return; }
     int64_t * ckey = nullptr; uint64_t * cval = nullptr;
     if (scratch && n_rq > 1) {   // scratch: pm_scratch_bytes(cap) bytes; the takeable experts per size class, sorted by heat
         int64_t * k0 = (int64_t *) scratch; ckey = k0 + cap; uint64_t * v0 = (uint64_t *) (ckey + cap); cval = v0 + cap;
         void * tmp = cval + cap; size_t tb = 0;
-        CUDA_CHECK(cub::DeviceRadixSort::SortPairs(nullptr, tb, k0, ckey, v0, cval, (int) cap, 0, 64, st));
+        const uint32_t ns = n_sort && n_sort < cap ? n_sort : cap;
+        CUDA_CHECK(cub::DeviceRadixSort::SortPairs(nullptr, tb, k0, ckey, v0, cval, (int) ns, 0, 64, st));
         if (tb > ((size_t) 4 << 20)) { fprintf(stderr, "pool-map: the sort needs %zu bytes of scratch, %zu there\n", tb, (size_t) 4 << 20); abort(); }
-        k_pm_cands<<<(cap + 255) / 256, 256, 0, st>>>(v, cnt, cap, rq_dev, n_rq, k0, v0);
+        k_pm_cands<<<(ns + 255) / 256, 256, 0, st>>>(v, cnt, ns, rq_dev, n_rq, k0, v0);
         CUDA_CHECK(cudaGetLastError());
-        CUDA_CHECK(cub::DeviceRadixSort::SortPairs(tmp, tb, k0, ckey, v0, cval, (int) cap, 0, 64, st));
+        CUDA_CHECK(cub::DeviceRadixSort::SortPairs(tmp, tb, k0, ckey, v0, cval, (int) ns, 0, 64, st));
+        n_sort = ns;
     }
-    k_pm_alloc<<<1, PM_T, 0, st>>>(v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev, ckey, cval);
+    k_pm_alloc<<<1, PM_T, 0, st>>>(v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev, ckey, cval, n_sort ? n_sort : cap);
     CUDA_CHECK(cudaGetLastError());
     if (ev) { CUDA_CHECK(cudaEventRecord(ev, st)); }
     if (!st_apply && ev) { return; }   // the caller queues the applies itself (ggml_cuda_poolmap_apply_fork) once it knows what they wait for

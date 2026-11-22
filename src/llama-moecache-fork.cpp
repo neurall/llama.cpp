@@ -14097,7 +14097,7 @@ static void pv2_pin_entry(moe_cache * mc, size_t q, bool pin) {   // cache lock 
 struct pm_dev {
     bool tried = false, ok = false;
     ggml_backend_t be = nullptr;
-    void (*batch)(ggml_backend_t, pm_entry *, uint32_t *, uint32_t, uint64_t, uint64_t, const pm_req *, uint32_t, pm_result *, char *, int32_t * const *, int32_t) = nullptr;
+    void (*batch)(ggml_backend_t, pm_entry *, uint32_t *, uint32_t, uint64_t, uint64_t, const pm_req *, uint32_t, pm_result *, char *, int32_t * const *, int32_t, uint32_t) = nullptr;   // last: the map's count for the sort (0: cap)
     void (*io)(ggml_backend_t, void *, void *, size_t, int) = nullptr;
     void (*apply)(ggml_backend_t, const pm_mv *, uint32_t, char *, int32_t * const *, int32_t) = nullptr;
     ggml_backend_buffer_t buf = nullptr;   // the map vector + its count on the card
@@ -14220,7 +14220,7 @@ static void pm_relocate(moe_cache * mc, size_t a, size_t b, std::vector<int32_t>
             g_pm.rq[j] = { lq.v2n, lq.v2u, order[i0 + j].first, id, 1 | 2 | 8 };   // pinned there for the batch, movers to free bytes only, bit 3: only a colder victim
             rs[j].done = 0;
         }
-        g_pm.batch(g_pm.be, g_pm.v_dev, g_pm.cnt_dev, g_pm.cap, v.main.lo, v.main.hi, g_pm.rq_dev, k, g_pm.rs_dev, base, g_pm.tbl_dev, v.E);
+        g_pm.batch(g_pm.be, g_pm.v_dev, g_pm.cnt_dev, g_pm.cap, v.main.lo, v.main.hi, g_pm.rq_dev, k, g_pm.rs_dev, base, g_pm.tbl_dev, v.E, 0);
         for (uint32_t j = 0; j < k; ++j) { while (__atomic_load_n(&rs[j].done, __ATOMIC_ACQUIRE) == 0) { } }
         std::vector<pm_mv> list;
         for (uint32_t j = 0; j < k; ++j) {
@@ -14298,7 +14298,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
         rs[j].done = 0;
     }
     char * base = (char *) ggml_backend_buffer_get_base(mc->alias[v.ap_idx].buf);
-    g_pm.batch(g_pm.be, g_pm.v_dev, g_pm.cnt_dev, g_pm.cap, v.main.lo, v.main.hi, g_pm.rq_dev, k, rs_dev, base, g_pm.tbl_dev, v.E);
+    g_pm.batch(g_pm.be, g_pm.v_dev, g_pm.cnt_dev, g_pm.cap, v.main.lo, v.main.hi, g_pm.rq_dev, k, rs_dev, base, g_pm.tbl_dev, v.E, cnt);
     for (uint32_t j = 0; j < k; ++j) { while (__atomic_load_n(&rs[j].done, __ATOMIC_ACQUIRE) == 0) { } }   // bell style: the reports land in mapped memory
     lap(t_spin);
     for (uint32_t j = 0; j < k; ++j) {
