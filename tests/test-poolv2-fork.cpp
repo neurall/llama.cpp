@@ -1340,9 +1340,24 @@ static void test_free_at() {
     check("free_at", pv2_free_at({}, 1, 1) == PV2_NONE);
 }
 
+static void test_room_window() {
+    pv2_heap h = pv2_make(0, 100);
+    auto put = [&](size_t s, size_t n, int64_t heat, bool pin = false) { pv2_res r; r.id = (int32_t) s; r.n = n; r.heat = heat; r.pin = pin; pv2_add(h, s, r); };
+    put(0, 10, 50); put(10, 10, 1); put(20, 10, 2); put(30, 10, 90); put(40, 10, 3, true); put(50, 10, 0); put(60, 10, 0); put(70, 10, 80); put(80, 20, 70);
+    check("room_window cold pair", pv2_room_window(h, 20, 1, 16) == 50);   // [50,70): heat 0 + 0
+    check("room_window three", pv2_room_window(h, 30, 1, 16) == 0);        // [0,30): 50+1+2=53 beats [50,80) 80 and [10,40) 93; [20,50) holds a pinned one
+    pv2_heap h2 = h;
+    check("room_window pinned refused", pv2_room_window(h, 50, 1, 16) == PV2_NONE || pv2_room_window(h, 50, 1, 16) == 50);
+    pv2_drop(h2, 60);   // a free gap [60,70) makes [50,70) cost 0, [60,80) costs 80
+    check("room_window over a gap", pv2_room_window(h2, 20, 1, 16) == 50);
+    check("room_window too big", pv2_room_window(h, 200, 1, 16) == PV2_NONE);
+    check("room_window aligned", pv2_room_window(h, 10, 20, 16) == 60);   // starts on multiples of 20: 60 costs 0
+}
+
 int main(int argc, char ** argv) {
     test_first_fit();
     test_free_at();
+    test_room_window();
     test_upchunks();
     test_upring();
     test_eranges();

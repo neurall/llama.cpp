@@ -807,6 +807,39 @@ static inline pv2_pick pv2_cold_window(const pv2_heap & h, const std::vector<pv2
 // and the zone sort). gaps: (start, length) by address; want: each newcomer's bytes and unit. One cursor per (bytes, unit) over the gaps, which only shrink,
 // so the walk is linear: 2803 nearest-target picks held the cache lock 230 ms before a 15.5k prompt's first token (Qwen3.8 one card). PV2_NONE: no gap holds it.
 struct pv2_ff_t { size_t n, u; };
+// user 2026-11-22: room for a working chunk (a graph's memory) or a layer's KV of n bytes (start a multiple of a) without a stretch: a window anchored at a free
+// extent or at one of the k coldest residents; what lies in it moves over colder residents elsewhere (pv2_zone_move) or leaves. Its cost is the heat of the
+// residents it covers (free bytes cost 0); a window over a pinned resident, a held stretch or past the heap is refused. PV2_NONE: none of the anchors fits
+static inline size_t pv2_room_window(const pv2_heap & h, size_t n, size_t a, size_t k) {
+    a = std::max<size_t>(1, a);
+    std::vector<size_t> anchors;
+    for (const auto & [gs, gn] : h.gaps) { anchors.push_back(gs); }
+    std::vector<std::pair<int64_t, size_t>> cold;
+    for (const auto & [x, r] : h.res) { if (!r.pin && r.id != PV2_HOLD) { cold.push_back({ r.heat, x }); } }
+    const size_t kk = std::min(k, cold.size());
+    std::partial_sort(cold.begin(), cold.begin() + kk, cold.end());
+    for (size_t i = 0; i < kk; ++i) { anchors.push_back(cold[i].second); }
+    size_t best = PV2_NONE; int64_t best_cost = std::numeric_limits<int64_t>::max();
+    for (size_t s0 : anchors) {
+        const size_t s = (s0 + a - 1) / a * a;
+        if (s < h.lo || s + n > h.hi) { continue; }
+        // the window [s, s + n) must be tiled by free extents and unpinned residents only
+        int64_t cost = 0; size_t at = s; bool ok = true;
+        while (ok && at < s + n) {
+            auto g = h.gaps.upper_bound(at);
+            if (g != h.gaps.begin() && std::prev(g)->first + std::prev(g)->second > at) { at = std::prev(g)->first + std::prev(g)->second; continue; }
+            auto r = h.res.upper_bound(at);
+            if (r == h.res.begin()) { ok = false; break; }
+            --r;
+            if (r->first + r->second.n <= at || r->second.pin || r->second.id == PV2_HOLD) { ok = false; break; }
+            cost += std::max<int64_t>(0, r->second.heat);
+            at = r->first + r->second.n;
+        }
+        if (ok && cost < best_cost) { best_cost = cost; best = s; }
+    }
+    return best;
+}
+
 // the first free extent of h that holds n bytes at a multiple of u (insert without heat placement: free bytes first, else one coldest victim)
 static inline size_t pv2_free_at(const std::map<size_t, size_t> & gaps, size_t n, size_t u) {
     u = std::max<size_t>(1, u);
