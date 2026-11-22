@@ -5,6 +5,7 @@
 //          pool of one RTX 3090); --heat: what drives the placement during a prompt: the request's own decode heat (default), the previous request's, or
 //          the map a release ships (the engine cannot know the request's own until the switch, where the refill uses it)
 #include "../src/llama-poolv2-fork.h"
+#include "../src/llama-poolmap-fork.h"
 #include "../src/llama-poolalloc-fork.h"   // poolx_block_class: today's block bytes, to name the types behind the log's size classes
 
 #include <array>
@@ -1570,6 +1571,22 @@ static void test_alloc_report() {
     check("alloc report: moves and frees seen", done > 500 && moved > 50 && freed > 50);
 }
 
+static void test_poolmap_convert() {
+    std::mt19937 rng(77);
+    int bad = 0;
+    for (int it = 0; it < 2000; ++it) {
+        pv2_heap h = pv2t_random(rng, 40, 15, 20, 15, 10);
+        const auto v = pm_from_heap(h);
+        if (v.empty() || !pm_canonical(v, h.lo, h.hi)) { bad++; continue; }
+        if (!pv2t_same(pm_to_heap(v, h.lo, h.hi), h)) { bad++; continue; }
+        // the reference alloc on the map form gives the same map as on the heap
+        pv2_heap a = h, b = pm_to_heap(v, h.lo, h.hi);
+        const auto ra = pv2_alloc_do(a, 20, 10, 9999, 3, true), rb = pv2_alloc_do(b, 20, 10, 9999, 3, true);
+        if (ra.s != rb.s || !pm_same(pm_from_heap(a), pm_from_heap(b)) || !pm_canonical(pm_from_heap(a), h.lo, h.hi)) { bad++; }
+    }
+    check("poolmap: heap <-> map round trip, canonical, same alloc", bad == 0);
+}
+
 int main(int argc, char ** argv) {
     test_first_fit();
     test_free_at();
@@ -1580,6 +1597,7 @@ int main(int argc, char ** argv) {
     test_defrag_cases();
     test_defrag_random();
     test_alloc_report();
+    test_poolmap_convert();
     test_upchunks();
     test_upring();
     test_eranges();
