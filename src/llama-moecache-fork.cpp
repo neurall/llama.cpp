@@ -2904,6 +2904,8 @@ static size_t pv2_zone_move_locked(moe_cache * mc, size_t a, size_t b, ggml_back
         n_move++; b_move += (double) n;
     }
     if (mfn && !mvk.empty() && !mfn(mbe, mvk.data(), mvk.size())) { GGML_ABORT("pool-v2: the move kernel refused %zu moves", mvk.size()); }
+    // the launch only queues: an upload the host starts next into a vacated source (or a read of a destination) must not run before it. The host copy path returned finished
+    if (mfn && n_move > 0 && !be) { ggml_backend_synchronize(mbe); }
     static int logged = 0;
     if (logged++ < 24) {
         LLAMA_LOG_WARN("moe-cache: pool-v2: zone move before [%.0f, %.0f) MiB is taken: %zu of %zu experts moved out (%.2f GB, %zu into free gaps, the rest over colder ones)\n",
