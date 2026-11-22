@@ -33,8 +33,20 @@ static_assert(sizeof(pm_entry) == 40, "pm_entry layout is shared with the kernel
 struct pm_mv { uint64_t from, to, n; int32_t id; uint32_t u; };   // u: the mover's unit (its table entry = to / u)
 struct pm_fr { uint64_t s, n; int32_t id; int32_t pad; };
 static constexpr int PM_MAX_MV = 64, PM_MAX_FR = 128;
-// the card's scratch behind the map's count (map buffer: cap entries, 256 bytes for the count, then this): the batch's takeable experts sorted by heat
-static inline size_t pm_scratch_bytes(uint32_t cap) { return (size_t) cap * 4 * 8 + ((size_t) 4 << 20); }
+// user 2026-11-22: one list per size class on the card, kept in order (heat, then address; coldest at the head) by every change, never sorted whole:
+// a take pops the head, a leaving expert's element is marked dead in place (found by binary search), a newcomer waits in its class's pending buffer and
+// the pending ones merge into the list in one pass (each element moves once). Element: heat, and (start << 24) | (id << 1) | dead.
+static constexpr int PM_NC = 4;               // size classes (bytes, unit) with a list; a request of another size scans the map
+static constexpr uint32_t PM_PEND = 2048;     // a class's pending newcomers before a merge
+struct pm_le { int64_t hot; uint64_t k; };
+struct pm_cls { uint64_t n, u; uint32_t head, len, np, buf; };
+// what changed on the host since the card's map was last in step: the card's entries [a, b) become ents[e0, e0 + ne) (a diff by address, pm_diff)
+struct pm_delta { uint64_t a, b; uint32_t e0, ne; };
+// a batch's inputs besides the requests (device pointers: mapped memory). rebuild: the map was just sent whole, the lists are built from it.
+// busy: one bit per layer, its experts are taken by nobody in this batch (layers still ahead in the pass); E experts per layer
+struct pm_batch { const pm_delta * ops = nullptr; const pm_entry * ents = nullptr; const uint32_t * busy = nullptr; uint32_t n_ops = 0, rebuild = 0, E = 1, pad_ = 0; };
+// the card's scratch behind the map's count (map buffer: cap entries, 256 bytes for the count, then this): classes, two list buffers a class, pending, prefix
+static inline size_t pm_scratch_bytes(uint32_t cap) { return 4096 + (size_t) 2 * PM_NC * cap * sizeof(pm_le) + (size_t) PM_NC * PM_PEND * sizeof(pm_le) + ((size_t) cap + 1) * 4; }
 struct pm_req { uint64_t n = 0, a = 1; int64_t hot = 0; int32_t id = -1; int32_t pin = 1; int32_t kind = PM_ALLOC_MOE; };   // one alloc of a batch (sizes may differ): { n } asks a size only; pin bit 0: pinned, bit 1: movers to free bytes only; kind optional
 struct pm_result {
     uint64_t s;          // the new area, UINT64_MAX: none
@@ -68,13 +80,16 @@ static inline std::vector<pm_entry> pm_from_heap(const pv2_heap & h) {
     }
     return v;
 }
+static inline pv2_res pm_res_of(const pm_entry & e) {
+    pv2_res r; r.n = e.size; r.heat = e.hot; r.u = e.u ? e.u : 1; r.pin = (e.flags & PM_PIN) != 0; r.mov = (e.flags & PM_MOV) != 0; r.kv = e.type == PM_KV;
+    r.id = e.type == PM_MOE ? e.id : PV2_HOLD;
+    return r;
+}
 static inline pv2_heap pm_to_heap(const std::vector<pm_entry> & v, size_t lo, size_t hi) {
     pv2_heap h = pv2_make(lo, hi);
     for (const pm_entry & e : v) {
         if (e.type == PM_FREE) { continue; }
-        pv2_res r; r.n = e.size; r.heat = e.hot; r.u = e.u ? e.u : 1; r.pin = (e.flags & PM_PIN) != 0; r.mov = (e.flags & PM_MOV) != 0; r.kv = e.type == PM_KV;
-        r.id = e.type == PM_MOE ? e.id : PV2_HOLD;
-        pv2_add(h, e.off, r);
+        pv2_add(h, e.off, pm_res_of(e));
     }
     return h;
 }
@@ -142,6 +157,35 @@ struct pm_queue {
     }
     void forget(uint64_t p) { at.erase(p & ~PM_FAKE); }
 };
+
+// the card's map A in step with the host's B: runs of entries that differ, each [a, b) the same bytes on both sides (both tile the pool). Entries are the
+// same when every field is (heat and pins included: they order and gate the lists)
+static inline bool pm_eq(const pm_entry & x, const pm_entry & y) { return x.off == y.off && x.size == y.size && x.hot == y.hot && x.id == y.id && x.u == y.u && x.type == y.type && x.flags == y.flags; }
+static inline void pm_diff(const std::vector<pm_entry> & A, const std::vector<pm_entry> & B, std::vector<pm_delta> & ops, std::vector<pm_entry> & ents) {
+    ops.clear(); ents.clear();
+    size_t i = 0, j = 0;
+    while (i < A.size() && j < B.size()) {
+        if (pm_eq(A[i], B[j])) { ++i; ++j; continue; }
+        const size_t i0 = i, j0 = j;
+        while (true) {   // to the next boundary both share, then on while the entries there still differ
+            uint64_t ea = A[i].off + A[i].size, eb = B[j].off + B[j].size;
+            while (ea != eb) { if (ea < eb) { ++i; ea = A[i].off + A[i].size; } else { ++j; eb = B[j].off + B[j].size; } }
+            ++i; ++j;
+            if (i == A.size() || j == B.size() || pm_eq(A[i], B[j])) { break; }
+        }
+        ops.push_back({ A[i0].off, A[i - 1].off + A[i - 1].size, (uint32_t) ents.size(), (uint32_t) (j - j0) });
+        ents.insert(ents.end(), B.begin() + j0, B.begin() + j);
+    }
+}
+
+// the host's model of the card's map takes a diff as the card does (pm_apply_delta): each run's residents go, the new entries' residents come
+static inline bool pm_heap_delta(pv2_heap & h, const std::vector<pm_delta> & ops, const std::vector<pm_entry> & ents) {
+    for (const pm_delta & d : ops) {
+        for (auto it = h.res.lower_bound(d.a); it != h.res.end() && it->first < d.b; ) { const size_t x = it->first; ++it; pv2_drop(h, x); }   // runs start and end on shared boundaries: nothing crosses a
+        for (uint32_t i = 0; i < d.ne; ++i) { const pm_entry & e = ents[d.e0 + i]; if (e.type != PM_FREE && !pv2_add(h, e.off, pm_res_of(e))) { return false; } }
+    }
+    return true;
+}
 
 // the kernel's report as the host's pv2_alloc_result
 static inline pv2_alloc_result pm_report(const pm_result & r) {

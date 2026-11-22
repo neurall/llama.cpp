@@ -14097,15 +14097,18 @@ static void pv2_pin_entry(moe_cache * mc, size_t q, bool pin) {   // cache lock 
 struct pm_dev {
     bool tried = false, ok = false;
     ggml_backend_t be = nullptr;
-    void (*batch)(ggml_backend_t, pm_entry *, uint32_t *, uint32_t, uint64_t, uint64_t, const pm_req *, uint32_t, pm_result *, char *, int32_t * const *, int32_t, uint32_t) = nullptr;   // last: the map's count for the sort (0: cap)
+    void (*batch)(ggml_backend_t, pm_entry *, uint32_t *, uint32_t, uint64_t, uint64_t, const pm_req *, uint32_t, pm_result *, char *, int32_t * const *, int32_t, pm_batch) = nullptr;   // last: the host's changes, busy layers (pm_sync)
     void (*io)(ggml_backend_t, void *, void *, size_t, int) = nullptr;
     void (*apply)(ggml_backend_t, const pm_mv *, uint32_t, char *, int32_t * const *, int32_t) = nullptr;
     ggml_backend_buffer_t buf = nullptr;   // the map vector + its count on the card
     pm_entry * v_dev = nullptr; uint32_t * cnt_dev = nullptr; uint32_t cap = 0;
     pm_req * rq = nullptr, * rq_dev = nullptr; pm_result * rs = nullptr, * rs_dev = nullptr; uint32_t max_rq = 0;
     // the applies run on the ring behind compute, long after the host moved on: each batch's ops (moves, frees) live in their own bank until they ran
-    static constexpr int NB = 4; static constexpr uint32_t NOPS = 16384; int bank = 0; ggml_backend_event_t bank_ev[NB] = {}; pm_mv * ops = nullptr, * ops_dev = nullptr;
+    static constexpr int NB = 4; static constexpr uint32_t NOPS = 16384, NDELTA = 2048; int bank = 0; ggml_backend_event_t bank_ev[NB] = {}; pm_mv * ops = nullptr, * ops_dev = nullptr;
     int32_t ** tbl = nullptr, ** tbl_dev = nullptr;
+    // user 2026-11-22: the card keeps its map and size-class lists between batches; card = the host's model of it (reports and diffs replayed)
+    bool have = false; pv2_heap card;
+    pm_delta * dops = nullptr, * dops_dev = nullptr; pm_entry * dent = nullptr, * dent_dev = nullptr; uint32_t * busy = nullptr, * busy_dev = nullptr; uint32_t n_busy = 0;
 };
 static pm_dev g_pm;
 static bool pm_setup(moe_cache * mc) {
@@ -14135,7 +14138,11 @@ static bool pm_setup(moe_cache * mc) {
     g_pm.ops = g_pm.rs ? (pm_mv *) al(pm_dev::NB * pm_dev::NOPS * sizeof(pm_mv), &d) : nullptr; g_pm.ops_dev = (pm_mv *) d;
     for (auto & e : g_pm.bank_ev) { e = ggml_backend_event_new(dev); }
     g_pm.tbl = g_pm.ops ? (int32_t **) al(mc->layers.size() * sizeof(int32_t *), &d) : nullptr; g_pm.tbl_dev = (int32_t **) d;
-    if (!g_pm.tbl) { LLAMA_LOG_WARN("moe-cache: pool-v2: gpu-alloc: no mapped memory: host picks\n"); return false; }
+    g_pm.dops = g_pm.tbl ? (pm_delta *) al(pm_dev::NDELTA * sizeof(pm_delta), &d) : nullptr; g_pm.dops_dev = (pm_delta *) d;
+    g_pm.dent = g_pm.dops ? (pm_entry *) al(pm_dev::NDELTA * sizeof(pm_entry), &d) : nullptr; g_pm.dent_dev = (pm_entry *) d;
+    g_pm.n_busy = (uint32_t) (mc->layers.size() + 31) / 32;
+    g_pm.busy = g_pm.dent ? (uint32_t *) al(g_pm.n_busy * 4, &d) : nullptr; g_pm.busy_dev = (uint32_t *) d;
+    if (!g_pm.busy) { LLAMA_LOG_WARN("moe-cache: pool-v2: gpu-alloc: no mapped memory: host picks\n"); return false; }
     for (size_t li = 0; li < mc->layers.size(); ++li) { g_pm.tbl[li] = mc->layers[li].pub.dev_table ? (int32_t *) mc->layers[li].pub.dev_table->data : nullptr; }
     LLAMA_LOG_WARN("moe-cache: pool-v2: gpu-alloc on: the card places stream experts (map of %u entries at most, %.1f MiB)\n", g_pm.cap, g_pm.cap * sizeof(pm_entry) / 1048576.0);
     g_pm.ok = true;
@@ -14152,6 +14159,43 @@ static std::vector<pm_entry> pm_map_of(moe_cache * mc, BUSY busy) {
         if (busy(e.id)) { e.flags |= PM_PIN; }
     }
     return m;
+}
+// user 2026-11-22: the card's map in step with m (the host's, pins of busy experts set) before a batch: the changes only (pm_diff), or m whole when the card
+// has none yet or more changed than NDELTA entries (the card then builds its size-class lists anew). busy_layer: a layer none of whose experts this batch
+// takes (its bit; the card's map keeps the expert unpinned). Returns the batch's inputs; pm_took replays each report on the model of the card's map
+template <typename BL>
+static pm_batch pm_sync(moe_cache * mc, const std::vector<pm_entry> & m, BL busy_layer) {
+    auto & v = mc->v2;
+    pm_batch bt; bt.E = (uint32_t) v.E; bt.busy = g_pm.busy_dev;
+    for (uint32_t w = 0; w < g_pm.n_busy; ++w) { g_pm.busy[w] = 0; }
+    for (size_t l = 0; l < mc->layers.size(); ++l) { if (busy_layer(l)) { g_pm.busy[l >> 5] |= 1u << (l & 31); } }
+    static std::vector<pm_delta> ops; static std::vector<pm_entry> ents;
+    static int said = 0; static int64_t n_full = 0, n_diff = 0, n_ent = 0;
+    const int64_t t0 = ggml_time_us();
+    if (g_pm.have) { pm_diff(pm_from_heap(g_pm.card), m, ops, ents); }
+    if (!g_pm.have || ents.size() > pm_dev::NDELTA || ops.size() > pm_dev::NDELTA) {
+        uint32_t cnt = (uint32_t) m.size();
+        g_pm.io(g_pm.be, g_pm.v_dev, (void *) m.data(), m.size() * sizeof(pm_entry), 1);
+        g_pm.io(g_pm.be, g_pm.cnt_dev, &cnt, sizeof(cnt), 1);
+        g_pm.card = pm_to_heap(m, v.main.lo, v.main.hi); g_pm.have = true;
+        bt.rebuild = 1; n_full++;
+        if (said++ < 16) { LLAMA_LOG_WARN("pool-v2: gpu-alloc map sent whole: %zu entries (%.0f KiB) in %lld us (%s)\n", m.size(), m.size() * sizeof(pm_entry) / 1024.0,
+                (long long) (ggml_time_us() - t0), n_full == 1 ? "first batch" : "more changes than a diff holds"); }
+        return bt;
+    }
+    std::copy(ops.begin(), ops.end(), g_pm.dops); std::copy(ents.begin(), ents.end(), g_pm.dent);
+    bt.ops = g_pm.dops_dev; bt.ents = g_pm.dent_dev; bt.n_ops = (uint32_t) ops.size();
+    const bool ok = pm_heap_delta(g_pm.card, ops, ents);
+    GGML_ASSERT(ok && "pool-v2: gpu-alloc: a diff the card's map model cannot take");
+    n_diff++; n_ent += (int64_t) ents.size();
+    if (said++ < 16 || n_diff % 256 == 0) { LLAMA_LOG_WARN("pool-v2: gpu-alloc map diff: %zu runs, %zu entries in %lld us (map %zu entries; %lld diffs of %.1f entries on average, %lld whole sends)\n", ops.size(), ents.size(),
+            (long long) (ggml_time_us() - t0), m.size(), (long long) n_diff, (double) n_ent / n_diff, (long long) n_full); }
+    return bt;
+}
+// a report as the card applied it, on the model of the card's map
+static void pm_took(const pm_req & q, const pm_result & r) {
+    const bool ok = pv2_alloc_apply(g_pm.card, pm_report(r), q.n, q.a ? q.a : 1, q.id, q.hot, (q.pin & 1) != 0, q.kind);
+    GGML_ASSERT(ok && "pool-v2: gpu-alloc: a report the card's map model cannot take");
 }
 // the moves and frees of a batch as flat ops on the alloc stream, one launch per run of independent ops (an op that touches an id or bytes an earlier op of the
 // run touched starts a new run); returns the host's wait for the bank, us
@@ -14209,9 +14253,7 @@ static void pm_relocate(moe_cache * mc, size_t a, size_t b, std::vector<int32_t>
         for (pm_entry & e : m) {   // the stretch is no target: its free bytes held, its experts pinned
             if (e.off < b && e.off + e.size > a) { if (e.type == PM_FREE) { e.type = PM_KV; } e.flags |= PM_PIN; }
         }
-        uint32_t cnt = (uint32_t) m.size();
-        g_pm.io(g_pm.be, g_pm.v_dev, m.data(), m.size() * sizeof(pm_entry), 1);
-        g_pm.io(g_pm.be, g_pm.cnt_dev, &cnt, sizeof(cnt), 1);
+        const pm_batch bt = pm_sync(mc, m, [](size_t) { return false; });
         const uint32_t k = (uint32_t) std::min<size_t>(order.size() - i0, g_pm.max_rq);
         pm_result * const rs = g_pm.rs;
         for (uint32_t j = 0; j < k; ++j) {
@@ -14220,8 +14262,8 @@ static void pm_relocate(moe_cache * mc, size_t a, size_t b, std::vector<int32_t>
             g_pm.rq[j] = { lq.v2n, lq.v2u, order[i0 + j].first, id, 1 | 2 | 8 };   // pinned there for the batch, movers to free bytes only, bit 3: only a colder victim
             rs[j].done = 0;
         }
-        g_pm.batch(g_pm.be, g_pm.v_dev, g_pm.cnt_dev, g_pm.cap, v.main.lo, v.main.hi, g_pm.rq_dev, k, g_pm.rs_dev, base, g_pm.tbl_dev, v.E, 0);
-        for (uint32_t j = 0; j < k; ++j) { while (__atomic_load_n(&rs[j].done, __ATOMIC_ACQUIRE) == 0) { } }
+        g_pm.batch(g_pm.be, g_pm.v_dev, g_pm.cnt_dev, g_pm.cap, v.main.lo, v.main.hi, g_pm.rq_dev, k, g_pm.rs_dev, base, g_pm.tbl_dev, v.E, bt);
+        for (uint32_t j = 0; j < k; ++j) { while (__atomic_load_n(&rs[j].done, __ATOMIC_ACQUIRE) == 0) { } pm_took(g_pm.rq[j], rs[j]); }
         std::vector<pm_mv> list;
         for (uint32_t j = 0; j < k; ++j) {
             const int32_t id = order[i0 + j].second;
@@ -14264,10 +14306,11 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
                            size_t done, size_t & wait_at, size_t & n_ev, size_t p, bool ahead, const std::function<int64_t(int32_t)> & heat_of, bool keep_dec = false) {
     auto & v = mc->v2;
     layer_state & ls = mc->layers[li];
-    auto busy = [&](int32_t id) {
-        const size_t lj = (size_t) (id / v.E); const int32_t x = id % v.E;
-        const layer_state & lq = mc->layers[lj];
-        if (lq.slot_in_flight[(size_t) x] || lq.queued[(size_t) x] || lq.at[(size_t) x] < 0) { return true; }
+    auto busy = [&](int32_t id) {   // pinned in the card's map
+        const layer_state & lq = mc->layers[(size_t) (id / v.E)]; const int32_t x = id % v.E;
+        return lq.slot_in_flight[(size_t) x] || lq.queued[(size_t) x] || lq.at[(size_t) x] < 0;
+    };
+    auto busy_layer = [&](size_t lj) {   // a layer still ahead in the pass: its bit for this batch
         const int32_t q = lj < mc->cs_pos.size() ? mc->cs_pos[lj] : -1;
         return !ahead && q >= 0 && (size_t) q >= p;
     };
@@ -14277,19 +14320,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     std::vector<pm_entry> m = pm_map_of(mc, busy);
     if (m.empty() || m.size() > g_pm.cap) { left = want; return; }
     lap(t_map);
-    uint32_t cnt = (uint32_t) m.size();
-    {   // how much of the whole-map send is new (user 2026-11-22: send changes only once the card's map is shown to match the host's): first entry that differs from the last send
-        static std::vector<pm_entry> last; static int said = 0;
-        const int64_t t0 = ggml_time_us();
-        g_pm.io(g_pm.be, g_pm.v_dev, m.data(), m.size() * sizeof(pm_entry), 1);
-        size_t i0 = 0, ns = 0;
-        while (i0 < m.size() && i0 < last.size() && pm_same({ m[i0] }, { last[i0] })) { ++i0; }
-        for (size_t i = 0; i < m.size(); ++i) { ns += i >= last.size() || !pm_same({ m[i] }, { last[i] }); }
-        if (said++ < 16) { LLAMA_LOG_WARN("pool-v2: gpu-alloc map send: %zu entries (%.0f KiB) in %lld us, first change at entry %zu, %zu entries differ from the last send\n",
-                m.size(), m.size() * sizeof(pm_entry) / 1024.0, (long long) (ggml_time_us() - t0), i0, ns); }
-        last = m;
-    }
-    g_pm.io(g_pm.be, g_pm.cnt_dev, &cnt, sizeof(cnt), 1);
+    const pm_batch bt = pm_sync(mc, m, busy_layer);
     lap(t_send);
     const uint32_t k = (uint32_t) std::min<size_t>(want.size(), g_pm.max_rq);
     pm_result * const rs = g_pm.rs, * const rs_dev = g_pm.rs_dev;
@@ -14298,11 +14329,11 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
         rs[j].done = 0;
     }
     char * base = (char *) ggml_backend_buffer_get_base(mc->alias[v.ap_idx].buf);
-    g_pm.batch(g_pm.be, g_pm.v_dev, g_pm.cnt_dev, g_pm.cap, v.main.lo, v.main.hi, g_pm.rq_dev, k, rs_dev, base, g_pm.tbl_dev, v.E, cnt);
+    g_pm.batch(g_pm.be, g_pm.v_dev, g_pm.cnt_dev, g_pm.cap, v.main.lo, v.main.hi, g_pm.rq_dev, k, rs_dev, base, g_pm.tbl_dev, v.E, bt);
     static int64_t t_first = 0, t_fc = 0;   // dev: launch to the first report (the block's wait for an SM, before any alloc ran)
     while (__atomic_load_n(&rs[0].done, __ATOMIC_ACQUIRE) == 0) { }
     { const int64_t t = ggml_time_us(); t_first += t - tq; t_fc += (int64_t) (rs[0].ns / 1000); }
-    for (uint32_t j = 0; j < k; ++j) { while (__atomic_load_n(&rs[j].done, __ATOMIC_ACQUIRE) == 0) { } }   // bell style: the reports land in mapped memory
+    for (uint32_t j = 0; j < k; ++j) { while (__atomic_load_n(&rs[j].done, __ATOMIC_ACQUIRE) == 0) { } pm_took(g_pm.rq[j], rs[j]); }   // bell style: the reports land in mapped memory
     lap(t_spin);
     for (uint32_t j = 0; j < k; ++j) {
         const int32_t e = want[j];
@@ -14373,6 +14404,14 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
         size_t d = 0;
         if (!pm_same(back, pm_from_heap(v.main), &d, false)) {   // pins differ by design (the card's copy pinned busy experts)
             GGML_ABORT("pool-v2: map-check: the card's map and the host's differ at entry %zu of %u (layer %d, %u allocs)", d, c2, ls.pub.il, k);
+        }
+        {   // every field (heat, pins, units) against the host's model of the card's map: the diffs and the lists' order rest on it
+            const std::vector<pm_entry> cm = pm_from_heap(g_pm.card);
+            for (size_t i = 0; i < cm.size() && i < back.size(); ++i) {
+                if (!pm_eq(cm[i], back[i])) { GGML_ABORT("pool-v2: map-check: entry %zu (start %llu) differs from the model of the card's map: heat %lld/%lld flags %d/%d u %u/%u", i,
+                        (unsigned long long) back[i].off, (long long) back[i].hot, (long long) cm[i].hot, back[i].flags, cm[i].flags, back[i].u, cm[i].u); }
+            }
+            if (cm.size() != back.size()) { GGML_ABORT("pool-v2: map-check: the card's map has %zu entries, its model %zu", back.size(), cm.size()); }
         }
         // the expert tables the apply kernels wrote (moved: its new start / unit, freed: -1) against the host's prediction, read back after the stream ran
         ggml_backend_synchronize(g_pm.be);

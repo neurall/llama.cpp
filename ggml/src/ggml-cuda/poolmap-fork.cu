@@ -13,7 +13,11 @@
 
 #define PM_T 1024
 
-struct pm_ctx { pm_entry * v; uint32_t * cnt; uint32_t cap; uint64_t lo, hi; };
+struct pm_lists { pm_cls * cls; uint32_t * ncls; pm_le * buf; pm_le * pend; uint32_t * pre; uint32_t cap; bool ok; };
+struct pm_ctx { pm_entry * v; uint32_t * cnt; uint32_t cap; uint64_t lo, hi; const uint32_t * busy = nullptr; uint32_t E = 1; pm_lists L = {}; };
+// a layer still ahead in the pass (busy bit): its experts are takeable by nobody in this batch, as a pinned one
+static __device__ bool pm_busy(const pm_ctx & c, int32_t id) { if (!c.busy || id < 0) { return false; } const uint32_t l = (uint32_t) id / c.E; return (c.busy[l >> 5] >> (l & 31)) & 1u; }
+static __device__ bool pm_held(const pm_ctx & c, const pm_entry & e) { return (e.flags & PM_PIN) || (e.type == PM_MOE && pm_busy(c, e.id)); }
 
 static __device__ uint64_t pm_key(int64_t hot, uint32_t idx) {
     int64_t h = hot + 2147483648ll;
@@ -56,8 +60,226 @@ static __device__ bool pm_insert(pm_ctx & c, uint32_t k, uint32_t m) {
     __syncthreads();
     return true;
 }
-// block-wide: entry i becomes free and merges with free neighbours
-static __device__ void pm_free(pm_ctx & c, uint32_t i) {
+// block-wide: index of the entry that starts at x (UINT32_MAX: none)
+static __device__ uint32_t pm_find_start(pm_ctx & c, uint64_t x, uint32_t * sh) {
+    if (threadIdx.x == 0) { *sh = UINT32_MAX; }
+    __syncthreads();
+    for (uint32_t i = threadIdx.x; i < *c.cnt; i += PM_T) { if (c.v[i].off == x) { atomicMin(sh, i); } }
+    __syncthreads();
+    const uint32_t r = *sh;
+    __syncthreads();
+    return r;
+}
+// block-wide: does [st, st + n) cover only free entries and unpinned experts? (starting at entry i0, the one that holds st or one before it)
+static __device__ bool pm_window_ok(const pm_ctx & c, uint32_t i0, uint64_t st, uint64_t n) {
+    if (st < c.lo || st + n > c.hi) { return false; }
+    const uint32_t cnt = *c.cnt;
+    uint32_t j = i0;
+    while (j < cnt && c.v[j].off + c.v[j].size <= st) { ++j; }
+    for (; j < cnt && c.v[j].off < st + n; ++j) {
+        const pm_entry & e = c.v[j];
+        if (e.type == PM_FREE) { continue; }
+        if (e.type != PM_MOE || pm_held(c, e)) { return false; }
+    }
+    return true;
+}
+
+// the batch's block-wide state
+struct pm_shared {
+    uint64_t nf_n, nf_a; uint32_t pick, pidx;   // nf: no free bytes hold nf_n bytes at a multiple of nf_a (0: not known)
+    unsigned long long sh_best, sh_key, sh_same; uint32_t sh_idx; uint64_t cov[PM_MAX_MV]; int64_t cov_hot[PM_MAX_MV]; uint32_t n_cov, n_mv, n_fr, ovf;
+    long long ph; unsigned long long pk, cn; uint32_t pp;   // a pop's pending pick; a new class found by the rebuild
+    pm_le sp[PM_PEND];   // a merge's pending newcomers, sorted here
+    typename cub::BlockScan<uint32_t, PM_T>::TempStorage scan;
+};
+
+// user 2026-11-22: the size-class lists (llama-poolmap-fork.h, pm_le). A list's live elements [head, head + len) of buffer buf are in (heat, start) order;
+// dead ones keep their keys (the order holds), a merge drops them
+static __device__ uint64_t pm_lk(const pm_entry & e) { return (e.off << 24) | ((uint64_t) ((uint32_t) e.id & 0x7fffffu) << 1); }
+static __device__ uint64_t pm_loff(uint64_t k) { return k >> 24; }
+static __device__ int32_t pm_lid(uint64_t k) { return (int32_t) ((k >> 1) & 0x7fffffu); }
+static __device__ bool pm_lless(int64_t h1, uint64_t k1, int64_t h2, uint64_t k2) { return h1 < h2 || (h1 == h2 && pm_loff(k1) < pm_loff(k2)); }
+static __device__ pm_le * pm_lb(const pm_ctx & c, int j, uint32_t b) { return c.L.buf + ((size_t) b * PM_NC + j) * c.L.cap; }
+static __device__ pm_le * pm_lp(const pm_ctx & c, int j) { return c.L.pend + (size_t) j * PM_PEND; }
+// shortcut: a class is (bytes, unit) and a request of n bytes at a multiple of a asks class (n, a); an expert of those bytes with another unit that is also a
+// multiple of a is not in that class (the server's experts of one size share one unit), its requests would miss it: give classes a unit set if that changes
+static __device__ int pm_cls_of(const pm_ctx & c, uint64_t n, uint64_t u) {
+    if (!c.L.ok) { return -1; }
+    const uint32_t m = *c.L.ncls;
+    for (uint32_t j = 0; j < m; ++j) { if (c.L.cls[j].n == n && c.L.cls[j].u == u) { return (int) j; } }
+    return -1;
+}
+static __device__ int pm_elig(const pm_ctx & c, const pm_entry & e) { return e.type == PM_MOE && !(e.flags & PM_PIN) ? pm_cls_of(c, e.size, e.u ? e.u : 1) : -1; }
+// lower bound of (h, k) in a sorted run
+static __device__ uint32_t pm_lbound(const pm_le * a, uint32_t n, int64_t h, uint64_t k) {
+    uint32_t l = 0, r = n;
+    while (l < r) { const uint32_t m = (l + r) / 2; if (pm_lless(a[m].hot, a[m].k, h, k)) { l = m + 1; } else { r = m; } }
+    return l;
+}
+// block-wide: class j's pending newcomers sorted (in shared memory) and merged with its live elements into its other buffer; each element moves once
+static __device__ void pm_merge(const pm_ctx & c, pm_shared & S, int j) {
+    __syncthreads();
+    pm_cls & C = c.L.cls[j];
+    const uint32_t np = C.np, len = C.len, head = C.head, b = C.buf;
+    __syncthreads();
+    if (np == 0 && len == 0) { return; }
+    const pm_le * src = pm_lb(c, j, b) + head; pm_le * dst = pm_lb(c, j, b ^ 1u); const pm_le * pd = pm_lp(c, j);
+    uint32_t P = 1; while (P < np) { P <<= 1; }
+    for (uint32_t i = threadIdx.x; i < P; i += PM_T) { S.sp[i] = i < np ? pd[i] : pm_le { INT64_MAX, ~0ull }; }
+    __syncthreads();
+    for (uint32_t k = 2; k <= P; k <<= 1) {   // bitonic: at most PM_PEND elements
+        for (uint32_t g = k >> 1; g > 0; g >>= 1) {
+            for (uint32_t i = threadIdx.x; i < P; i += PM_T) {
+                const uint32_t x = i ^ g;
+                if (x > i) {
+                    const pm_le p = S.sp[i], q = S.sp[x];
+                    const bool up = (i & k) == 0;
+                    if (up ? pm_lless(q.hot, q.k, p.hot, p.k) : pm_lless(p.hot, p.k, q.hot, q.k)) { S.sp[i] = q; S.sp[x] = p; }
+                }
+            }
+            __syncthreads();
+        }
+    }
+    // pre[i]: live elements before i
+    uint32_t base = 0;
+    for (uint32_t t = 0; t < len; t += PM_T) {
+        const uint32_t i = t + threadIdx.x;
+        const uint32_t live = i < len ? (uint32_t) ((src[i].k & 1u) == 0) : 0u;
+        uint32_t ex, agg;
+        cub::BlockScan<uint32_t, PM_T>(S.scan).ExclusiveSum(live, ex, agg);
+        if (i < len) { c.L.pre[i] = base + ex; }
+        base += agg;
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) { c.L.pre[len] = base; }
+    __syncthreads();
+    for (uint32_t i = threadIdx.x; i < len; i += PM_T) {
+        const pm_le e = src[i];
+        if (e.k & 1u) { continue; }
+        dst[c.L.pre[i] + pm_lbound(S.sp, np, e.hot, e.k)] = e;
+    }
+    for (uint32_t q = threadIdx.x; q < np; q += PM_T) {
+        const pm_le e = S.sp[q];
+        dst[c.L.pre[pm_lbound(src, len, e.hot, e.k)] + q] = e;
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) { C.len = base + np; C.head = 0; C.np = 0; C.buf = b ^ 1u; }
+    __syncthreads();
+}
+// block-wide: e (as it is in the map) joins its class's list (pending)
+static __device__ void pm_list_add(const pm_ctx & c, pm_shared & S, const pm_entry & e) {
+    const int j = pm_elig(c, e);
+    if (j < 0) { return; }
+    __syncthreads();
+    if (c.L.cls[j].np == PM_PEND) { pm_merge(c, S, j); }
+    if (threadIdx.x == 0) { pm_cls & C = c.L.cls[j]; pm_lp(c, j)[C.np] = { e.hot, pm_lk(e) }; C.np++; }
+    __syncthreads();
+}
+// block-wide: e (as it was in the map) leaves its class's list: dead in place, or out of the pending ones
+static __device__ void pm_list_del(const pm_ctx & c, pm_shared & S, const pm_entry & e) {
+    const int j = pm_elig(c, e);
+    if (j < 0) { return; }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        pm_cls & C = c.L.cls[j]; pm_le * a = pm_lb(c, j, C.buf) + C.head;
+        const uint32_t i = pm_lbound(a, C.len, e.hot, pm_lk(e));
+        S.pick = 0;
+        if (i < C.len && pm_loff(a[i].k) == e.off && !(a[i].k & 1u)) {
+            a[i].k |= 1u; S.pick = 1;
+            while (C.len && (a[0].k & 1u)) { ++a; C.head++; C.len--; }
+        }
+        S.sh_idx = UINT32_MAX;
+    }
+    __syncthreads();
+    if (!S.pick) {
+        const pm_le * pd = pm_lp(c, j); const uint32_t np = c.L.cls[j].np;
+        for (uint32_t q = threadIdx.x; q < np; q += PM_T) { if (pm_loff(pd[q].k) == e.off) { S.sh_idx = q; } }
+        __syncthreads();
+        if (threadIdx.x == 0 && S.sh_idx != UINT32_MAX) { pm_cls & C = c.L.cls[j]; pm_le * p = pm_lp(c, j); p[S.sh_idx] = p[C.np - 1]; C.np--; }
+    }
+    __syncthreads();
+}
+// block-wide: class j's coldest element that is takeable now (layer not busy, colder than cap_hot) leaves its list; its start, UINT64_MAX: none
+static __device__ uint64_t pm_pop(const pm_ctx & c, pm_shared & S, int j, int64_t cap_hot) {
+    __syncthreads();
+    pm_cls & C = c.L.cls[j];
+    const uint32_t len = C.len, np = C.np;
+    pm_le * a = pm_lb(c, j, C.buf) + C.head; pm_le * pd = pm_lp(c, j);
+    if (threadIdx.x == 0) { S.sh_idx = UINT32_MAX; S.ph = LLONG_MAX; S.pk = ~0ull; S.pp = UINT32_MAX; }
+    __syncthreads();
+    for (uint32_t t = 0; t < len; t += PM_T) {   // the list is in heat order: the first takeable one is its coldest
+        const uint32_t i = t + threadIdx.x;
+        if (i < len) { const pm_le e = a[i]; if (!(e.k & 1u) && e.hot < cap_hot && !pm_busy(c, pm_lid(e.k))) { atomicMin(&S.sh_idx, i); } }
+        __syncthreads();
+        const bool got = S.sh_idx != UINT32_MAX || a[t + PM_T - 1 < len ? t + PM_T - 1 : len - 1].hot >= cap_hot;
+        __syncthreads();
+        if (got) { break; }
+    }
+    for (uint32_t q = threadIdx.x; q < np; q += PM_T) { const pm_le e = pd[q]; if (e.hot < cap_hot && !pm_busy(c, pm_lid(e.k))) { atomicMin(&S.ph, (long long) e.hot); } }
+    __syncthreads();
+    for (uint32_t q = threadIdx.x; q < np; q += PM_T) { const pm_le e = pd[q]; if (e.hot == S.ph && e.hot < cap_hot && !pm_busy(c, pm_lid(e.k))) { atomicMin(&S.pk, (unsigned long long) pm_loff(e.k)); } }
+    __syncthreads();
+    for (uint32_t q = threadIdx.x; q < np; q += PM_T) { if (S.pk != ~0ull && pm_loff(pd[q].k) == S.pk) { S.pp = q; } }
+    __syncthreads();
+    uint64_t r = UINT64_MAX;
+    const bool fl = S.sh_idx != UINT32_MAX, fp = S.pp != UINT32_MAX;
+    const bool use_l = fl && (!fp || pm_lless(a[S.sh_idx].hot, a[S.sh_idx].k, pd[S.pp].hot, pd[S.pp].k));
+    if (use_l) { r = pm_loff(a[S.sh_idx].k); } else if (fp) { r = pm_loff(pd[S.pp].k); }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        if (use_l) { a[S.sh_idx].k |= 1u; while (C.len && (a[0].k & 1u)) { ++a; C.head++; C.len--; } }
+        else if (fp) { pd[S.pp] = pd[C.np - 1]; C.np--; }
+    }
+    __syncthreads();
+    return r;
+}
+// block-wide: the lists from the map as it is (sent whole): classes from its takeable experts, every one of them pending, merged per PM_PEND
+static __device__ void pm_rebuild(const pm_ctx & c, pm_shared & S) {
+    if (threadIdx.x == 0) { *c.L.ncls = 0; for (int j = 0; j < PM_NC; ++j) { c.L.cls[j] = { 0, 0, 0, 0, 0, 0 }; } }
+    __syncthreads();
+    const uint32_t n = *c.cnt;
+    for (uint32_t t = 0; t < n; t += PM_T) {
+        const uint32_t i = t + threadIdx.x;
+        while (true) {   // classes this tile brings, one at a time
+            if (threadIdx.x == 0) { S.cn = ~0ull; }
+            __syncthreads();
+            if (i < n) { const pm_entry & e = c.v[i]; if (e.type == PM_MOE && !(e.flags & PM_PIN) && pm_cls_of(c, e.size, e.u ? e.u : 1) < 0) { atomicMin(&S.cn, (unsigned long long) i); } }
+            __syncthreads();
+            if (S.cn == ~0ull || *c.L.ncls >= (uint32_t) PM_NC) { __syncthreads(); break; }
+            if (threadIdx.x == 0) { const uint32_t m = *c.L.ncls; const pm_entry & e = c.v[S.cn]; c.L.cls[m].n = e.size; c.L.cls[m].u = e.u ? e.u : 1; *c.L.ncls = m + 1; }
+            __syncthreads();
+        }
+        for (int j = 0; j < (int) *c.L.ncls; ++j) { if (c.L.cls[j].np + PM_T > PM_PEND) { pm_merge(c, S, j); } }
+        __syncthreads();
+        if (i < n) {
+            const pm_entry e = c.v[i]; const int j = pm_elig(c, e);
+            if (j >= 0) { const uint32_t q = atomicAdd(&c.L.cls[j].np, 1u); pm_lp(c, j)[q] = { e.hot, pm_lk(e) }; }
+        }
+        __syncthreads();
+    }
+    for (int j = 0; j < (int) *c.L.ncls; ++j) { pm_merge(c, S, j); }
+}
+
+// block-wide: entries [k + m, n) m places left (entries [k, k + m) are overwritten)
+static __device__ void pm_remove_n(pm_ctx & c, uint32_t k, uint32_t m) {
+    const uint32_t n = *c.cnt;
+    for (uint32_t b = k; b + m < n; b += PM_T) {
+        const uint32_t j = b + threadIdx.x;
+        pm_entry t;
+        const bool on = j + m < n;
+        if (on) { t = c.v[j + m]; }
+        __syncthreads();
+        if (on) { c.v[j] = t; }
+        __syncthreads();
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) { *c.cnt = n - m; }
+    __syncthreads();
+}
+// block-wide: entry i becomes free and merges with free neighbours (an expert leaves its list)
+static __device__ void pm_free(pm_ctx & c, pm_shared & S, uint32_t i) {
+    const pm_entry old = c.v[i];
+    pm_list_del(c, S, old);
     if (threadIdx.x == 0) { pm_entry & e = c.v[i]; e.type = PM_FREE; e.id = -1; e.hot = 0; e.flags = 0; e.u = 0; }
     __syncthreads();
     if (i + 1 < *c.cnt && c.v[i + 1].type == PM_FREE) {
@@ -71,18 +293,8 @@ static __device__ void pm_free(pm_ctx & c, uint32_t i) {
         pm_remove(c, i);
     }
 }
-// block-wide: index of the entry that starts at x (UINT32_MAX: none)
-static __device__ uint32_t pm_find_start(pm_ctx & c, uint64_t x, uint32_t * sh) {
-    if (threadIdx.x == 0) { *sh = UINT32_MAX; }
-    __syncthreads();
-    for (uint32_t i = threadIdx.x; i < *c.cnt; i += PM_T) { if (c.v[i].off == x) { atomicMin(sh, i); } }
-    __syncthreads();
-    const uint32_t r = *sh;
-    __syncthreads();
-    return r;
-}
-// block-wide: place e at [st, st + e.size) inside the free entry that holds it; false: none holds it, or no room to split
-static __device__ bool pm_place(pm_ctx & c, uint64_t st, pm_entry e, uint32_t * sh) {
+// block-wide: place e at [st, st + e.size) inside the free entry that holds it; false: none holds it, or no room to split (it joins its list)
+static __device__ bool pm_place(pm_ctx & c, pm_shared & S, uint64_t st, pm_entry e, uint32_t * sh) {
     if (threadIdx.x == 0) { *sh = UINT32_MAX; }
     __syncthreads();
     for (uint32_t i = threadIdx.x; i < *c.cnt; i += PM_T) {
@@ -105,25 +317,35 @@ static __device__ bool pm_place(pm_ctx & c, uint64_t st, pm_entry e, uint32_t * 
         if (post) { pm_entry q = f; q.off = st + e.size; q.size = post; c.v[k] = q; }
     }
     __syncthreads();
+    e.off = st;
+    pm_list_add(c, S, e);
     return true;
 }
-// block-wide: does [st, st + n) cover only free entries and unpinned experts? (starting at entry i0, the one that holds st or one before it)
-static __device__ bool pm_window_ok(const pm_ctx & c, uint32_t i0, uint64_t st, uint64_t n) {
-    if (st < c.lo || st + n > c.hi) { return false; }
-    const uint32_t cnt = *c.cnt;
-    uint32_t j = i0;
-    while (j < cnt && c.v[j].off + c.v[j].size <= st) { ++j; }
-    for (; j < cnt && c.v[j].off < st + n; ++j) {
-        const pm_entry & e = c.v[j];
-        if (e.type == PM_FREE) { continue; }
-        if (e.type != PM_MOE || (e.flags & PM_PIN)) { return false; }
+// thread 0: index of the entry that starts at x (binary search: the map is in address order); cnt when none
+static __device__ uint32_t pm_bs(const pm_ctx & c, uint64_t x) {
+    uint32_t l = 0, h = *c.cnt;
+    while (l < h) { const uint32_t m = (l + h) / 2; if (c.v[m].off < x) { l = m + 1; } else { h = m; } }
+    return l;
+}
+// block-wide: the host's changes since the last batch (pm_diff): each run of the card's entries replaced by the host's, the lists with them
+static __device__ void pm_apply_delta(pm_ctx & c, pm_shared & S, const pm_batch & bt) {
+    for (uint32_t q = 0; q < bt.n_ops; ++q) {
+        const pm_delta d = bt.ops[q];
+        if (threadIdx.x == 0) { S.pidx = pm_bs(c, d.a); S.sh_idx = pm_bs(c, d.b); }
+        __syncthreads();
+        const uint32_t i0 = S.pidx, i1 = S.sh_idx;
+        __syncthreads();
+        for (uint32_t i = i0; i < i1; ++i) { const pm_entry e = c.v[i]; pm_list_del(c, S, e); }
+        const uint32_t old = i1 - i0;
+        if (d.ne > old) { if (!pm_insert(c, i1, d.ne - old)) { if (threadIdx.x == 0) { S.ovf = 2; } __syncthreads(); return; } }
+        else if (d.ne < old) { pm_remove_n(c, i0 + d.ne, old - d.ne); }
+        for (uint32_t x = threadIdx.x; x < d.ne; x += PM_T) { c.v[i0 + x] = bt.ents[d.e0 + x]; }
+        __syncthreads();
+        for (uint32_t x = 0; x < d.ne; ++x) { const pm_entry e = c.v[i0 + x]; pm_list_add(c, S, e); }
     }
-    return true;
 }
 
-static constexpr uint32_t PM_NCLS = 511;   // classes = the first request index of each (size, align); key bits 54..62 (511 = none)
-struct pm_shared { uint32_t cur, nofree, pick, pidx, cls, stale; uint32_t ccur[PM_NCLS]; unsigned long long sh_best, sh_key, sh_same; uint32_t sh_idx; uint64_t cov[PM_MAX_MV]; int64_t cov_hot[PM_MAX_MV]; uint32_t n_cov, n_mv, n_fr, ovf; };
-// thread 0: the coldest unpinned expert at w (index vi, exactly n bytes at a multiple of a) leaves and the newcomer takes its entry in place
+// thread 0: the expert at vi (exactly n bytes at a multiple of a, out of its list already) leaves and the newcomer takes its entry in place
 static __device__ void pm_take_inplace(pm_ctx & c, uint32_t vi, uint64_t a, int32_t id, int64_t hot, int pin, pm_result * res) {
     const pm_entry w = c.v[vi];
     res->fr[0] = { w.off, w.size, w.id, 0 };
@@ -132,47 +354,8 @@ static __device__ void pm_take_inplace(pm_ctx & c, uint32_t vi, uint64_t a, int3
     __threadfence_system();
     res->done = 1;
 }
-// user 2026-11-22: one heat-sorted list per size class (class = the first request of the batch with that size and align): the batch's takeable experts
-// of exactly a class's size at a multiple of its align, key (class << 54) | heat, INT64_MAX for none; value: start. Coldest first per class (ties: lowest
-// address), so an alloc pops its class's coldest from the list in O(1)
 static constexpr int64_t PM_TIER = 1000000000000000ll;   // the decode set's heat floor (pv2_refresh tiered: 1e15 + score)
-static constexpr int64_t PM_HEAT_MASK = (1ll << 54) - 1;
-static __device__ int64_t pm_heat54(int64_t h) { return h < 0 ? 0 : (h > PM_HEAT_MASK ? PM_HEAT_MASK : h); }
-struct pm_cands { const int64_t * key; const uint64_t * val; uint32_t n; };
-// thread 0: the index of class j's coldest entry not yet popped (located on first use)
-static __device__ uint32_t & pm_class_cur(pm_shared & S, const pm_cands & cd, uint32_t j) {
-    uint32_t & cu = S.ccur[j];
-    if (cu == UINT32_MAX) {
-        const int64_t lk = (int64_t) j << 54; uint32_t l = 0, h = cd.n;
-        while (l < h) { const uint32_t m = (l + h) / 2; if (cd.key[m] < lk) { l = m + 1; } else { h = m; } }
-        cu = l;
-    }
-    return cu;
-}
-// thread 0, after an in-place take: a newcomer colder than its class's next listed entry would be the reference's next pick but is not in the list
-static __device__ void pm_class_check(pm_shared & S, const pm_cands & cd, int64_t hot, int pin) {
-    if (pin || !cd.key || S.cls >= PM_NCLS || S.stale) { return; }   // a pinned newcomer is no victim in this batch: the list stays current
-    const uint32_t cu = pm_class_cur(S, cd, S.cls);
-    if (cu < cd.n && (cd.key[cu] >> 54) == (int64_t) S.cls && pm_heat54(hot) < (cd.key[cu] & PM_HEAT_MASK)) { S.stale = 1; }
-}
-static __global__ void k_pm_cands(const pm_entry * v, const uint32_t * cnt, uint32_t cap, const pm_req * rq, uint32_t n_rq, int64_t * key, uint64_t * val) {
-    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= cap) { return; }
-    int64_t k = INT64_MAX; uint64_t o = 0;
-    if (i < *cnt) {
-        const pm_entry e = v[i];
-        if (e.type == PM_MOE && !(e.flags & PM_PIN)) {
-            const uint32_t m = n_rq < PM_NCLS ? n_rq : PM_NCLS;
-            for (uint32_t j = 0; j < m; ++j) {
-                const pm_req q = rq[j];
-                if (q.kind == PM_ALLOC_KV || q.kind == PM_ALLOC_WRK || q.n != e.size || e.off % (q.a ? q.a : 1) != 0) { continue; }
-                k = ((int64_t) j << 54) | pm_heat54(e.hot); o = e.off; break;
-            }
-        }
-    }
-    key[i] = k; val[i] = o;
-}
-static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint64_t a, int32_t id, int64_t hot, int pin, int kind, pm_result * res, const pm_cands & cd) {
+static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint64_t a, int32_t id, int64_t hot, int pin, int kind, pm_result * res) {
     const bool over = (pin & 2) == 0;   // pin bit 1: movers to free bytes only
     // pin bit 2 (user 2026-11-22, an entry planned ahead): a newcomer below the decode tier takes no expert of it (heat >= PM_TIER) and opens no window
     const int64_t cap_hot = (pin & 8) ? hot : (pin & 4) && hot < PM_TIER ? PM_TIER : INT64_MAX;   // bit 3 (a KV stretch's resident moving out): only a victim colder than it
@@ -184,52 +367,48 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
     if (threadIdx.x == 0) { sh_best = ~0ull; sh_key = ~0ull; n_cov = 0; n_mv = 0; n_fr = 0; ovf = 0; }
     __syncthreads();
     const bool left = kind == PM_ALLOC_KV || kind == PM_ALLOC_WRK;   // user 2026-11-22: KV and work grow from the left end: the lowest window over free bytes and unpinned experts
+    const int jc = left ? -1 : pm_cls_of(c, n, a);   // the size class's list: its coldest takeable expert in O(1)
+    // the newcomer takes the popped expert's entry in place; path 1: no scan before (no free bytes hold n), 2: after the scan found none
+    auto take_popped = [&](uint64_t o, uint32_t path) {
+        if (threadIdx.x == 0) {
+            const uint32_t vi = pm_bs(c, o); S.pidx = vi; res->path = path;
+            if (vi < *cnt && v[vi].off == o && v[vi].size == n) { pm_take_inplace(c, vi, a, id, hot, pin, res); S.nf_n = n; S.nf_a = a; }
+            else { res->s = UINT64_MAX; res->n_mv = 0; res->n_fr = 0; res->overflow = 3; __threadfence_system(); res->done = 1; S.pidx = UINT32_MAX; }   // a list out of step with the map: the host aborts
+        }
+        __syncthreads();
+        if (S.pidx == UINT32_MAX) { return; }
+        const pm_entry ne = v[S.pidx];
+        pm_list_add(c, S, ne);
+    };
     if (left) {
         for (uint32_t i = threadIdx.x; i < *cnt; i += PM_T) {
             const pm_entry & e = v[i];
-            if (e.type != PM_FREE && (e.type != PM_MOE || (e.flags & PM_PIN))) { continue; }
+            if (e.type != PM_FREE && (e.type != PM_MOE || pm_held(c, e))) { continue; }
             const uint64_t st = pm_align(e.off, a);
             if (pm_window_ok(c, i, st, n)) { atomicMin(&sh_best, (unsigned long long) st); }
         }
         __syncthreads();
     }
-    // the stream's case, no scan: no free bytes hold n (the last request found none and changed no free bytes) and the batch's sorted takeable
-    // experts are at hand: the coldest one still there leaves; an exact slot is taken in place, a window goes the long way below
-    if (!left && cd.key && S.nofree && !S.stale && S.cls < PM_NCLS) {
-        if (threadIdx.x == 0) {
-            S.pick = 0;
-            const uint32_t nc = *cnt, j = S.cls;
-            uint32_t & cu = pm_class_cur(S, cd, j);
-            while (cu < cd.n) {
-                const int64_t k = cd.key[cu];
-                if ((k >> 54) != (int64_t) j) { cu = cd.n; break; }   // the class is used up
-                const uint64_t o = cd.val[cu]; cu++;
-                uint32_t l = 0, h = nc;
-                while (l < h) { const uint32_t m = (l + h) / 2; if (v[m].off < o) { l = m + 1; } else { h = m; } }
-                const bool ok = l < nc && v[l].off == o && v[l].type == PM_MOE && !(v[l].flags & PM_PIN) && v[l].size == n && pm_heat54(v[l].hot) == (k & PM_HEAT_MASK) && v[l].hot < cap_hot;
-                if (ok) { S.pick = 1; S.pidx = l; break; }
-            }
-            if (S.pick == 1) { res->path = 1; pm_take_inplace(c, S.pidx, a, id, hot, pin, res); pm_class_check(S, cd, hot, pin); }
-        }
-        __syncthreads();
-        if (S.pick == 1) { return; }
+    // the stream's case, no scan: no free bytes hold n (the last request found none and changed no free bytes): the class's coldest leaves
+    if (jc >= 0 && S.nf_n == n && S.nf_a == a) {
+        const uint64_t o = pm_pop(c, S, jc, cap_hot);
+        if (o != UINT64_MAX) { take_popped(o, 1); return; }
     }
-    if (threadIdx.x == 0) { S.nofree = 0; }
-    // 1. a free entry that holds it, lowest address first; in the same pass (one read of the map: a single block is bound by load latency) the coldest
-    // unpinned expert whose window covers only free bytes and unpinned experts (ties: lowest address), used by step 2 when no free entry holds it.
-    // An expert of exactly n bytes at a multiple of a is its own window (no window check).
+    __syncthreads();
+    if (threadIdx.x == 0) { S.nf_n = 0; }
+    // 1. a free entry that holds it, lowest address first; in the same pass, for a size with no list, the coldest same-size takeable expert
     {
         const uint32_t nc = *cnt;
         // user 2026-11-22: the coldest expert of the same size is swapped in place (no split, no merge, no shift of the vector); a window over other
         // sizes only when no same-size expert is takeable
-        unsigned long long best = ~0ull, key = ~0ull, same = ~0ull;
+        unsigned long long best = ~0ull, same = ~0ull;
         #pragma unroll 4
         for (uint32_t i = threadIdx.x; i < nc; i += PM_T) {
-            const uint64_t off = v[i].off, sz = v[i].size; const uint8_t ty = v[i].type, fl = v[i].flags;
+            const uint64_t off = v[i].off, sz = v[i].size; const uint8_t ty = v[i].type;
             if (ty == PM_FREE) {
                 const uint64_t st = pm_align(off, a);
                 if (st + n <= off + sz && st < best) { best = st; }
-            } else if (!left && ty == PM_MOE && !(fl & PM_PIN)) {
+            } else if (!left && jc < 0 && ty == PM_MOE && !pm_held(c, v[i])) {
                 const uint64_t k = pm_key(v[i].hot, i);
                 if (sz == n && off % a == 0 && k < same && v[i].hot < cap_hot) { same = k; }
             }
@@ -239,9 +418,14 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
         if (best != ~0ull) { atomicMin(&sh_best, best); }
         if (same != ~0ull) { atomicMin(&S.sh_same, same); }
         __syncthreads();
+        if (sh_best == ~0ull && jc >= 0) {
+            const uint64_t o = pm_pop(c, S, jc, cap_hot);
+            if (o != UINT64_MAX) { take_popped(o, 2); return; }
+        }
         if (sh_best == ~0ull && S.sh_same == ~0ull && !left && cap_hot == INT64_MAX) {   // windows (a walk each) only when no free bytes and no same-size expert hold it
+            unsigned long long key = ~0ull;
             for (uint32_t i = threadIdx.x; i < nc; i += PM_T) {
-                if (v[i].type != PM_MOE || (v[i].flags & PM_PIN)) { continue; }
+                if (v[i].type != PM_MOE || pm_held(c, v[i])) { continue; }
                 const uint64_t k = pm_key(v[i].hot, i);
                 if (k < key && pm_window_ok(c, i, pm_align(v[i].off, a), n)) { key = k; }
             }
@@ -256,13 +440,14 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
         if (sh_key != ~0ull) {
             const uint32_t vi = (uint32_t) (sh_key & 0xffffffffu);
             s = pm_align(v[vi].off, a);
-            // the stream's case: the coldest expert is exactly the size asked at its start; no same-size expert is colder (it would have won) and no free
-            // bytes hold n, so it leaves and the newcomer takes its entry in place (no shift of the vector; same map and report as the general path)
+            // the coldest expert is exactly the size asked at its start: it leaves and the newcomer takes its entry in place
             const pm_entry w = v[vi];
             if (w.off == s && w.size == n) {
+                pm_list_del(c, S, w);
+                if (threadIdx.x == 0) { res->path = 2; pm_take_inplace(c, vi, a, id, hot, pin, res); S.nf_n = n; S.nf_a = a; }   // !left: an expert (no free bytes changed)
                 __syncthreads();
-                if (threadIdx.x == 0) { res->path = 2; pm_take_inplace(c, vi, a, id, hot, pin, res); S.nofree = 1; pm_class_check(S, cd, hot, pin); }   // !left: an expert (no free bytes changed)
-                __syncthreads();
+                const pm_entry ne = v[vi];
+                pm_list_add(c, S, ne);
                 return;
             }
         }
@@ -280,7 +465,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
     }
     __syncthreads();
     if (s == ~0ull) {
-        if (threadIdx.x == 0) { res->s = UINT64_MAX; res->n_mv = 0; res->n_fr = 0; res->overflow = 0; res->path = 4; __threadfence_system(); res->done = 1; S.nofree = 1; }   // no free bytes held it, the map is unchanged
+        if (threadIdx.x == 0) { res->s = UINT64_MAX; res->n_mv = 0; res->n_fr = 0; res->overflow = 0; res->path = 4; __threadfence_system(); res->done = 1; S.nf_n = n; S.nf_a = a; }   // no free bytes held it, the map is unchanged
         __syncthreads();
         return;
     }
@@ -320,7 +505,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
         if (to == ~0ull && over) {   // else the coldest same-size unpinned expert outside the window, colder than it (ties: lowest address)
             for (uint32_t i = threadIdx.x; i < *cnt; i += PM_T) {
                 const pm_entry & w = v[i];
-                if (w.type != PM_MOE || (w.flags & PM_PIN) || w.size != r.size || w.off % u != 0 || (w.off < s + n && w.off + w.size > s) || w.hot >= r.hot) { continue; }
+                if (w.type != PM_MOE || pm_held(c, w) || w.size != r.size || w.off % u != 0 || (w.off < s + n && w.off + w.size > s) || w.hot >= r.hot) { continue; }
                 atomicMin(&sh_key, (unsigned long long) pm_key(w.hot, i));
             }
             __syncthreads();
@@ -330,54 +515,56 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
                 to = w.off;
                 if (threadIdx.x == 0) { if (n_fr < PM_MAX_FR) { res->fr[n_fr++] = { w.off, w.size, w.id, 0 }; } else { ovf = 1; } }
                 __syncthreads();
-                pm_free(c, vi);
+                pm_free(c, S, vi);
             }
         }
         const uint32_t ix2 = pm_find_start(c, r.off, &sh_idx);   // the victim's merge may have shifted it
-        pm_free(c, ix2);
+        pm_free(c, S, ix2);
         if (to == ~0ull) {
             if (threadIdx.x == 0) { if (n_fr < PM_MAX_FR) { res->fr[n_fr++] = { r.off, r.size, r.id, 0 }; } else { ovf = 1; } }
             __syncthreads();
             continue;
         }
         pm_entry m = r; m.off = to;
-        if (!pm_place(c, to, m, &sh_idx)) { if (threadIdx.x == 0) { ovf = 2; } __syncthreads(); }
+        if (!pm_place(c, S, to, m, &sh_idx)) { if (threadIdx.x == 0) { ovf = 2; } __syncthreads(); }
         if (threadIdx.x == 0) { if (n_mv < PM_MAX_MV) { res->mv[n_mv++] = { r.off, to, r.size, r.id, (uint32_t) u }; } else { ovf = 1; } }
         __syncthreads();
     }
     pm_entry ne = {}; ne.size = n; ne.hot = hot; ne.id = id; ne.u = (uint32_t) a; ne.type = PM_MOE; ne.flags = pin ? PM_PIN : 0;
     if (kind == PM_ALLOC_KV || kind == PM_ALLOC_WRK) { ne.type = kind == PM_ALLOC_KV ? PM_KV : PM_WRK; ne.id = -1; ne.hot = 0; ne.flags = PM_PIN; }   // held: KV never moves, work never in a pass
-    if (!pm_place(c, s, ne, &sh_idx)) { if (threadIdx.x == 0) { ovf = 2; } __syncthreads(); }
+    if (!pm_place(c, S, s, ne, &sh_idx)) { if (threadIdx.x == 0) { ovf = 2; } __syncthreads(); }
     if (threadIdx.x == 0) {
-        res->s = s; res->n_mv = n_mv; res->n_fr = n_fr; res->overflow = ovf; res->path = n_cov ? 3 : 5; S.stale = 1;   // 5 ("other" in the host log): a fit in free bytes, no window   // moved or placed experts are not in the lists
+        res->s = s; res->n_mv = n_mv; res->n_fr = n_fr; res->overflow = ovf; res->path = n_cov ? 3 : 5;   // 5 ("other" in the host log): a fit in free bytes, no window
         __threadfence_system();
         res->done = 1;
     }
     __syncthreads();
 }
+static __device__ pm_lists pm_lists_of(void * scratch, uint32_t cap) {
+    pm_lists L = {};
+    if (!scratch) { return L; }
+    char * b = (char *) scratch;
+    L.cls = (pm_cls *) b; L.ncls = (uint32_t *) (b + 2048);
+    L.buf = (pm_le *) (b + 4096); L.pend = L.buf + (size_t) 2 * PM_NC * cap; L.pre = (uint32_t *) (L.pend + (size_t) PM_NC * PM_PEND); L.cap = cap; L.ok = true;
+    return L;
+}
 // user 2026-11-22: the host asks for a list of allocs (sizes may differ) in one launch and goes on; each gets its report, in order (later ones see the
-// earlier ones' map)
+// earlier ones' map). First the host's changes since the last batch (or the lists built from a map sent whole), last the pending newcomers merged
 static __global__ void __launch_bounds__(PM_T) k_pm_alloc(pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, const pm_req * rq, uint32_t n_rq, pm_result * res,
-                                                         const int64_t * ckey, const uint64_t * cval, uint32_t n_cands) {
+                                                         void * scratch, pm_batch bt) {
     __shared__ pm_shared S;
-    pm_ctx c = { v, cnt, cap, lo, hi };
-    const pm_cands cd = { ckey, cval, n_cands };
-    if (threadIdx.x == 0) { S.cur = 0; S.nofree = 0; S.stale = 0; }
-    for (uint32_t j = threadIdx.x; j < PM_NCLS; j += PM_T) { S.ccur[j] = UINT32_MAX; }
+    pm_ctx c = { v, cnt, cap, lo, hi, bt.busy, bt.E ? bt.E : 1u, pm_lists_of(scratch, cap) };
+    if (threadIdx.x == 0) { S.nf_n = 0; S.ovf = 0; }
     __syncthreads();
+    if (c.L.ok && bt.rebuild) { pm_rebuild(c, S); }
+    pm_apply_delta(c, S, bt);
     for (uint32_t k = 0; k < n_rq; ++k) {
         const pm_req q = rq[k];
-        if (threadIdx.x == 0) { S.cls = PM_NCLS; }
-        __syncthreads();
-        if (cd.key && q.kind != PM_ALLOC_KV && q.kind != PM_ALLOC_WRK) {   // the class: the first request with this size and align
-            const uint32_t m = (k + 1) < PM_NCLS ? (k + 1) : PM_NCLS;
-            for (uint32_t j = threadIdx.x; j < m; j += PM_T) { if (rq[j].n == q.n && (rq[j].a ? rq[j].a : 1) == (q.a ? q.a : 1) && rq[j].kind != PM_ALLOC_KV && rq[j].kind != PM_ALLOC_WRK) { atomicMin(&S.cls, j); } }
-        }
-        __syncthreads();
         uint64_t t0 = 0; if (threadIdx.x == 0) { asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t0)); }
-        pm_alloc_one(c, S, q.n, q.a, q.id, q.hot, q.pin, q.kind, res + k, cd);
+        pm_alloc_one(c, S, q.n, q.a, q.id, q.hot, q.pin, q.kind, res + k);
         if (threadIdx.x == 0) { uint64_t t1; asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t1)); res[k].ns = t1 - t0; }
     }
+    if (c.L.ok) { for (int j = 0; j < (int) *c.L.ncls; ++j) { if (c.L.cls[j].np) { pm_merge(c, S, j); } } }
 }
 
 // the movers' bytes and the expert tables (tables[layer][expert] = offset / unit; freed: -1); one block per move or freed entry
@@ -400,23 +587,12 @@ static __global__ void k_pm_apply(const pm_result * resv, char * base, int32_t *
 
 // the batch: one alloc launch for all requests, then one apply launch per request in order (request k's moves may read bytes request k-1 moved in)
 // ev (optional): the alloc runs on st, the applies on st_apply after it (the table writes stay in order with that stream's table flushes and uploads)
+// scratch (pm_scratch_bytes(cap), optional): the size-class lists, kept on the card between batches; bt: the host's changes, busy layers, rebuild
 void ggml_cuda_poolmap_alloc_batch_fork(cudaStream_t st, pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, const pm_req * rq_dev, uint32_t n_rq,
                                         pm_result * res_dev, char * base, int32_t * const * tables, int32_t E, cudaStream_t st_apply = 0, cudaEvent_t ev = nullptr,
-                                        void * scratch = nullptr, uint32_t n_sort = 0) {   // n_sort: the map's entry count as the host sent it (0: cap); the sort covers only those
-    if (n_rq == 0) { return; }
-    int64_t * ckey = nullptr; uint64_t * cval = nullptr;
-    if (scratch && n_rq > 1) {   // scratch: pm_scratch_bytes(cap) bytes; the takeable experts per size class, sorted by heat
-        int64_t * k0 = (int64_t *) scratch; ckey = k0 + cap; uint64_t * v0 = (uint64_t *) (ckey + cap); cval = v0 + cap;
-        void * tmp = cval + cap; size_t tb = 0;
-        const uint32_t ns = n_sort && n_sort < cap ? n_sort : cap;
-        CUDA_CHECK(cub::DeviceRadixSort::SortPairs(nullptr, tb, k0, ckey, v0, cval, (int) ns, 0, 64, st));
-        if (tb > ((size_t) 4 << 20)) { fprintf(stderr, "pool-map: the sort needs %zu bytes of scratch, %zu there\n", tb, (size_t) 4 << 20); abort(); }
-        k_pm_cands<<<(ns + 255) / 256, 256, 0, st>>>(v, cnt, ns, rq_dev, n_rq, k0, v0);
-        CUDA_CHECK(cudaGetLastError());
-        CUDA_CHECK(cub::DeviceRadixSort::SortPairs(tmp, tb, k0, ckey, v0, cval, (int) ns, 0, 64, st));
-        n_sort = ns;
-    }
-    k_pm_alloc<<<1, PM_T, 0, st>>>(v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev, ckey, cval, n_sort ? n_sort : cap);
+                                        void * scratch = nullptr, pm_batch bt = {}) {
+    if (n_rq == 0 && bt.n_ops == 0 && !bt.rebuild) { return; }
+    k_pm_alloc<<<1, PM_T, 0, st>>>(v, cnt, cap, lo, hi, rq_dev, n_rq, res_dev, scratch, bt);
     CUDA_CHECK(cudaGetLastError());
     if (ev) { CUDA_CHECK(cudaEventRecord(ev, st)); }
     if (!st_apply && ev) { return; }   // the caller queues the applies itself (ggml_cuda_poolmap_apply_fork) once it knows what they wait for
