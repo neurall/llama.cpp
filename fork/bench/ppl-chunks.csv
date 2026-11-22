@@ -4964,3 +4964,35 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-22 10:09:57,stock-b12629-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
 2026-11-22 11:13:55,keephot_movek -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.37
 2026-11-22 11:13:55,keephot_movek -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4226
+2026-11-22 11:18:43,keephot_kvgrow -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3689
+2026-11-22 11:18:43,keephot_kvgrow -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4193
+2026-11-22 11:20:20,keephot_kvgrow -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3661
+2026-11-22 11:20:20,keephot_kvgrow -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4175
+2026-11-22 11:22:38,keephot_kvgrow -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4559
+2026-11-22 11:22:38,keephot_kvgrow -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5786
+2026-11-22 11:23:55,keephot_kvgrow -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4517
+2026-11-22 11:23:55,keephot_kvgrow -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.575
+2026-11-22 11:25:51,keephot_kvgrow -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1405
+2026-11-22 11:25:51,keephot_kvgrow -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1293
+2026-11-22 11:26:46,keephot_kvgrow -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1362
+2026-11-22 11:26:46,keephot_kvgrow -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1281
+2026-11-22 11:28:21,keephot_kvgrow -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1294
+2026-11-22 11:28:21,keephot_kvgrow -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1132
+2026-11-22 11:29:12,keephot_kvgrow -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1374
+2026-11-22 11:29:12,keephot_kvgrow -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.117
+2026-11-22 11:30:42,keephot_kvgrow -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-22 11:30:42,keephot_kvgrow -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-22 11:31:40,keephot_kvgrow -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-22 11:31:40,keephot_kvgrow -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-22 11:33:19,keephot_kvgrow -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6645
+2026-11-22 11:33:19,keephot_kvgrow -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5234
+2026-11-22 11:33:43,keephot_kvgrow -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6671
+2026-11-22 11:33:43,keephot_kvgrow -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5238
+2026-11-22 11:34:47,"keephot_kvgrow -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9397
+2026-11-22 11:34:47,"keephot_kvgrow -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9408
+2026-11-22 11:35:02,"keephot_kvgrow -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9369
+2026-11-22 11:35:02,"keephot_kvgrow -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9387
+2026-11-22 11:35:49,stock-b12631-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-22 11:35:49,stock-b12631-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-11-22 11:36:50,stock-b12631-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-22 11:36:50,stock-b12631-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422

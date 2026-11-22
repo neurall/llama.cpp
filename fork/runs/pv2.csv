@@ -51,3 +51,4 @@ gd-movek,glm35,2,pf12k1k,1024,-bs,--env CUDA_VISIBLE_DEVICES=0
 gd-hostcopy,glm35,2,pf12k1k,1024,"-bs --moe move-kernel=0",--env CUDA_VISIBLE_DEVICES=0
 qd-nokvkeep,qwen38,2,pf14k1k,1024,"-bs --moe kv-keep-hot=0",--env CUDA_VISIBLE_DEVICES=0
 gd-nokvkeep,glm35,2,pf12k1k,1024,"-bs --moe kv-keep-hot=0",--env CUDA_VISIBLE_DEVICES=0
+gv-v2check,glm35,1,pf12k1k,64,"-bs --moe pool-v2=1,verify=2",--env CUDA_VISIBLE_DEVICES=0
