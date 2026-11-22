@@ -54,7 +54,8 @@
 #include "llama-poolalloc-fork.h"
 #include "llama-poolv2-fork.h"   // pool v2 (fork/docs/pool-v2.md): the unit of an expert's views (pv2_shape_of)
 #include "llama-mapsync-fork.h"   // pool v2: expert tables to the card through a mapped ring
-#include "llama-poolmap-fork.h"   // pool v2: the card's pool map, the alloc kernel's report
+#include "llama-poolmap-fork.h"
+#include "llama-classpick-fork.h"   // pool v2: one block size (--moe pv2-block=1)   // pool v2: the card's pool map, the alloc kernel's report
 #include "llama-moetopic-fork.h"
 #include "llama-passplan-fork.h"
 #include "llama-kvtier-fork.h"
@@ -11833,6 +11834,26 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
                 // --moe pool-v2, stage 2-3: one heap over the card's pool, the views of every layer over all of it (one buffer, the stream into the cache)
                 mc->v2.on = mc->pv2 && pp_no_staging() && !split && ubufs.size() == 1;
+                // user 2026-11-22: --moe pv2-block=1: one block size for the whole heap (the layers' expert size that pads least, cp_best_block); a smaller
+                // expert sits in one block, a bigger one spans consecutive blocks; every start is a block start, so every gap and every take is whole blocks
+                size_t v2_block = 0;
+                if (mc->v2.on) {
+                    static const bool one_block = [] { const char * x = moe_opt("pv2-block"); return x && atoi(x) != 0; }();
+                    if (one_block) {
+                        size_t L = 1;
+                        std::vector<size_t> ns;
+                        for (size_t i = 0; i < cands.size(); ++i) {
+                            const pv2_shape sh = pv2_layer_shape(ll[i], pl.cls[pl.lay_cls[i]].B);
+                            L = std::lcm(L, sh.u); ns.push_back(sh.n);
+                        }
+                        std::vector<cp_size> cs;
+                        for (size_t n : ns) { cs.push_back({ poolx_up(n, L), 1 }); }
+                        v2_block = cp_best_block(cs);
+                        uint64_t tot = 0; for (const cp_size & c : cs) { tot += c.bytes; }
+                        LLAMA_LOG_WARN("moe-cache: pool-v2: one block size %.2f MiB for %zu layers (unit lcm %zu bytes), padding %.1f%% of the experts' bytes\n",
+                                       v2_block / 1048576.0, cs.size(), L, tot ? 100.0 * (double) cp_block_waste(cs, v2_block) / (double) tot : 0.0);
+                    }
+                }
                 for (size_t i = 0; i < cands.size(); ++i) {
                     layer_state * ls = nullptr;
                     for (auto & l : mc->layers) {
@@ -11842,7 +11863,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     const pool_class & cl = pl.cls[ci];
                     const int32_t      n  = gn[ci];   // the class's grid (its blocks, and with a grid the neighbours' bytes before them)
                     if (mc->v2.on) {   // an expert's start is any multiple of the unit in [0, tail_all - its bytes]: the views reach that far, the tables hold start / unit
-                        const pv2_shape sh = pv2_layer_shape(ll[i], cl.B);
+                        pv2_shape sh = pv2_layer_shape(ll[i], cl.B);
+                        if (v2_block) { GGML_ASSERT(v2_block % sh.u == 0); sh.u = v2_block; }
                         GGML_ASSERT(sh.off[0] == cl.off[0] && sh.off[1] == cl.off[1] && sh.off[2] == cl.off[2] && sh.n <= cl.B && sh.n <= tail_all && "pool-v2: the heap's expert shape is not the class's");
                         const int64_t ne2 = (int64_t) ((tail_all - sh.n) / sh.u) + 1;
                         ggml_tensor * t3[3] = { ls->pub.up_c, ls->pub.gate_c, ls->pub.down_c };
