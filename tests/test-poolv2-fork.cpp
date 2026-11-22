@@ -1321,7 +1321,17 @@ static void test_cold_window() {
     (void) pv2_cold_window(h, ord, cur, 150, 10, all);
     check("cold window: the stale front of the order is skipped", cur == 1);
 }
+
+static void test_first_fit() {
+    const std::vector<std::pair<size_t, size_t>> g = { { 0, 100 }, { 200, 50 }, { 305, 70 } };
+    const std::vector<size_t> r = pv2_first_fit(g, { { 40, 10 }, { 40, 10 }, { 40, 10 }, { 60, 10 }, { 40, 10 }, { 20, 10 } });
+    check("first fit: 0, 40, then the next gap at 200", r[0] == 0 && r[1] == 40 && r[2] == 200);
+    check("first fit: 60 bytes skip the gaps left too short, aligned in the third (310)", r[3] == 310);
+    check("first fit: no gap left for another 40", r[4] == PV2_NONE);
+    check("first fit: a smaller size still uses what its own cursor finds (80 in the first)", r[5] == 80);
+}
 int main(int argc, char ** argv) {
+    test_first_fit();
     test_upchunks();
     test_upring();
     test_eranges();

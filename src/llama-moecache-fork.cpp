@@ -8474,7 +8474,25 @@ static size_t pv2_fill_free(moe_cache * mc, bool wait, bool ini_only) {
     // a size no free window holds stays refused for the rest of the call (placements only shrink the gaps): 20k missing experts each scanning every gap
     // held the cache lock 430 ms after a 15.5k prompt, in front of its first token (Qwen3.8 one card)
     std::set<std::pair<size_t, size_t>> refused;
-    for (const auto & c : pv2_missing(mc, ini_only)) {
+    static const bool ff = [] { const char * x = moe_opt("pv2-fill-ff"); return !x || atoi(x) != 0; }();   // --moe pv2-fill-ff=0: nearest-target picks as before
+    if (ff) {
+        const auto cand = pv2_missing(mc, ini_only);
+        std::vector<std::pair<size_t, size_t>> gl(v.main.gaps.begin(), v.main.gaps.end());
+        std::vector<pv2_ff_t> want;
+        want.reserve(cand.size());
+        for (const auto & c : cand) { want.push_back({ mc->layers[c.li].v2n, mc->layers[c.li].v2u }); }
+        const std::vector<size_t> at = pv2_first_fit(std::move(gl), want);
+        for (size_t i = 0; i < cand.size(); ++i) {
+            if (at[i] == PV2_NONE) { continue; }
+            const auto & c = cand[i];
+            layer_state & ls = mc->layers[c.li];
+            pv2_put(mc, v.main, c.li, c.e, at[i], std::llround(1e6 * c.sc), true);
+            jobs.push_back(pv2_job(mc, c.li, c.e, wait, c.part));
+            bytes += ls.v2n;
+            if (!jobs.back().bg) { n1++; bytes1 += ls.v2n; }
+        }
+    }
+    for (const auto & c : ff ? std::vector<pv2_miss>() : pv2_missing(mc, ini_only)) {
         layer_state & ls = mc->layers[c.li];
         if (ls.v2n > gmax || refused.count({ ls.v2n, ls.v2u })) { continue; }
         const pv2_pick pk = pv2_pick_main(mc, c.li, c.e, std::numeric_limits<int64_t>::min(), 0, SIZE_MAX);

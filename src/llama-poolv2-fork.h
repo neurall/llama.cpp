@@ -802,3 +802,27 @@ static inline pv2_pick pv2_cold_window(const pv2_heap & h, const std::vector<pv2
     }
     return best;
 }
+
+// The refill after a prompt: free windows for many experts at once, first fit in address order (no heat target: the heap's order is restored by later swaps
+// and the zone sort). gaps: (start, length) by address; want: each newcomer's bytes and unit. One cursor per (bytes, unit) over the gaps, which only shrink,
+// so the walk is linear: 2803 nearest-target picks held the cache lock 230 ms before a 15.5k prompt's first token (Qwen3.8 one card). PV2_NONE: no gap holds it.
+struct pv2_ff_t { size_t n, u; };
+static inline std::vector<size_t> pv2_first_fit(std::vector<std::pair<size_t, size_t>> gaps, const std::vector<pv2_ff_t> & want) {
+    std::vector<size_t> out(want.size(), PV2_NONE);
+    std::map<std::pair<size_t, size_t>, size_t> cur;
+    for (size_t i = 0; i < want.size(); ++i) {
+        const size_t n = want[i].n, u = std::max<size_t>(1, want[i].u);
+        size_t & c = cur[{ n, u }];
+        for (; c < gaps.size(); ++c) {
+            const size_t gs = gaps[c].first, ge = gaps[c].first + gaps[c].second;
+            const size_t s = (gs + u - 1) / u * u;
+            if (s + n <= ge) {
+                out[i] = s;
+                gaps[c].second = ge - (s + n);
+                gaps[c].first  = s + n;
+                break;
+            }
+        }
+    }
+    return out;
+}
