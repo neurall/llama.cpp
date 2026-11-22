@@ -2392,7 +2392,8 @@ void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, boo
 void note_evict(moe_cache * mc, layer_state & ls, int32_t e);
 void pv2_out(moe_cache * mc, layer_state & ls, int32_t e);   // pool-v2: an expert leaves the card's heap (below the block pool runtime)
 static void pv2_log(const char * op, int32_t id, size_t from, size_t to, size_t n);
-static void mapsync_card_wrote(const llama_moe_cache_layer_fork * pub, int32_t idx);   // a kernel wrote this card table entry (below)   // the heap allocation log (--moe verify>0), below
+static void mapsync_card_wrote(const llama_moe_cache_layer_fork * pub, int32_t idx);   // a kernel wrote this card table entry (below)
+static void mapsync_table_wrote(const llama_moe_cache_layer_fork * pub);   // a copy wrote this whole card table outside the ring (below)   // the heap allocation log (--moe verify>0), below
 double score(const layer_state & ls, int32_t id, uint64_t gmax);
 double score(const layer_state & ls, int32_t id);
 // score of an expert competing with experts of other layers for a block: one common scale (moe_cache::gmax_all) in the pool
@@ -5603,6 +5604,12 @@ static const layer_state * tbl_layer(const llama_moe_cache_layer_fork * pub) {
 // card (Qwen3.8 IQ4_XS NaN at token 0, 2026-11-22; map-ring=0 clean). mapsync_card_wrote marks such an entry unknown, so the next flush sends the host's value.
 static std::mutex g_ms_mu;
 static std::map<const llama_moe_cache_layer_fork *, std::pair<uint32_t, std::vector<int32_t>>> * g_ms_sent = nullptr;
+static void mapsync_table_wrote(const llama_moe_cache_layer_fork * pub) {
+    std::lock_guard<std::mutex> lk(g_ms_mu);
+    if (!g_ms_sent) { return; }
+    auto it = g_ms_sent->find(pub);
+    if (it != g_ms_sent->end()) { std::fill(it->second.second.begin(), it->second.second.end(), INT32_MIN); }
+}
 static void mapsync_card_wrote(const llama_moe_cache_layer_fork * pub, int32_t idx) {
     std::lock_guard<std::mutex> lk(g_ms_mu);
     if (!g_ms_sent) { return; }
@@ -5709,6 +5716,7 @@ void flush_tables() {
         const bool map = tl && (tl->v2u || tl->tbl_mul != 1);
         if (map) { u = v; for (auto & x : u) { x = x < 0 ? x : tl->v2u ? tl->at[(size_t) x] : x * tl->tbl_mul; } }   // --moe pool-v2: a block is tbl_mul units of nb[2]; the heap: the expert's start
         ggml_backend_tensor_set(pub->dev_table, (map ? u : v).data(), 0, v.size()*sizeof(int32_t));
+        mapsync_table_wrote(pub);
         led_line("?", "table", 0, v.size()*sizeof(int32_t), tr_fmt("L%d device table", pub->il));
         if (guard_level() > 0) { std::lock_guard<std::mutex> lk(g_gtbl_mu); g_gtbl[pub] = v; }   // the guard reads its copies as slots
     }
@@ -12340,6 +12348,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             std::vector<int32_t> dummy(n_expert, ns);
             std::vector<int32_t> neg(n_expert, -1);
             ggml_backend_tensor_set(ls.pub.dev_table, neg.data(), 0, n_expert*sizeof(int32_t));
+            mapsync_table_wrote(&ls.pub);
             ggml_backend_tensor_set(ls.pub.host_table, dummy.data(), 0, n_expert*sizeof(int32_t));
             if (ls.pub.jit_n > 0) {
                 ls.pool_expert.assign(ls.pub.jit_n, -1);
@@ -14942,6 +14951,7 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, s
     const layer_state * home = mix == 2 && ls.home_li >= 0 && (size_t) ls.home_li < mc->layers.size() ? &mc->layers[(size_t) ls.home_li] : nullptr;   // the mix's shadow: the home's held are the home's
     for (int64_t i = 0; i < nt; ++i) { snap[i] = h[i] >= ls.pub.n_slots || i < r0 || i >= r1 || (home && home->expert_slot[i] >= 0) ? -1 : slot_tbl(ls, h[i]); }
     ggml_backend_tensor_set_async(rb, ls.pub.dev_table, snap, 0, (size_t) nt*sizeof(int32_t));
+    mapsync_table_wrote(&ls.pub);   // the ring's record of this table is stale now (Qwen3.8 IQ4_XS: 13672 evicted experts kept their stream places on the card)
     if (guard_level() > 0) {   // the guard reads its copies as slots
         std::lock_guard<std::mutex> lk(g_gtbl_mu);
         auto & g = g_gtbl[&ls.pub];
