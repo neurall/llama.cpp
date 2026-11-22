@@ -13991,7 +13991,8 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
                     ci->second = { pv2_cold_order(v.main, ls.v2n), 0 };
                     pk = t == 0 ? pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_done) : pv2_coldest(v.main, ci->second.first, ci->second.second, ls.v2n, ls.v2u, ok_any);
                 }
-                if (pk.s == PV2_NONE && !win_failed[t]) {   // none of its size: a window over residents of other sizes, anchored at the coldest (the classes claim across classes)
+                static const bool win = [] { const char * x = moe_opt("pv2-win"); return x && atoi(x) != 0; }();   // user 2026-11-22: same size only (other sizes leave gaps)
+                if (pk.s == PV2_NONE && win && !win_failed[t]) {   // --moe pv2-win=1: a window over residents of other sizes, anchored at the coldest
                     auto & ca = cold_all[t];
                     if (!rebuilt_all[t]) { ca = { pv2_cold_order(v.main), 0 }; rebuilt_all[t] = true; }   // once a call: windows see this call's placements
                     // the 512 coldest anchors at most; a search that found none is not repeated in this call (takeable residents only get fewer: 1.4 s of a 15.5k
@@ -14001,6 +14002,30 @@ static bool cs_plan_v2(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_
                 }
             }
             if (pk.s == PV2_NONE) {   // every resident of its size is pinned or ahead: the entry waits for the next split
+                static int n_diag = 0;
+                if (n_diag < 12) {   // why (user 2026-11-22: "I don't believe nothing colder of the same size was evictable"): its size's residents by state
+                    n_diag++;
+                    size_t tot = 0, pin = 0, fl = 0, qd = 0, own = 0, ahead = 0, take = 0, b_take_other = 0, free_fit = 0;
+                    for (const auto & [x, r] : v.main.res) {
+                        if (r.id < 0) { continue; }
+                        const size_t lj = (size_t) (r.id / v.E);
+                        const int32_t xe = r.id % v.E;
+                        const layer_state & lq = mc->layers[lj];
+                        const bool busy = r.pin || lq.slot_in_flight[(size_t) xe] || lq.queued[(size_t) xe];
+                        if (r.n != ls.v2n) { if (!busy) { b_take_other += r.n; } continue; }
+                        tot++;
+                        if (lj == li) { own++; }
+                        if (r.pin) { pin++; } else if (lq.slot_in_flight[(size_t) xe]) { fl++; } else if (lq.queued[(size_t) xe]) { qd++; }
+                        else {
+                            const int32_t q = lj < mc->cs_pos.size() ? mc->cs_pos[lj] : -1;
+                            if (q >= 0 && (size_t) q >= p) { ahead++; } else { take++; }
+                        }
+                    }
+                    for (const auto & [g, n] : v.main.gaps) { free_fit += n >= ls.v2n + ls.v2u ? 1 : 0; }
+                    LLAMA_LOG_WARN("moe-cache: pool-v2: layer %d (entry %zu of the pass, %s): no place for an expert of %zu bytes; residents of that size %zu: %zu pinned (%zu its own), "
+                            "%zu uploading, %zu queued, %zu of layers still ahead, %zu takeable; %.2f GB takeable of other sizes; %zu free gaps that fit; placed %zu of %zu wanted\n",
+                            ls.pub.il, p, cheap ? "ahead" : "next", ls.v2n, tot, pin, own, fl, qd, ahead, take, b_take_other / 1e9, free_fit, placed.size(), want.size());
+                }
                 for (int32_t x : placed) { pv2_out(mc, ls, x); }
                 return false;
             }
