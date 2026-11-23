@@ -34,44 +34,36 @@ struct ewc_prog {
     ewc_opd  opd[EWC_MAX_OPD];
     ewc_step st[EWC_MAX_STEP];
     int      n_st;
-    int      n_opd;
     int      ne[4];
     int64_t  nb[4];
     char *   dst;
 };
 
-static __device__ __forceinline__ float ewc_get(const float * x, const float * r, int ref) {
-    return ref >= 0 ? r[ref] : x[-1 - ref];
+static __device__ __forceinline__ float ewc_get(const ewc_prog & P, const float * r, int ref, const int i[4]) {
+    if (ref >= 0) { return r[ref]; }
+    const ewc_opd & o = P.opd[-1 - ref];
+    return *(const float *) (o.p + (i[0] % o.ne[0]) * o.nb[0] + (i[1] % o.ne[1]) * o.nb[1] + (i[2] % o.ne[2]) * o.nb[2] + (i[3] % o.ne[3]) * o.nb[3]);
 }
 
-static __global__ void ewc_kernel(const __grid_constant__ ewc_prog P, const int n) {   // n <= INT32_MAX (ewc_node_ok): 32-bit index math
-    for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n; e += gridDim.x * blockDim.x) {
+static __global__ void ewc_kernel(const __grid_constant__ ewc_prog P, const int64_t n) {
+    for (int64_t e = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; e < n; e += (int64_t) gridDim.x * blockDim.x) {
         int i[4];
-        int t = e;
-        i[0] = t % P.ne[0]; t /= P.ne[0];
-        i[1] = t % P.ne[1]; t /= P.ne[1];
-        i[2] = t % P.ne[2]; t /= P.ne[2];
-        i[3] = t;
-        // every operand loaded up front: independent loads in flight together, not one load latency per step
-        float x[EWC_MAX_OPD];
-#pragma unroll
-        for (int k = 0; k < EWC_MAX_OPD; ++k) {
-            if (k < P.n_opd) {
-                const ewc_opd & o = P.opd[k];
-                x[k] = *(const float *) (o.p + (i[0] % o.ne[0]) * o.nb[0] + (i[1] % o.ne[1]) * o.nb[1] + (i[2] % o.ne[2]) * o.nb[2] + (i[3] % o.ne[3]) * o.nb[3]);
-            }
-        }
+        int64_t t = e;
+        i[0] = (int) (t % P.ne[0]); t /= P.ne[0];
+        i[1] = (int) (t % P.ne[1]); t /= P.ne[1];
+        i[2] = (int) (t % P.ne[2]); t /= P.ne[2];
+        i[3] = (int) t;
         float r[EWC_MAX_STEP];
 #pragma unroll 1
         for (int s = 0; s < P.n_st; ++s) {
             const ewc_step & S = P.st[s];
-            const float a = S.op == EWC_FILL ? 0.0f : ewc_get(x, r, S.a);
+            const float a = S.op == EWC_FILL ? 0.0f : ewc_get(P, r, S.a, i);
             float v;
             switch (S.op) {
-                case EWC_ADD:     v = a + ewc_get(x, r, S.b); break;
-                case EWC_SUB:     v = a - ewc_get(x, r, S.b); break;
-                case EWC_MUL:     v = a * ewc_get(x, r, S.b); break;
-                case EWC_DIV:     v = a / ewc_get(x, r, S.b); break;
+                case EWC_ADD:     v = a + ewc_get(P, r, S.b, i); break;
+                case EWC_SUB:     v = a - ewc_get(P, r, S.b, i); break;
+                case EWC_MUL:     v = a * ewc_get(P, r, S.b, i); break;
+                case EWC_DIV:     v = a / ewc_get(P, r, S.b, i); break;
                 case EWC_SCALE:   v = S.p0 * a + S.p1; break;
                 case EWC_SQR:     v = a * a; break;
                 case EWC_SQRT:    v = sqrtf(a); break;
@@ -208,7 +200,6 @@ int ggml_cuda_try_fuse_ew_chain_fork(ggml_backend_cuda_context & ctx, const ggml
         }
         if (!ok) { continue; }
         P.n_st = end - i + 1;
-        P.n_opd = n_opd;
         for (int d = 0; d < 4; ++d) { P.ne[d] = (int) last->ne[d]; P.nb[d] = (int64_t) last->nb[d]; }
         P.dst = (char *) last->data;
         const int64_t n = ggml_nelements(last);
