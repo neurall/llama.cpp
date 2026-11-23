@@ -1304,7 +1304,7 @@ llama_model_deepseek4::graph::graph(const llm_graph_params & params) :
                         layer.ffn_up_exps, layer.ffn_gate_exps, layer.ffn_down_exps, exp_probs_b,
                         n_expert, hparams.n_expert_used(), LLM_FFN_SILU, hparams.expert_weights_norm, hparams.expert_weights_scale,
                         (llama_expert_gating_func_type) hparams.expert_gating_func, il, logits,
-                        nullptr, nullptr, nullptr, nullptr, selected_experts);
+                        nullptr, selected_experts);
                 std::vector<ggml_tensor *> mo(NR);
                 for (size_t r = 0; r < NR; ++r) { mo[r] = moe_ranges[r].out; }
                 moe_ranges.clear();

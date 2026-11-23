@@ -1549,7 +1549,7 @@ void llama_context::moe_mirror_fill() {
     llama_dsplit_note_fill_fork(ms, pin_ms);
 }
 
-void llama_context::sched_new(size_t max_nodes, bool parallel) {
+void llama_context::sched_new(const sched_params & params) {
     sched.reset(ggml_backend_sched_new(
             backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), params.max_nodes, params.parallel, params.op_offload));
 
@@ -7958,10 +7958,6 @@ void llama_set_causal_attn(llama_context * ctx, bool causal_attn) {
 
 bool llama_get_causal_attn(const llama_context * ctx) {
     return ctx->get_causal_attn();
-}
-
-void llama_set_warmup(llama_context * ctx, bool warmup) {
-    ctx->set_warmup(warmup);
 }
 
 void llama_moe_cache_defer_fork(llama_context * ctx, bool defer) {

@@ -1265,6 +1265,15 @@ struct llm_graph_context {
               ggml_tensor * slots  = nullptr,
                      bool   cached = true) const;
 
+    // fork: the slots of the selected experts in the MoE cache, nullptr if the experts of the layer are not read from the cache
+    ggml_tensor * build_moe_cache_slots(
+             ggml_tensor * selected_experts,
+             ggml_tensor * up_exps,
+             ggml_tensor * gate_exps,
+             ggml_tensor * down_exps,
+             ggml_tensor * gate_up_exps,
+                     int   il) const;
+
     // rescale `cur` (the src1 of a matmul) by a power of two, computed from its maximum absolute
     // keep both individual values and Q8 activation block sums within F16 range
     llm_graph_amax_src1 build_amax_src1_f16(

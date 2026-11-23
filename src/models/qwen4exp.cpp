@@ -771,11 +771,11 @@ llama_model_qwen4exp::graph::graph(const llm_graph_params & params) :
                                 ggml_row_size(conv->type, 2 * head_k_dim * num_k_heads));
                         qc = build_gdn_l2_norm(ctx0, qc, hparams.f_norm_rms_eps);
                         kc = build_gdn_l2_norm(ctx0, kc, hparams.f_norm_rms_eps);
-                        if (num_k_heads != num_v_heads && (!cparams.fused_gdn_ar || !cparams.fused_gdn_ch)) {
+                        if (num_k_heads != num_v_heads && false /* upstream #32078: GDN is always fused */) {
                             qc = ggml_repeat_4d(ctx0, qc, head_k_dim, num_v_heads, nr, 1);
                             kc = ggml_repeat_4d(ctx0, kc, head_k_dim, num_v_heads, nr, 1);
                         }
-                        auto os = build_delta_net(qc, kc, vc, gate[r], beta[r], state, il);
+                        auto os = build_delta_net(qc, kc, vc, gate[r], beta[r], state);
                         if (r + 1 == NR) {   // with pieces issued at the end of the layer, like the conv write
                             put(late, ggml_cpy(ctx0, os.second, ggml_view_2d(ctx0, ssm_all, hparams.n_embd_s(), 1, ssm_all->nb[1],
                                     (size_t) kv_head * hparams.n_embd_s() * ggml_element_size(ssm_all))));
@@ -866,7 +866,6 @@ llama_model_qwen4exp::graph::graph(const llm_graph_params & params) :
                             ggml_tensor * tail_r  = ds_rows(inp_kpool->tail_idxs, r);
                             ggml_tensor * weights = ggml_fill(ctx0, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_idx_h, nr), 1.0f / sqrtf((float) idx_dim));
                             ggml_tensor * score   = ggml_lightning_indexer(ctx0, iq[r], pooled, weights, ds_rows(inp_kpool->pool_mask, r));   // [n_pool, tokens]
-                            res->add_fused_node({LLM_FUSED_OP_LIGHTNING_INDEXER, score, il});
                             ggml_tensor * top_k   = ggml_top_k(ctx0, score, n_top_pool);
                             ggml_tensor * sel_idx = ggml_get_rows(ctx0, inp_kpool->pool_idxs, ggml_reshape_1d(ctx0, top_k, n_top_pool * nr));
                             sel_idx = ggml_concat(ctx0, ggml_reshape_2d(ctx0, sel_idx, kpool * n_top_pool, nr), tail_r, 0);
@@ -940,7 +939,7 @@ llama_model_qwen4exp::graph::graph(const llm_graph_params & params) :
                     build_moe_ffn(call, llama_dsplit_mirror_fork(model, model.layers[il].ffn_gate_inp, ds_r[llama_ds_xr_fork(ds_r)].dev),
                             model.layers[il].ffn_up_exps, model.layers[il].ffn_gate_exps, model.layers[il].ffn_down_exps, nullptr,
                             n_expert, n_expert_used, LLM_FFN_SILU, true, hparams.expert_weights_scale, LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
-                            logits, model.layers[il].ffn_gate_up_exps, model.layers[il].ffn_up_exps_s, model.layers[il].ffn_gate_exps_s, model.layers[il].ffn_down_exps_s);
+                            logits, model.layers[il].ffn_gate_up_exps);
                     for (size_t r = 0; r < NR; ++r) { mo[r] = moe_ranges[r].out; }
                     moe_ranges.clear();
                     ds_skip();   // the router's selection follows its input (the logits, on the expert card's range); the expert chains are pinned inside
@@ -977,7 +976,7 @@ llama_model_qwen4exp::graph::graph(const llm_graph_params & params) :
                     build_moe_ffn(cr[r], llama_dsplit_mirror_fork(model, model.layers[il].ffn_gate_inp, ds_r[llama_ds_xr_fork(ds_r)].dev),
                             model.layers[il].ffn_up_exps, model.layers[il].ffn_gate_exps, model.layers[il].ffn_down_exps, nullptr,
                             n_expert, n_expert_used, LLM_FFN_SILU, true, hparams.expert_weights_scale, LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
-                            lg, model.layers[il].ffn_gate_up_exps, model.layers[il].ffn_up_exps_s, model.layers[il].ffn_gate_exps_s, model.layers[il].ffn_down_exps_s);
+                            lg, model.layers[il].ffn_gate_up_exps);
                     ggml_tensor * f = moe_ranges[0].out;
                     moe_ranges.clear();
                     ds_skip();   // the router's selection follows its input (the logits, on the range's card); the expert chain is pinned inside

@@ -3518,10 +3518,10 @@ void llama_kv_cache::state_clear(llama_seq_id seq_id, uint32_t strm, const slot_
         const size_t k_size_row = ggml_row_size(k->type, n_embd_k_gqa);
 
         if (is_contiguous && k->nb[1] == k_size_row && !kv_rev) {
-            llama_clear_tensor_data(k, sinfo.head() * k_size_row, cell_count * k_size_row);
+            ggml_backend_tensor_memset(k, 0, sinfo.head() * k_size_row, cell_count * k_size_row);
         } else {   // scattered cells, or the token-major layout where the cells of one layer are a record apart
             for (uint32_t i = 0; i < cell_count; ++i) {
-                llama_clear_tensor_data(k, kv_row(is_contiguous ? sinfo.head() + i : sinfo.idxs[0][i]) * k->nb[1], k_size_row);
+                ggml_backend_tensor_memset(k, 0, kv_row(is_contiguous ? sinfo.head() + i : sinfo.idxs[0][i]) * k->nb[1], k_size_row);
             }
         }
     }
@@ -3541,10 +3541,10 @@ void llama_kv_cache::state_clear(llama_seq_id seq_id, uint32_t strm, const slot_
             const size_t v_size_row = ggml_row_size(v->type, n_embd_v_gqa);
 
             if (is_contiguous && v->nb[1] == v_size_row && !kv_rev) {
-                llama_clear_tensor_data(v, sinfo.head() * v_size_row, cell_count * v_size_row);
+                ggml_backend_tensor_memset(v, 0, sinfo.head() * v_size_row, cell_count * v_size_row);
             } else {
                 for (uint32_t i = 0; i < cell_count; ++i) {
-                    llama_clear_tensor_data(v, kv_row(is_contiguous ? sinfo.head() + i : sinfo.idxs[0][i]) * v->nb[1], v_size_row);
+                    ggml_backend_tensor_memset(v, 0, kv_row(is_contiguous ? sinfo.head() + i : sinfo.idxs[0][i]) * v->nb[1], v_size_row);
                 }
             }
         } else {

@@ -74,14 +74,6 @@ constexpr int n_unroll = 4; // Manually unroll this many loop iterations for bet
 // The first (n_tokens*n_expert_used + J - 1) / tile_width elements of tile_spec contain the specication for
 //   matrix multiplication tiles at token positions which are exactly divided by tile_width.
 // Additionally the following n_expert elements of tile_spec may contain additional tiles that fall between these seams.
-//
-// fork: the compact slice of an expert is gathered in shared memory, at most one 4-byte entry per token. The buffer used to be sized for
-// the whole pass, so an op over more tokens than a block's shared memory holds (smpbo/4: 25344 tokens with the 99 KiB of an RTX 3090)
-// died in GGML_ASSERT(nbytes_shared <= smpbo) (a 31367-token dense split pass, whose expert card routes the experts of every card's
-// tokens in one op). Now the tokens are walked in chunks of n_tokens_chunk (what the block holds, set by the launch from the device),
-// each chunk's entries written out before the next chunk reuses the buffer. A chunk's output position needs the expert's start
-// (nex_prev: the columns of all lower experts over ALL tokens), so with more than one chunk a first walk over the ids counts it.
-// A pass that fits in one chunk (every pass before) runs the single walk as it did. The tile seams are written once, after the chunks.
 template <int n_expert_used_template>
 __launch_bounds__(ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void mm_ids_helper(
@@ -222,10 +214,6 @@ static __global__ void mm_ids_helper(
             dump_store(ids_src1, ids_dst, n_expert_used, nchannels_y, sis1, write_inverse, store, nex_prev, n_dumped, it_compact);
         }
     }
-    ggml_cuda_syncwarp(); // the next chunk reuses the store
-    n_written += it_compact;
-    }   // chunks
-    const int it_compact = n_written; // all columns of this expert
 
     if (threadIdx.x != 0) {
         return;

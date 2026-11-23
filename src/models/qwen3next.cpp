@@ -229,7 +229,7 @@ llama_model_qwen3next::graph::graph(const llm_graph_params & params) :
                         qc = ggml_reshape_4d(ctx0, ggml_repeat_4d(ctx0, ggml_reshape_4d(ctx0, qc, head_k_dim, 1, num_k_heads, nr), head_k_dim, rf, num_k_heads, nr), head_k_dim, num_k_heads * rf, nr, 1);
                         kc = ggml_reshape_4d(ctx0, ggml_repeat_4d(ctx0, ggml_reshape_4d(ctx0, kc, head_k_dim, 1, num_k_heads, nr), head_k_dim, rf, num_k_heads, nr), head_k_dim, num_k_heads * rf, nr, 1);
                     }
-                    auto os = build_delta_net(qc, kc, vc, gate, beta, state, il);
+                    auto os = build_delta_net(qc, kc, vc, gate, beta, state);
                     ggml_tensor * new_state = ggml_cont(ctx0, os.second);
                     if (last) {
                         ggml_build_forward_expand(gf, ggml_cpy(ctx0, new_state, ggml_view_2d(ctx0, ssm_states_all, hparams.n_embd_s(), 1, ssm_states_all->nb[1],
@@ -288,7 +288,7 @@ llama_model_qwen3next::graph::graph(const llm_graph_params & params) :
                 build_moe_ffn(call, llama_dsplit_mirror_fork(model, model.layers[il].ffn_gate_inp, ds_r[llama_ds_xr_fork(ds_r)].dev),
                         model.layers[il].ffn_up_exps, model.layers[il].ffn_gate_exps, model.layers[il].ffn_down_exps, nullptr,
                         n_expert, n_expert_used, LLM_FFN_SILU, true, hparams.expert_weights_scale, LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
-                        logits, model.layers[il].ffn_gate_up_exps, model.layers[il].ffn_up_exps_s, model.layers[il].ffn_gate_exps_s, model.layers[il].ffn_down_exps_s);
+                        logits, model.layers[il].ffn_gate_up_exps);
                 std::vector<ggml_tensor *> mo(NR);
                 for (size_t r = 0; r < NR; ++r) { mo[r] = moe_ranges[r].out; }
                 moe_ranges.clear();

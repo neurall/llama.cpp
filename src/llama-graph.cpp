@@ -2376,15 +2376,11 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
     // the experts in the MoE cache are selected by their slots
     ggml_tensor * res = slots == nullptr ?
         ggml_mul_mat_id(ctx0, w, cur_mm, ids) :
-        ggml_mul_mat_id(ctx0, moe_cache->get_experts(w), cur_mm, slots);
+        ggml_mul_mat_id(ctx0, cached ? moe_cache->get_experts(w) : w, cur_mm, slots);
     if (mm_id_backend) {
         res->op_params[1] = 1; // ids may be -1: zero the output first
         if (mm_id_hi > mm_id_lo) { res->op_params[8] = mm_id_lo; res->op_params[9] = mm_id_hi; }
         ggml_backend_sched_set_tensor_backend(sched, res, mm_id_backend);
-    }
-
-    if (prec_policy) {
-        prec_policy->apply(res);
     }
 
     if (w->type == GGML_TYPE_NVFP4) {
@@ -2841,6 +2837,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
          ggml_tensor * selected_experts_in,
          ggml_tensor * post_exp_norm,
                float   post_exp_norm_eps) const {
+    // per-expert scales come from the model (llama_model::get_w_scale, applied by build_lora_mm_id); the fork's path checks below read them
+    ggml_tensor * up_exps_s   = model.get_w_scale(up_exps ? up_exps : gate_up_exps);
+    ggml_tensor * gate_exps_s = gate_exps ? model.get_w_scale(gate_exps) : nullptr;
+    ggml_tensor * down_exps_s = model.get_w_scale(down_exps);
     const llm_arch arch = model.arch;
     const int64_t n_embd   = cur->ne[0];
     const int64_t n_tokens = cur->ne[1];
@@ -3544,7 +3544,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
         if (gate_up_exps) {
             // merged gate_up path: one mul_mat_id, then split into gate and up views
-            ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, ids_x, up_exps_s, slots); // [n_ff*2, n_expert_used, n_tokens]
+            ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, ids_x, slots); // [n_ff*2, n_expert_used, n_tokens]
             cb(gate_up, "ffn_moe_gate_up", il);
 
             if (up_exps_s) {
@@ -3563,7 +3563,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             cb(up, "ffn_moe_up", il);
         } else {
             // separate gate and up path
-            up = build_lora_mm_id(up_exps, cur, ids_x, up_exps_s, slots); // [n_ff, n_expert_used, n_tokens]
+            up = build_lora_mm_id(up_exps, cur, ids_x, slots); // [n_ff, n_expert_used, n_tokens]
             cb(up, "ffn_moe_up", il);
 
             if (mcache && !mc_mix_b) {
@@ -3585,7 +3585,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
 
             if (gate_exps) {
-                cur = build_lora_mm_id(gate_exps, cur, ids_x, gate_exps_s, slots); // [n_ff, n_expert_used, n_tokens]
+                cur = build_lora_mm_id(gate_exps, cur, ids_x, slots); // [n_ff, n_expert_used, n_tokens]
                 cb(cur, "ffn_moe_gate", il);
 
                 if (mcache && !mc_mix_b) {
@@ -3699,7 +3699,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             amax_src1 = build_amax_src1_f16(cur);
             cur = amax_src1.res;
         }
-        experts = build_lora_mm_id(down_exps, cur, ids_x, down_exps_s, slots); // [n_embd, n_expert_used, n_tokens]
+        experts = build_lora_mm_id(down_exps, cur, ids_x, slots); // [n_embd, n_expert_used, n_tokens]
         cb(experts, "ffn_moe_down", il);
         if (amax_src1.scale_s) {
             experts = ggml_mul(ctx0, experts, amax_src1.scale_s);
@@ -4370,15 +4370,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         moe_defer_pending = dsum; // expanded at the next MoE layer, after its attention
     }
 
-        return experts;
-    };
-
-    ggml_tensor * experts = cache.slots == nullptr ?
-        build_experts(cur, selected_experts, nullptr, true) :
-        moe_cache->build_experts(*this, cache, cur, selected_experts,
-                [](ggml_tensor * cur, ggml_tensor * ids, ggml_tensor * mm_ids, bool cached, void * user_data) {
-                    return (*static_cast<decltype(build_experts) *>(user_data))(cur, ids, mm_ids, cached);
-                }, &build_experts);
+    if (down_exps_s) {
+        cb(experts, "ffn_moe_down_scaled", il);
+    }
 
     if (down_exps_b) {
         experts = ggml_add_id(ctx0, experts, down_exps_b, selected_experts);
@@ -4419,7 +4413,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // range_cache: the sum stays on the cache's card, where the experts were computed, and only each range's rows cross (below). Left to the scheduler it ran on
     // the last range's card, and each of the k strided views of the experts crossed as a copy with its parent's layout: 2 GiB each at 16384 tokens on GLM 3.0,
     // 58 GiB reserved on CUDA0 against a 5.4 GiB peak of the graph's own tensors, passes capped at 3776 tokens
-    ggml_backend_t sum_b = range_cache && sched && moe_cache ? moe_cache->backend(il) : nullptr;
+    ggml_backend_t sum_b = nullptr;   // shortcut: upstream's expert cache (moe_cache) has no per-layer backend now; it is off in the fork (the fork's cache is --moe), wire build_lookup if it is ever used
 
     for (uint32_t i = 1; i < n_expert_used_il; ++i) {
         moe_out = ggml_add(ctx0, moe_out, cur_experts[i]);
@@ -4452,6 +4446,20 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     cb(moe_out, "ffn_moe_out", il);
 
     return moe_out;
+}
+
+// input embeddings with optional lora
+ggml_tensor * llm_graph_context::build_moe_cache_slots(
+         ggml_tensor * selected_experts,
+         ggml_tensor * up_exps,
+         ggml_tensor * gate_exps,
+         ggml_tensor * down_exps,
+         ggml_tensor * gate_up_exps,
+                 int   il) const {
+    // shortcut: upstream reworked its expert cache (llama_moe_cache::build_lookup); it stays off in the fork (moe_cache_size 0, the fork's cache is --moe),
+    // so no slots: wire build_lookup here if upstream's cache is ever enabled
+    GGML_UNUSED(selected_experts); GGML_UNUSED(up_exps); GGML_UNUSED(gate_exps); GGML_UNUSED(down_exps); GGML_UNUSED(gate_up_exps); GGML_UNUSED(il);
+    return nullptr;
 }
 
 // input embeddings with optional lora
@@ -5527,9 +5535,6 @@ static ggml_tensor * build_attn_iswa_impl(
 
         ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs, il));
     }
-
-    const auto & kq_mask = is_swa ? inp->self_attn_mask_swa.raw : inp->self_attn_mask.raw;
-    const auto & kv_rows = is_swa ? inp->self_attn_mask_swa.rows : inp->self_attn_mask.rows;
 
     ggml_tensor * cur = nullptr;
     if (n_parts > 1) {

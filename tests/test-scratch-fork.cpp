@@ -228,7 +228,7 @@ int main(int argc, char ** argv) {
                 size_t asked = 0, computed = 0;
                 if (!run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor **) {
                         ggml_tensor * y = ggml_mul_mat(ctx, ggml_new_tensor_2d(ctx, type, 8192, 16416), ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 8192, t));
-                        ggml_mul_mat_set_prec(y, GGML_PREC_F32);
+                        ggml_prec_set_acc(y, GGML_PREC_F32);
                         return y;
                     }, no_ids, asked, computed)) { n_skipped++; continue; }
                 snprintf(what, sizeof(what), "MUL_MAT %s 8192 x 16416 precision f32, %lld columns (chunks)", ggml_type_name(type), (long long) t);

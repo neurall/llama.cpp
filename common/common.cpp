@@ -1797,7 +1797,7 @@ static uint32_t common_auto_ctx(common_params & params) {
         std::vector<ggml_backend_dev_t> devs;
         uint32_t ngl = 0, nskip = 0, nctx = 0, nexp = 0;
         try {
-            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+            const auto dmd = common_get_device_memory_data(params.model.get_paths(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
             double t_model = 0, t_ctx = 0;
             common_fit_last_dry_run_times(t_model, t_ctx);
             LOG_INF("%s: dry run at %u cells: model %.2f s, context %.2f s\n", __func__, cp.n_ctx, t_model, t_ctx);
@@ -1871,7 +1871,7 @@ static uint32_t common_auto_ubatch(common_params & params) {
         uint32_t ngl = 0, nskip = 0, nctx = 0, nexp = 0;
         size_t sum = 0;
         try {
-            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+            const auto dmd = common_get_device_memory_data(params.model.get_paths(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
             for (size_t d = 0; d < devs.size() && d < dmd.size(); ++d) {   // the last entry of dmd is the host
                 sum += dmd[d].compute;
                 if (i == 0) {
@@ -1934,7 +1934,7 @@ static uint32_t common_fits_ubatch(common_params & params, bool experts_in_ram =
         std::vector<ggml_backend_dev_t> devs;
         uint32_t ngl = 0, nskip = 0, nctx = 0, nexp = 0;
         try {
-            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+            const auto dmd = common_get_device_memory_data(params.model.get_paths(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
             int64_t left = 0, compute = 0;
             for (size_t d = 0; d < devs.size() && d < dmd.size(); ++d) {   // the last entry of dmd is the host
                 left    += (int64_t) dmd[d].free - (int64_t) (dmd[d].model + dmd[d].context);
@@ -2013,7 +2013,7 @@ static size_t common_pass_buffer_reserve(common_params & params) {
     std::vector<ggml_backend_dev_t> devs;
     uint32_t ngl = 0, nskip = 0, nctx = 0, nexp = 0;
     try {
-        const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+        const auto dmd = common_get_device_memory_data(params.model.get_paths(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
         if (!dmd.empty()) { return dmd.back().compute; }   // the last entry is the host
     } catch (const std::exception & e) {
         COM_DBG("pass buffer probe failed (%s)\n", e.what());

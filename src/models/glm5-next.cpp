@@ -756,7 +756,7 @@ llama_model_glm5_next::graph::graph(const llm_graph_params & params) :
     // of the pools this pass completes. Only for the masked flash-attention path (prompt passes); --moe dense-split-attn=0 runs these layers for all tokens on
     // the layer's card. (nsys, GLM-5.3-Flash 5.5k: the attention layer for all tokens took 125 ms on the x16 card while the x4 card waited 130 ms.)
     static const bool dsa_opt = [] { const char * e = llama_moe_get_opt("dense-split-attn"); return !e || atoi(e) != 0; }();
-    const bool dsa_split = dsa_opt && cparams.flash_attn && cparams.fused_lid;
+    const bool dsa_split = dsa_opt && cparams.flash_attn;   // upstream #32650: the lightning indexer is always fused
 
     if (!R.empty()) {
         const size_t NR = R.size();
@@ -861,7 +861,7 @@ llama_model_glm5_next::graph::graph(const llm_graph_params & params) :
                     ggml_tensor * beta = ggml_sigmoid(ctx0, ggml_reshape_4d(ctx0, ggml_mul_mat(ctx0, Lr.ssm_beta, cr[r]), 1, n_head_kda, nr, n_seqs));
                     ggml_tensor * Qc = build_gdn_l2_norm(ctx0, qkv[0], 1e-6f);
                     ggml_tensor * Kc = build_gdn_l2_norm(ctx0, qkv[1], 1e-6f);
-                    auto os = build_delta_net(Qc, Kc, qkv[2], g1, beta, state, il);
+                    auto os = build_delta_net(Qc, Kc, qkv[2], g1, beta, state);
                     ggml_tensor * output    = ggml_cont(ctx0, os.first);
                     ggml_tensor * new_state = ggml_cont(ctx0, os.second);
                     if (last) {
