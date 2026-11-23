@@ -915,6 +915,18 @@ static void ggml_gallocr_allocate_node(ggml_gallocr_t galloc, struct ggml_tensor
                 }
             }
         }
+        if (galloc_hw_on() && ggml_nbytes(node) >= ((size_t) 1 << 30) && galloc_hw_graph) {   // fork: what is live when a big node is placed
+            size_t held = 0;
+            for (int i = 0; i < galloc->n_held; ++i) { held += galloc->held[i].size; }
+            GGML_LOG_WARN("galloc: placing %s %zu MiB: %d held frees %zu MiB (streams apart); live of 64 MiB or more:\n", node->name, ggml_nbytes(node) >> 20, galloc->n_held, held >> 20);
+            for (int i = 0; i < ggml_graph_n_nodes(galloc_hw_graph); ++i) {
+                struct ggml_tensor * t = ggml_graph_node(galloc_hw_graph, i);
+                struct hash_node * th = ggml_gallocr_hash_get(galloc, t);
+                if (t != node && th->allocated && !ggml_impl_is_view(t) && ggml_gallocr_is_own(galloc, t) && ggml_nbytes(t) >= ((size_t) 64 << 20)) {
+                    GGML_LOG_WARN("galloc:   live %s %s %zu MiB at %zu MiB, readers left %d\n", t->name, ggml_op_desc(t), ggml_nbytes(t) >> 20, th->addr.offset >> 20, th->n_children);
+                }
+            }
+        }
         // allocate tensor from the buffer
         struct ggml_dyn_tallocr * alloc = galloc->buf_tallocs[buffer_id];
         ggml_backend_buffer_type_t buft = galloc->bufts[buffer_id];
