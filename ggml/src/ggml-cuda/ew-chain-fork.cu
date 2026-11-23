@@ -149,6 +149,7 @@ static bool ewc_overlap(const ggml_tensor * a, const ggml_tensor * b) {
 int ggml_cuda_try_fuse_ew_chain_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i) {
     static const bool on  = !getenv("GGML_CUDA_EW_CHAIN") || atoi(getenv("GGML_CUDA_EW_CHAIN")) != 0;
     static const bool log = getenv("GGML_CUDA_EW_CHAIN_LOG") && atoi(getenv("GGML_CUDA_EW_CHAIN_LOG")) != 0;
+    static const bool log_all = getenv("GGML_CUDA_EW_CHAIN_LOG") && atoi(getenv("GGML_CUDA_EW_CHAIN_LOG")) >= 2;   // every run, to count them
     if (!on || !ewc_node_ok(cgraph->nodes[i])) {
         return 0;
     }
@@ -241,7 +242,7 @@ int ggml_cuda_try_fuse_ew_chain_fork(ggml_backend_cuda_context & ctx, const ggml
                 }
             }
             l += " [" + std::to_string(last->ne[0]) + "," + std::to_string(last->ne[1]) + "," + std::to_string(last->ne[2]) + "]";
-            if (said.insert(l).second) { GGML_LOG_WARN("ew chain: %d nodes in one kernel: %s\n", m, l.c_str()); }
+            if (said.insert(l).second || log_all) { GGML_LOG_WARN("ew chain: %d nodes in one kernel: %s\n", m, l.c_str()); }
         }
         return end - i;
     }
