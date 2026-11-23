@@ -177,9 +177,25 @@ ggml_tensor * llama_model_inkling2::graph::clip(ggml_tensor * cur, ggml_tensor *
 
 // attention over the depth: mix the earlier block outputs and cur with learned queries
 ggml_tensor * llama_model_inkling2::graph::mix(const std::vector<ggml_tensor *> & blocks, ggml_tensor * cur, ggml_tensor * query) {
+    // the longest prefix of blocks already stacked, then one concat per block after it
+    ggml_tensor * stack = nullptr;
+    size_t have = blocks.size();
+    for (; have > 0; --have) {
+        auto it = stacks.find(std::vector<ggml_tensor *>(blocks.begin(), blocks.begin() + have));
+        if (it != stacks.end()) {
+            stack = it->second;
+            break;
+        }
+    }
+    for (size_t n = have; n < blocks.size(); ++n) {
+        ggml_tensor * block = ggml_reshape_3d(ctx0, blocks[n], n_embd, 1, n_tokens);
+        stack = stack ? ggml_concat(ctx0, block, stack, 1) : block;
+        stacks[std::vector<ggml_tensor *>(blocks.begin(), blocks.begin() + n + 1)] = stack;
+    }
+
     ggml_tensor * states = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
-    for (ggml_tensor * block : blocks) {
-        states = ggml_concat(ctx0, ggml_reshape_3d(ctx0, block, n_embd, 1, n_tokens), states, 1);
+    if (stack) {
+        states = ggml_concat(ctx0, stack, states, 1);
     }
     states = ggml_rms_norm(ctx0, states, 1e-6f);
 

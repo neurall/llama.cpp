@@ -2531,6 +2531,9 @@ struct llama_model_inkling2 : public llama_model_base {
                 int64_t offset);
         ggml_tensor * control(ggml_tensor * cur, ggml_tensor * message, const loop_layer & loop, int ctrl);
 
+        // block stacks for mix(), newest first, one per block prefix: a mix concats only the blocks added since
+        std::map<std::vector<ggml_tensor *>, ggml_tensor *> stacks;
+
     protected:
         // the helpers alone, a derived graph builds its own body
         struct no_build {};
