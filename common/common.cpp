@@ -1918,7 +1918,10 @@ static uint32_t common_auto_ubatch(common_params & params) {
 static uint32_t common_fits_ubatch(common_params & params, bool experts_in_ram = false) {
     const uint32_t SAFE = 512;
     uint32_t top = 16384;
-    if (params.n_ctx > 0) { top = std::min<uint32_t>(top, std::max<uint32_t>(SAFE, params.n_ctx)); }
+    // fork: without -c the probe ran at the trained context (Inkling 2: 1M cells, its full-attention KV left no room: passes of 512 where 8192 fit at the
+    // 29.7k context the server then used); it probes at the context the server will get
+    const uint32_t n_ctx = params.n_ctx > 0 ? params.n_ctx : common_auto_ctx(params);
+    if (n_ctx > 0) { top = std::min<uint32_t>(top, std::max<uint32_t>(SAFE, n_ctx)); }
     std::vector<llama_model_tensor_buft_override> tbo;
     if (experts_in_ram) {
         for (const auto & o : params.tensor_buft_overrides) { if (o.pattern) { tbo.push_back(o); } }
@@ -1929,6 +1932,7 @@ static uint32_t common_fits_ubatch(common_params & params, bool experts_in_ram =
         auto mp = common_model_params_to_llama(params);
         if (experts_in_ram) { mp.tensor_buft_overrides = tbo.data(); }
         auto cp = common_context_params_to_llama(params);
+        if (n_ctx > 0) { cp.n_ctx = n_ctx; }
         cp.n_ubatch = ub;
         cp.n_batch  = std::max(cp.n_batch, ub);
         std::vector<ggml_backend_dev_t> devs;
