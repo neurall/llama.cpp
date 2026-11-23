@@ -7400,6 +7400,8 @@ static bool ggml_cuda_can_fuse(const struct ggml_cgraph *                cgraph,
 }
 
 // try and fuse nodes and return the number of nodes to skip
+static int ggml_cuda_try_fuse_norm_q8_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i);
+
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i, std::vector<bool> & nodes_fused) {
 
     if (ggml_cuda_fusion_disabled()) {
@@ -7411,6 +7413,11 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
     {   // fork: Inkling 2 depth mix (concat, rms_norm, matmuls, softmax) in one kernel (mix-fork.cu), before its rms_norm is fused elsewhere
         extern int ggml_cuda_try_fuse_mix_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i);
         if (const int n = ggml_cuda_try_fuse_mix_fork(*cuda_ctx, cgraph, i)) {
+            return n;
+        }
+    }
+    {   // fork, any model: rms_norm (+ weight mul) also writes the q8_1 copy its matvecs read (norm-q8-fork.cu)
+        if (const int n = ggml_cuda_try_fuse_norm_q8_fork(*cuda_ctx, cgraph, i)) {
             return n;
         }
     }
@@ -8482,6 +8489,81 @@ static void ggml_cuda_q8_written_fork(int device, const ggml_tensor * t) {
     }
 }
 
+// a slot filled by a fused kernel before the graph loop marks the fused nodes written: claimed again after that (ggml_cuda_q8_revive_fork)
+static struct { int device = -1, lane = 0; q8_reuse_key k; uintptr_t lo = 0, hi = 0; } g_q8r_revive;
+
+static void ggml_cuda_q8_revive_fork() {
+    if (g_q8r_revive.device >= 0) {
+        bool hit = false;
+        g_q8r[g_q8r_revive.device].lookup_or_claim(g_q8r_revive.lane, g_q8r_revive.k, g_q8r_revive.lo, g_q8r_revive.hi, hit);
+        g_q8r_revive.device = -1;
+    }
+}
+
+void ggml_cuda_rms_norm_q8_fork(const float * x, int64_t s_x, const float * w, float * dst, int64_t s_dst, void * q8,
+        int ne0, int ne_pad, int rows, float eps, cudaStream_t stream);   // norm-q8-fork.cu
+
+// rms_norm, then optionally mul by a one-row f32 weight, read by a later quantized matvec: one kernel writes the f32 output and the matvec's q8_1 slot.
+// GGML_CUDA_NORM_Q8=0 turns it off. Returns the nodes to skip after i.
+static int ggml_cuda_try_fuse_norm_q8_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i) {
+    static const bool on = !getenv("GGML_CUDA_NORM_Q8") || atoi(getenv("GGML_CUDA_NORM_Q8")) != 0;
+    const ggml_tensor * rms = cgraph->nodes[i];
+    const int device = ctx.device;
+    if (!on || rms->op != GGML_OP_RMS_NORM || g_q8r_buf[device] == nullptr || rms->type != GGML_TYPE_F32 || rms->src[0]->type != GGML_TYPE_F32) {
+        return 0;
+    }
+    const ggml_tensor * x = rms->src[0];
+    const int64_t ne0 = rms->ne[0], rows = ggml_nrows(rms);
+    if (rows > MMVQ_MAX_BATCH_SIZE || x->nb[0] != sizeof(float) || !ggml_is_contiguous_rows(x) || !ggml_is_contiguous(rms) ||
+            (rows > 1 && (x->nb[2] != x->nb[1]*x->ne[1] || x->nb[3] != x->nb[2]*x->ne[2]))) {
+        return 0;
+    }
+    // the weight mul, if the next non-view node is one
+    int j = i + 1;
+    while (j < cgraph->n_nodes && ggml_cuda_is_view_or_noop(cgraph->nodes[j])) { ++j; }
+    const ggml_tensor * out = rms;
+    const ggml_tensor * w = nullptr;
+    int last = i;
+    if (j < cgraph->n_nodes) {
+        const ggml_tensor * mul = cgraph->nodes[j];
+        if (mul->op == GGML_OP_MUL && mul->src[0] == rms && mul->src[1]->type == GGML_TYPE_F32 && mul->src[1]->ne[0] == ne0 && ggml_nrows(mul->src[1]) == 1 &&
+                ggml_is_contiguous(mul->src[1]) && ggml_are_same_shape(mul, rms) && ggml_is_contiguous(mul) && mul->type == GGML_TYPE_F32 &&
+                ggml_node_get_use_count(cgraph, i) == 1 && !(rms->flags & GGML_TENSOR_FLAG_OUTPUT)) {
+            out = mul; w = mul->src[1]; last = j;
+        }
+    }
+    // a later quantized matvec reads it
+    bool mm = false;
+    for (int k = last + 1; k < cgraph->n_nodes && k <= last + 64 && !mm; ++k) {
+        const ggml_tensor * t = cgraph->nodes[k];
+        mm = t->op == GGML_OP_MUL_MAT && t->src[1] == out && ggml_is_quantized(t->src[0]->type) && t->src[1]->ne[1]*t->src[1]->ne[2]*t->src[1]->ne[3] <= MMVQ_MAX_BATCH_SIZE;
+    }
+    if (!mm || last == i) {   // shortcut: a bare rms_norm (no weight) is left to the usual path; it would need a one-node fusion return
+        return 0;
+    }
+    const int64_t ne_pad = GGML_PAD(ne0, MATRIX_ROW_PADDING);
+    const size_t q8_bytes = rows*ne_pad*sizeof(block_q8_1)/QK8_1;
+    // the key mmvq.cu builds for a contiguous input: flat rows
+    const int64_t q8_ne[4] = { ne0, rows, 1, 1 };
+    const int64_t q8_s[3]  = { ne0, ne0*rows, ne0*rows };
+    for (int k = i; k <= last; ++k) { ggml_cuda_q8_written_fork(device, cgraph->nodes[k]); }
+    bool hit = false;
+    void * slot = ggml_cuda_q8_reuse_fork(device, ctx.curr_stream_no, out->data, q8_ne, q8_s, ggml_nbytes(out), q8_bytes, &hit);
+    if (slot == nullptr) {
+        return 0;
+    }
+    float eps;
+    memcpy(&eps, rms->op_params, sizeof(float));
+    ggml_cuda_rms_norm_q8_fork((const float *) x->data, x->nb[1]/sizeof(float), w ? (const float *) w->data : nullptr, (float *) out->data, ne0, slot,
+            (int) ne0, (int) ne_pad, (int) rows, eps, ctx.stream());
+    g_q8r_revive.device = device; g_q8r_revive.lane = ctx.curr_stream_no;
+    g_q8r_revive.k.src = out->data;
+    for (int k = 0; k < 4; ++k) { g_q8r_revive.k.ne[k] = q8_ne[k]; }
+    for (int k = 0; k < 3; ++k) { g_q8r_revive.k.s[k] = q8_s[k]; }
+    g_q8r_revive.lo = (uintptr_t) out->data; g_q8r_revive.hi = (uintptr_t) out->data + ggml_nbytes(out);
+    return last - i;
+}
+
 static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const void * graph_key) {
     static ggml_cuda_op_prof op_prof;
     bool graph_evaluated_or_captured = false;
@@ -8829,6 +8911,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 }
                 if (nodes_to_skip != 0) {
                     for (int k = 1; k <= nodes_to_skip && i + k < cgraph->n_nodes; ++k) { ggml_cuda_q8_written_fork(cuda_ctx->device, cgraph->nodes[i + k]); }
+                    ggml_cuda_q8_revive_fork();   // a slot the fused kernel filled stays valid
                     sp_after(i, nodes_to_skip, nodes_fused, fused_was);
                     if (check_node) { ggml_cuda_scratch_check_end_fork(cuda_ctx->device, cgraph, i, nodes_to_skip + 1, check_saved); }
 #ifdef GGML_CUDA_DEBUG
