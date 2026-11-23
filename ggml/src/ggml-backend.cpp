@@ -3961,9 +3961,15 @@ static void ggml_backend_sched_pf_verify(ggml_backend_sched_t sched, int split_i
     GGML_LOG_WARN("pf-verify:   slot bytes there: %s\npf-verify:   host bytes:       %s\n", hex, hex2);
 }
 
+// fork: the splits of the running compute on a device other than the CPU that were issued; a call that failed before any of them is taken back as never run
+// (llama_context::decode: no state moved, a DeepSeek V4 cache gives back its cells without a snapshot)
+static thread_local int g_sched_gpu_ran_fork = 0;
+extern "C" GGML_API int ggml_backend_sched_gpu_ran_fork(void) { return g_sched_gpu_ran_fork; }
+
 static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
     ggml_backend_nvtx_init();
+    g_sched_gpu_ran_fork = 0;
     struct ggml_backend_sched_split * splits = sched->splits;
     g_in_done.clear();   // a new graph: its user inputs are copied again, once per card (ggml_backend_sched_copy_input)
 
@@ -5051,6 +5057,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             } else {
                 NVTX_PUSH("LAUNCH graph_compute_async"); ec = ggml_backend_graph_compute_async(split_backend, &split->graph); NVTX_POP();
             }
+            if (ec == GGML_STATUS_SUCCESS && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) { g_sched_gpu_ran_fork++; }
             if (bells) { g_bell_thread->wait(); }   // every bell of the split is served: the next split may use the host again
             if (cs_set >= 0 && cs_idx[split_id] >= 0) {
                 if (ec == GGML_STATUS_SUCCESS) {
@@ -5167,6 +5174,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 if (ec != GGML_STATUS_SUCCESS) {
                     return ec;
                 }
+                if (ggml_backend_dev_type(ggml_backend_get_device(split_backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) { g_sched_gpu_ran_fork++; }
 
                 // TODO: pass backend to the callback, then the user can decide if they want to synchronize
                 ggml_backend_synchronize(split_backend);

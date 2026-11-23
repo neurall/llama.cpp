@@ -3,6 +3,7 @@
 #include <csignal>
 #include "../ggml/src/ggml-read-fork.h"
 #include "../ggml/src/ggml-rampool-fork.h"
+#include "../ggml/src/ggml-rampool-tune-fork.h"   // rp_start_pick, rp_grow_cap, rp_need_now
 #include "llama-moecache-fork.h"
 #include "llama-backend-fork.h"
 #include "llama-fork-hooks.h"
@@ -480,6 +481,7 @@ struct moe_cache {
     size_t                     rp_avail0 = 0;         // RAM available when the start size was picked (rp_start_want): the base the learned size is stored against
     size_t                     rp_want0 = SIZE_MAX;   // that start size, SIZE_MAX: not picked yet
     size_t                     rp_extra = 0;          // what the learned size added to the equation's: swap pressure gives it back like a grow (rp_resize)
+    size_t                     rp_need  = 0;          // stored: the most RAM a request on this model and RAM size needed beside the pool (rp_need_key), 0: none measured
     bool (*rp_pin)(void *, size_t) = nullptr;      // the GPU backend's pin of a filled range (ggml_backend_cuda_pin_range_fork), nullptr: the pool pins before the fill as before
     void (*rp_unpin)(void *) = nullptr;
     uint32_t                   vis_base = 0;       // the heat clock where the heat file left it
@@ -9089,6 +9091,7 @@ static unsigned ram_total_gib() {
     return (unsigned) ((t + ((size_t) 1 << 29)) >> 30);
 }
 static std::string rp_kept_key() { return "rampool.kept.ram" + std::to_string(ram_total_gib()); }
+static std::string rp_need_key() { return "rampool.need.ram" + std::to_string(ram_total_gib()); }
 // The RAM a grow leaves: the floor, and never what a long prompt needs: the pass cap pins a pass's host buffer from RAM available less 4 GiB (llama-context.cpp, mask
 // budget), and the largest pass's buffer was kept free at the start (common_auto_pin, --moe pass-buf). shortcut: below ~40 GiB of RAM this leaves nothing to grow into
 // (the start keeps max(4 GiB, RAM/10) + that buffer); upgrade when the pool gives chunks back before a long prompt's pin, then the floor alone.
@@ -9107,16 +9110,18 @@ static size_t rp_start_want(moe_cache * mc, const std::string & section) {
     const size_t eq = budget > used ? budget - used : 0;
     mc->rp_avail0 = ram_avail_bytes();
     mc->rp_want0 = eq;
-    std::string v;
+    std::string v, n;
+    if (!section.empty() && moe_state_get(section, rp_need_key(), n)) { mc->rp_need = (size_t) strtoull(n.c_str(), nullptr, 10); }
     if (eq > 0 && !(g && atoi(g) == 0) && !section.empty() && moe_state_get(section, rp_kept_key(), v)) {
-        const size_t kept = std::max((size_t) strtoull(v.c_str(), nullptr, 10), rp_grow_floor());   // a larger pass since then keeps its buffer free all the same
-        if (mc->rp_avail0 > kept) {
-            mc->rp_want0 = mc->rp_avail0 - kept;
-            mc->rp_extra = mc->rp_want0 > eq ? mc->rp_want0 - eq : 0;
-        }
+        // the last session's end, never closer than the heaviest request measured beside the pool (rp_start_pick: no need measured, only below the equation)
+        const size_t kept = (size_t) strtoull(v.c_str(), nullptr, 10), gfloor = rp_grow_floor();
+        mc->rp_want0 = rp_start_pick({ eq, mc->rp_avail0, std::max<size_t>(kept, 1), mc->rp_need, gfloor });
+        mc->rp_extra = mc->rp_want0 > eq ? mc->rp_want0 - eq : 0;
         const double G = 1073741824.0;
-        LLAMA_LOG_WARN("moe-cache: rampool: start %.1f GiB = RAM available %.1f - %.1f GiB the last session on %u GiB of RAM needed beside its pool (%s); the equation gave %.1f GiB\n",
-                mc->rp_want0 / G, mc->rp_avail0 / G, kept / G, ram_total_gib(), rp_kept_key().c_str(), eq / G);
+        LLAMA_LOG_WARN("moe-cache: rampool: start %.1f GiB: RAM available %.1f GiB, the last session on %u GiB of RAM left %.1f GiB beside its pool (%s), the heaviest request "
+                "needed %s beside it (%s), a grow leaves %.1f GiB; the equation gave %.1f GiB\n", mc->rp_want0 / G, mc->rp_avail0 / G, ram_total_gib(), kept / G,
+                rp_kept_key().c_str(), mc->rp_need ? tr_fmt("%.1f GiB", mc->rp_need / G).c_str() : "nothing measured yet (no start above the equation)",
+                rp_need_key().c_str(), gfloor / G, eq / G);
     }
     return mc->rp_want0;
 }
@@ -10063,6 +10068,12 @@ static void rp_resize(moe_cache * mc) {
     ggml_rampool_stats st0;
     ggml_rampool_stats_fork(&st0, false);
     const double G = 1073741824.0;
+    // the RAM the requests since the last resize needed beside the pool at their lowest point: the largest is kept for this model and RAM size (rp_need_key), the start
+    // and every grow leave it free (rp_start_pick, rp_grow_cap)
+    if (const size_t nd = rp_need_now(mc->rp_avail0, st0.bytes, low); nd > mc->rp_need) {
+        mc->rp_need = nd;
+        if (!mc->profile.empty()) { moe_state_set(mc->profile, {{ rp_need_key(), std::to_string(nd) }}); }
+    }
     // swapped out since the last resize, more than a thousandth of the pool: the last growth goes back (at most what this session added), and no new one
     const uint64_t swp = vm_swapped_out(), swp_b = swp - std::min(swp, g_swp_last.exchange(swp));
     static size_t grown = mc->rp_extra;   // what the grows of this session (and its learned start) added, less what went back
@@ -10098,12 +10109,14 @@ static void rp_resize(moe_cache * mc) {
         }
     }
     want = std::min(want, vram_cap);
+    const size_t want_ram = want;
+    want = rp_grow_cap(want, mc->rp_avail0, st0.bytes, mc->rp_need, gfloor);
     if (want == 0) { return; }
     const uint64_t room_gen = rp_room_ask(mc, want);
     // pinning takes ~0.3 s per GiB (PC1, rp_prepin): on a thread of its own, the next request does not wait for it. Its chunks join under the pool's lock (readers
     // outside it index a chunk vector that never moves); rp_bufs is touched by nothing else meanwhile: a shrink waits for it (above), the teardown too
     g_rp_growing.store(true);
-    std::thread([mc, want, low, gfloor, half, vram_cap, room_gen, pool0 = st0.bytes, gp = &grown]() {
+    std::thread([mc, want, want_ram, low, gfloor, half, vram_cap, room_gen, pool0 = st0.bytes, gp = &grown]() {
         const double G = 1073741824.0;
         rp_room_wait(room_gen);
         const int64_t t0 = ggml_time_us();
@@ -10118,9 +10131,9 @@ static void rp_resize(moe_cache * mc) {
                 if (d.low != SIZE_MAX) { d.low -= std::min(d.low, cost); }
             }
         }
-        const std::string line = tr_fmt("resize: %.2f GiB added of %.2f GiB asked in %.2f s: RAM available at least %.2f GiB since the last resize, kept %.2f GiB (floor, 4 GiB pass margin, largest pass), half the rest%s; pool %.1f GiB",
+        const std::string line = tr_fmt("resize: %.2f GiB added of %.2f GiB asked in %.2f s: RAM available at least %.2f GiB since the last resize, kept %.2f GiB (floor, 4 GiB pass margin, largest pass), half the rest%s%s; pool %.1f GiB",
                 added / G, want / G, (ggml_time_us() - t0) / 1e6, low / G, gfloor / G, vram_cap != SIZE_MAX && vram_cap < half ? tr_fmt(", the cards' VRAM allows %.1f", vram_cap / G).c_str() : "",
-                (pool0 + added) / G);
+                want < want_ram ? tr_fmt(", the heaviest request's %.1f GiB beside the pool allows %.2f", mc->rp_need / G, want / G).c_str() : "", (pool0 + added) / G);
         llama_moe_stats_log_fork("RPL", line.c_str());
         LLAMA_LOG_WARN("moe-cache: rampool: %s\n", line.c_str());
         g_rp_growing.store(false);
@@ -10235,9 +10248,13 @@ void llama_moe_cache_vram_watch_fork(bool prompt) {
             // pins the loader has not made yet keep their page tables' share (the warmup can run before the last reads end)
             typedef size_t (*pending_t)(void);
             auto pend = (pending_t) llama_fork_proc_dev(d.dev, "ggml_backend_fork_pins_pending_fork");
-            // and 32 MiB for kernels CUDA loads on their first use: a load that finds the card full breaks its kernel for the rest of the process, so the backend
-            // asks for 16 MiB free before any graph that may load one (ggml_cuda_kernel_load_guard_fork); given back to the last chunk, a load found 3 MiB (2026-11-17)
-            const size_t keep = rap->room_keep + poolx_pins_vram(pend ? pend() : 0, 0) + ((size_t) 32 << 20);
+            // and 64 MiB for kernels CUDA loads on their first use: a load that finds the card full breaks its kernel for the rest of the process, so the backend
+            // asks for 16 MiB free before any graph that may load one (ggml_cuda_kernel_load_guard_fork); given back to the last chunk, a load found 3 MiB (2026-11-17).
+            // The guard looks before each split: a graph never run before loads its kernels split by split, and DeepSeek V4.1's first DSpark verify step (b16041
+            // gainers 2026-11-20) took 20 MiB in its first 10 splits of CUDA0 from 33 kept free, the 11th found 13; a call that ran splits cannot be taken back
+            // on that cache, the request failed. shortcut: the guard's 16 plus 48 for one new graph's loads, measured on one model; upgrade to the largest
+            // first-run growth stored per model (the VRAM watch's outside growth on calls with a shape not seen yet)
+            const size_t keep = rap->room_keep + poolx_pins_vram(pend ? pend() : 0, 0) + ((size_t) 64 << 20);
             const size_t lo = poolx_room_give_back_chunks(rap->room_lo, rap->room_vsz - rap->room_unmapped, rap->tail_real, f, keep, rap->room_step, rap->room_gran);
             if (lo > rap->room_lo) {   // whole chunks of the free bytes: a block goes back only when every chunk it touches can be backed
                 rap->room_lo_want = lo;

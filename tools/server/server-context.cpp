@@ -1467,10 +1467,16 @@ private:
 
     // load the model and initialize llama_context
     // this may also be called to resume from sleeping state
+    // fork: members, not locals of load_model: the async load (LLAMA_ASYNC_LOAD) calls the progress callback from its read thread until the reads end,
+    // which can be after load_model returned (no warmup decode waits for them)
+    load_progress_data load_progress_text  {this, "text_model"};
+    load_progress_data load_progress_mmproj{this, "mmproj_model"};
+    load_progress_data load_progress_spec  {this, "spec_model"};
+
     bool load_model(common_params & params) {
-        load_progress_data load_progress_text  (this, "text_model");
-        load_progress_data load_progress_mmproj(this, "mmproj_model");
-        load_progress_data load_progress_spec  (this, "spec_model");
+        load_progress_text   = load_progress_data(this, "text_model");
+        load_progress_mmproj = load_progress_data(this, "mmproj_model");
+        load_progress_spec   = load_progress_data(this, "spec_model");
 
         const bool is_resume = sleeping;
 

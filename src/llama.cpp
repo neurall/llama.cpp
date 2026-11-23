@@ -513,7 +513,10 @@ static struct llama_model * llama_model_load_from_file_impl(
         return nullptr;
     }
 
-    unsigned cur_percentage = 0;
+    // fork: static, not on this stack: the async load (LLAMA_ASYNC_LOAD, llama-model.cpp) reports progress from its read thread after this function returned;
+    // the counter on this frame was written into whatever the main thread's next calls kept there (Qwen3.6 perplexity: 3 of 12 starts segfaulted, 2026-11-21)
+    static unsigned cur_percentage;
+    cur_percentage = 0;
     if (params.progress_callback == NULL) {
         params.progress_callback_user_data = &cur_percentage;
         params.progress_callback = [](float progress, void * ctx) {
