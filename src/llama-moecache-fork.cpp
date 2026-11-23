@@ -18278,6 +18278,8 @@ static void pv2_early_refill(moe_cache * mc, int k) {   // cache lock held, sche
     std::vector<pv2_cand> miss;
     for (const auto & m : pv2_missing(mc, false)) {
         const layer_state & ls = mc->layers[m.li];
+        const int32_t q = (size_t) m.li < mc->cs_pos.size() ? mc->cs_pos[m.li] : -1;
+        if (q >= 0 && (size_t) q >= mc->cs_next[k] && ls.link == k) { continue; }   // a layer the stream has still to plan places its own experts (placed twice)
         miss.push_back({ pv2_id(mc, m.li, m.e), ls.v2n, ls.v2u, std::llround(1e6 * m.sc) });
         part[miss.back().id] = m.part;
     }
