@@ -6,6 +6,7 @@
 #include "common.h"
 #include "../src/llama-backend-fork.h"
 #include "../src/llama-sidefile-fork.h"
+#include "../src/llama-estimate-fork.h"
 #include "cpu-topo-fork.h"
 
 #include "../src/llama-ext.h"
@@ -2213,12 +2214,38 @@ static void common_moe_cache_auto_impl(common_params & params) {
             model_size / 1073741824.0, vram_free / 1073741824.0, n_gpu);
         if (n_gpu > 0 && common_autotune_on(params)) {
             const bool in_ram = model_size + reserve > vram_free;   // stock placement of a model past the free VRAM: its experts run from RAM
-            uint32_t ub = common_fits_ubatch(params, in_ram);
+            uint32_t ub = 0;
+            bool one_card = false;
+            // fork: a model that fits one card runs on it (fits_one_card_pick); kept only when that card's pass probe finds a pass above the smallest one.
+            // Only without -ts/-dev and when the counted GPUs are the loader's device list (no card seen twice), so the split index is the loader's index.
+            bool user_ts = false;
+            for (size_t i = 0; i < llama_max_devices(); ++i) { user_ts = user_ts || params.tensor_split[i] != 0.0f; }
+            size_t n_gpu_dev = 0;
+            for (size_t i = 0; i < ggml_backend_dev_count(); ++i) { n_gpu_dev += ggml_backend_dev_is_gpu(ggml_backend_dev_get(i)) ? 1 : 0; }
+            if (n_gpu > 1 && !in_ram && !user_ts && params.devices.empty() && n_gpu_dev == g_gpu_used.size() && g_gpu_used.size() <= llama_max_devices()) {
+                std::vector<size_t> card_free;
+                for (ggml_backend_dev_t d : g_gpu_used) { size_t f = 0, t = 0; ggml_backend_dev_memory(d, &f, &t); card_free.push_back(f); }
+                const int pick = fits_one_card_pick(model_size, (size_t) 1 << 30, card_free.data(), (int) card_free.size());
+                if (pick >= 0) {
+                    params.tensor_split[pick] = 1.0f;
+                    const uint32_t ub1 = common_fits_ubatch(params, false);
+                    if (ub1 > 512) {
+                        ub = ub1;
+                        one_card = true;
+                        decide_fork("placement", string_format("one card (%s)", ggml_backend_dev_name(g_gpu_used[pick])),
+                            string_format("model %.1f GiB fits the card's %.1f GiB free (pass %u there): a layer split only adds copies between the cards",
+                                          model_size / 1073741824.0, card_free[pick] / 1073741824.0, ub1));
+                    } else {
+                        params.tensor_split[pick] = 0.0f;
+                    }
+                }
+            }
+            if (!ub) { ub = common_fits_ubatch(params, in_ram); }
             if (params.ubatch_user) { ub = std::min<uint32_t>(ub, params.n_ubatch); }   // -ub is a clamp on the largest micro-batch, not a fixed size (user 2026-10-25: dense ubatch sweep)
             params.n_batch  = std::max<uint32_t>(params.n_batch, 2 * ub);
             if (params.n_ctx > 0) { params.n_batch = std::min<uint32_t>(params.n_batch, std::max<uint32_t>(params.n_ctx, ub)); }
             params.n_ubatch = ub;
-            if (!shared_ram) { decide_fork("placement", "fits VRAM (stock)", string_format("model fits the free VRAM (%.1f GiB), no expert cache", vram_free / 1073741824.0)); }
+            if (!shared_ram && !one_card) { decide_fork("placement", "fits VRAM (stock)", string_format("model fits the free VRAM (%.1f GiB), no expert cache", vram_free / 1073741824.0)); }
             const char * why = in_ram ? "experts in RAM: largest pass up to min(context, 16384) whose compute buffer is at most half of the free VRAM left beside the other weights"
                                       : "model fits the VRAM: largest pass up to min(context, 16384) whose compute buffer is at most half of the free VRAM";
             decide_fork("ubatch", std::to_string(ub), why);

@@ -507,6 +507,16 @@ int main() {
         check("thread start: no core count found keeps every thread", common_thread_start_fork(true, 0, 64) == 64);
     }
 
+    {   // a model that fits one card runs on it (Inkling 2 Mini UD-IQ4_XS 14.6 GiB, two 3090s, 12k chat prompt 2026-11-23: two cards by layers 1074 i/s
+        // prompt, 33.9 o/s decode, one card 1372 i/s, 56.9 o/s: the split's host-bounced copies of the attention-residual blocks, 193 a token)
+        const size_t G = (size_t) 1 << 30;
+        const size_t two[2] = { 23 * G, 23 * G }, uneven[2] = { 10 * G, 22 * G };
+        if (fits_one_card_pick(15 * G, G, two, 2) != 0)    { printf("FAIL one card: 15 GiB on 2x23 should pick card 0\n"); g_fail++; }
+        if (fits_one_card_pick(15 * G, G, uneven, 2) != 1) { printf("FAIL one card: 15 GiB on 10+22 should pick card 1\n"); g_fail++; }
+        if (fits_one_card_pick(23 * G, G, two, 2) != -1)   { printf("FAIL one card: 23 GiB + 1 reserve on 2x23 does not fit one card\n"); g_fail++; }
+        if (fits_one_card_pick(5 * G, G, two, 1) != -1)    { printf("FAIL one card: a single card needs no pick\n"); g_fail++; }
+    }
+
     printf(g_fail ? "%d failed\n" : "estimators: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

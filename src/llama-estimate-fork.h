@@ -531,3 +531,13 @@ static inline bool tune_history_pick(const std::string & h, double & v) {
     }
     return true;
 }
+
+// A model whose weights plus the reserve fit one card's free VRAM runs on that card: the card with the most free VRAM, or -1 (one card only, or no card
+// holds it). A layer split runs the layers one card after the other at decode, so it only adds the copies between the cards (Inkling 2 Mini, two 3090s,
+// 12k chat 2026-11-23: 1074 i/s, 33.9 o/s split against 1372 i/s, 56.9 o/s on one card). The caller still probes the pass and the context on that card.
+static inline int fits_one_card_pick(size_t model, size_t reserve, const size_t * free, int n) {
+    if (n < 2) { return -1; }
+    int best = 0;
+    for (int i = 1; i < n; ++i) { if (free[i] > free[best]) { best = i; } }
+    return model + reserve <= free[best] ? best : -1;
+}
