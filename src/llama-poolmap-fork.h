@@ -11,7 +11,11 @@
 #include <algorithm>
 #include <functional>
 #include <unordered_map>
+#include <atomic>
 #include "llama-poolv2-fork.h"
+
+// the card writes the flag in mapped host memory: a volatile read each spin, then acquire (GCC's __atomic_load_n is not in MSVC, the W10 host compiler)
+static inline uint32_t pm_load_acquire(const volatile uint32_t * p) { const uint32_t v = *p; std::atomic_thread_fence(std::memory_order_acquire); return v; }
 
 enum : uint8_t { PM_FREE = 0, PM_MOE = 1, PM_KV = 2, PM_WRK = 3 };
 enum : uint8_t { PM_PIN = 1, PM_MOV = 2 };
@@ -143,8 +147,8 @@ struct pm_queue {
         if (upto > sent) { submit(); }
         for (; done < sent; ++done) {
             const uint32_t k = (uint32_t) (done % cap);
-            if (done >= upto && __atomic_load_n(&rs[k].done, __ATOMIC_ACQUIRE) == 0) { break; }
-            while (__atomic_load_n(&rs[k].done, __ATOMIC_ACQUIRE) == 0) { }
+            if (done >= upto && pm_load_acquire(&rs[k].done) == 0) { break; }
+            while (pm_load_acquire(&rs[k].done) == 0) { }
             if (replay) { replay(done, rq[k], rs[k]); }
             at[done] = rs[k].s;
         }
