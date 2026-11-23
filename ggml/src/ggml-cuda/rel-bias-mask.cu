@@ -4,6 +4,9 @@
 // one block per (token, head) row, the threads over the KV cells: the cell positions and the token's mask row are read once per head (L2), the table
 // slice of a token is n_head x n_dist floats. The distance bucket is computed here from the two position lists (a dense [n_kv, n_tok] index input was
 // 3.7 GiB at 112k cells and an 8192-token pass, filled on the host)
+// fork: kv split over grid.z chunks: one token x n_head blocks alone left most SMs idle at decode (18.5 us a layer at 18.6k kv)
+constexpr int64_t RBM_KV_CHUNK = 1024;
+
 template <typename T_mask, typename T_out>
 static __global__ void k_rel_bias_mask(const char * __restrict__ table, const int32_t * __restrict__ kv_pos, const int32_t * __restrict__ tok_pos,
         const char * __restrict__ mask, char * __restrict__ dst, const int64_t n_kv, const int64_t ext,
@@ -14,7 +17,8 @@ static __global__ void k_rel_bias_mask(const char * __restrict__ table, const in
     const T_mask  * mk = (const T_mask  *) (mask + t*mk1);
     const char    * tb = table + h*sizeof(float) + t*tb2;
     T_out         * o  = (T_out *) (dst + t*d1 + h*d2);
-    for (int64_t kv = threadIdx.x; kv < n_kv; kv += blockDim.x) {
+    const int64_t kv_end = n_kv < (int64_t) (blockIdx.z + 1)*RBM_KV_CHUNK ? n_kv : (int64_t) (blockIdx.z + 1)*RBM_KV_CHUNK;
+    for (int64_t kv = (int64_t) blockIdx.z*RBM_KV_CHUNK + threadIdx.x; kv < kv_end; kv += blockDim.x) {
         const int64_t dd = tp - kv_pos[kv];
         const int64_t d  = dd >= 0 && dd < ext ? dd : ext;
         const float v = *(const float *) (tb + d*tb1) + ggml_cuda_cast<float>(mk[kv]);
@@ -33,7 +37,7 @@ void ggml_cuda_op_rel_bias_mask(ggml_backend_cuda_context & ctx, ggml_tensor * d
     const int64_t n_head = dst->ne[2];
     GGML_ASSERT(n_tok <= INT32_MAX && n_head <= 65535);
 
-    const dim3 grid((unsigned) n_tok, (unsigned) n_head, 1);
+    const dim3 grid((unsigned) n_tok, (unsigned) n_head, (unsigned) ((n_kv + RBM_KV_CHUNK - 1)/RBM_KV_CHUNK));
     const int  nth = (int) std::min<int64_t>(256, (n_kv + 31)/32*32);
     cudaStream_t stream = ctx.stream();
 
