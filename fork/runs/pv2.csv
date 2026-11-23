@@ -96,3 +96,8 @@ qc-rb16,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,refill-batch=16",--env CUDA_V
 qc-ghw,qwen38,1,pf14k1k,16,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0 --env GGML_GALLOC_HW=1
 qc-step,qwen38,1,pf14k1k,1024,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_STEP_TIME=1
 qc-gdb,qwen38,1,pf14k1k,64,"-bs --moe pool-v2=1",--env CUDA_VISIBLE_DEVICES=0 --wrap 'gdb -q -batch -ex run -ex bt -ex "thread apply all bt 8" --args'
+qc-er0,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,early-refill=0",--env CUDA_VISIBLE_DEVICES=0
+qc-rb64,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,refill-batch=64",--env CUDA_VISIBLE_DEVICES=0
+qc-rb128,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,refill-batch=128",--env CUDA_VISIBLE_DEVICES=0
+qc-xschk,qwen38,1,pf14k1k,1024,"-bs --moe pool-v2=1,xsize-pop=1,map-check=1",--env CUDA_VISIBLE_DEVICES=0
+qc-xs,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,xsize-pop=1",--env CUDA_VISIBLE_DEVICES=0
