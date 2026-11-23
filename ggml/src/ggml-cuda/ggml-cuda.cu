@@ -8536,7 +8536,17 @@ static int ggml_cuda_try_fuse_norm_q8_fork(ggml_backend_cuda_context & ctx, cons
     bool mm = false;
     for (int k = last + 1; k < cgraph->n_nodes && k <= last + 64 && !mm; ++k) {
         const ggml_tensor * t = cgraph->nodes[k];
-        mm = t->op == GGML_OP_MUL_MAT && t->src[1] == out && ggml_is_quantized(t->src[0]->type) && t->src[1]->ne[1]*t->src[1]->ne[2]*t->src[1]->ne[3] <= MMVQ_MAX_BATCH_SIZE;
+        const ggml_tensor * b = t->src[1];   // the output itself or a reshape of it: mmvq keys the slot by data pointer and flat rows
+        mm = t->op == GGML_OP_MUL_MAT && b && b->data == out->data && ggml_nbytes(b) == ggml_nbytes(out) && ggml_is_contiguous(b) && ggml_is_quantized(t->src[0]->type) && t->src[1]->ne[1]*t->src[1]->ne[2]*t->src[1]->ne[3] <= MMVQ_MAX_BATCH_SIZE;
+    }
+    static int log_left = getenv("GGML_CUDA_NORM_Q8_LOG") ? atoi(getenv("GGML_CUDA_NORM_Q8_LOG")) : 0;   // dev: why a norm is not fused
+    if (log_left > 0 && (!mm || last == i)) {
+        --log_left;
+        int k = last + 1;
+        while (k < cgraph->n_nodes && ggml_cuda_is_view_or_noop(cgraph->nodes[k])) { ++k; }
+        const ggml_tensor * nx = k < cgraph->n_nodes ? cgraph->nodes[k] : nullptr;
+        GGML_LOG_WARN("norm-q8 skip %s: mul %d mm %d rows %lld uses %d next %s(%s) src1 %s\n", rms->name, last != i, mm, (long long) rows, ggml_node_get_use_count(cgraph, last),
+                nx ? ggml_op_desc(nx) : "-", nx && nx->src[0] ? ggml_type_name(nx->src[0]->type) : "-", nx && nx->src[1] ? nx->src[1]->name : "-");
     }
     if (!mm || last == i) {   // shortcut: a bare rms_norm (no weight) is left to the usual path; it would need a one-node fusion return
         return 0;
