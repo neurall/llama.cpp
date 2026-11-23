@@ -540,6 +540,9 @@ static inline bool ggml_cuda_fattn_tile_use_native_kv(const int cc, const ggml_t
     if ((K->ne[0] != V->ne[0] && !(K->ne[0] == 192 && V->ne[0] == 128)) || logit_softcap != 0.0f) {
         return false;
     }
+    if (K->type == GGML_TYPE_F8_E4M3 || V->type == GGML_TYPE_F8_E4M3) {
+        return false;   // no F8 tile instances (ggml/cmake/common.cmake)
+    }
 
     const int gqa_ratio = Q->ne[2] / K->ne[2];
     const bool nvidia = GGML_CUDA_CC_IS_NVIDIA(cc);
