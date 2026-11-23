@@ -12376,6 +12376,16 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             led_thread("up-w" + std::to_string(w));   // --moe ledger: this worker's lines say which upload thread wrote
             uint8_t * staging_ptr = mc->staging[w] ? (uint8_t *) ggml_backend_buffer_get_base(mc->staging[w]) : nullptr;
             uint8_t * rd_ptr = w < mc->rd_staging.size() && mc->rd_staging[w] ? (uint8_t *) (((uintptr_t) ggml_backend_buffer_get_base(mc->rd_staging[w]) + 4095) & ~(uintptr_t) 4095) : nullptr;
+            std::vector<std::function<void(int64_t, bool)>> pend;   // refill jobs whose copies are queued, completed by the next sync (refill-batch)
+            size_t pend_bytes = 0;
+            auto flush_pend = [&pend, &pend_bytes]() {
+                if (pend.empty()) { return; }
+                const int64_t t_sy = ggml_time_us();
+                cuda_thread_sync();
+                const int64_t d_sy = (ggml_time_us() - t_sy) / (int64_t) pend.size();
+                for (auto & f : pend) { f(d_sy, true); }
+                pend.clear(); pend_bytes = 0;
+            };
             for (;;) {
                 upload_job j;
                 const int64_t t_l0 = ggml_time_us(); int64_t t_l1 = 0, t_l2 = 0;   // dev: lock, wait, pick
@@ -12408,12 +12418,12 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     for (;;) {
                         const bool reading = g_hpend_n.load(std::memory_order_acquire) > 0;   // read before mine(): a load that ends after it is seen next round
                         if (mc->stop || (cs_w && cs_worker_has(cs_link)) || mine() != mc->todo.end()) { break; }
+                        if (!pend.empty()) { lk.unlock(); flush_pend(); lk.lock(); continue; }   // nothing to queue behind the batch: end it before waiting
                         // nobody notifies when a buffer's read lands: looked at again every 20 ms while a load reads
                         if (reading) { mc->wcv.wait_for(lk, std::chrono::milliseconds(20)); } else { mc->wcv.wait(lk); }
                     }
-                    if (mc->stop) {
-                        return;
-                    }
+                    if (mc->stop) { lk.unlock(); flush_pend(); return; }
+                    if (cs_w && cs_worker_has(cs_link) && !pend.empty()) { lk.unlock(); flush_pend(); lk.lock(); }
                     if (cs_w && cs_worker_has(cs_link)) { cs_worker_run(mc, cs_link, lk); continue; }
                     t_l2 = ggml_time_us();
                     auto it = mine();
@@ -12615,53 +12625,68 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         else    { ggml_backend_tensor_set(&z, from, 0, pb); }
                     }
                 }
+                // the job's completion (its report, the range it entered, the stats), run once its copies are done
+                auto finish = [=, &ls](int64_t d_sy, bool batched) mutable {
+                    race_stress_sleep();   // --moe race-stress: the copy is done, its report comes late
+                    if (up_failed) { j.skipped = true; }
+                    if (uap) { pool_leave(*uap, ulo, uhi, true); }
+                    led_upload(mc, "up-done", j.layer_idx, j.expert, j.slot, j.bg);
+                    j.t_done  = ggml_time_us();
+                    if (j.refill && j.bg) { g_rf_n++; g_rf_b += (int64_t) (ls.v2n ? ls.v2n : 0); g_rf_busy += j.t_done - t0; g_rf_t1 = j.t_done; g_rf_rrd += t_read; g_rf_rsy += d_sy; if (busy_start || mc->cpu_busy) { g_rf_rbn++; g_rf_rbs += d_sy; } }
+                    else if (g_rf_t0.load() != 0) { g_rf_on++; g_rf_ob += j.t_done - t0; g_rf_os += j.stream; g_rf_ou += j.urgent; g_rf_or += j.refill; g_rf_og += mc->gate_wait_us - gw_start; g_rf_orp += n_rp; g_rf_opin += n_pin; g_rf_ord += t_read; g_rf_obb += (int64_t) ls.v2n; g_rf_osy += d_sy; if (busy_start || mc->cpu_busy) { g_rf_obn++; g_rf_obs += d_sy; } }   // dev: other uploads while a refill runs
+                    if (j.stream) {
+                        mc->st_up[ls.link]++;
+                        mc->st_late[ls.link] += mc->gpu_started >= (int64_t) j.layer_idx;
+                    }
+                    if (tr_on()) {
+                        const int64_t gs = mc->gpu_started;
+                        tr(TR_WORKER + (int) w, tr_fmt("L%zu e%d %s%s", j.layer_idx, j.expert, j.stream ? "stream" : j.urgent ? "predicted" : "swap",
+                                    (j.stream || j.urgent) && gs >= (int64_t) j.layer_idx ? " LATE" : ""), t0, j.t_done - t0,
+                                tr_fmt("\"queued us\":%lld,\"read us\":%lld,\"link\":\"%s\",\"ahead at finish\":%lld",
+                                    (long long) (t0 - j.t_queued), (long long) t_read, tr_fmt("%d", ls.link).c_str(), (long long) j.layer_idx - gs));
+                    }
+                    const bool overlap = busy_start || mc->cpu_busy;
+                    const double dt = (double) (j.t_done - t0);
+                    j.read_us = (float) t_read;
+                    j.copy_us = (float) (dt - t_read);
+                    {
+                        std::lock_guard<std::mutex> lk(mc->wmtx);
+                        if (!batched) {   // a batched job's time includes the batch's other copies: no rate sample
+                            mc->upload_us = mc->n_uploads++ ? 0.9*mc->upload_us + 0.1*dt : dt;
+                            mc->up_overlap += overlap;
+                            double & lu = mc->link_us[ls.link];
+                            const bool first = mc->n_link[ls.link]++ == 0;
+                            lu = first ? dt : 0.9*lu + 0.1*dt;
+                            double & lr = mc->read_link[ls.link];
+                            double & lc = mc->copy_link[ls.link];
+                            lr = first ? j.read_us : 0.9*lr + 0.1*j.read_us;
+                            lc = first ? j.copy_us : 0.9*lc + 0.1*j.copy_us;
+                            const double gbs = (double) (srcs[0]->nb[2] + srcs[1]->nb[2] + srcs[2]->nb[2]) / std::max(1.0, dt) / 1e3;
+                            double & lg = mc->gbs_link[ls.link];
+                            lg = first ? gbs : 0.9*lg + 0.1*gbs;
+                            mc->gbs_all = mc->n_uploads == 1 ? gbs : 0.9*mc->gbs_all + 0.1*gbs;
+                        }
+                        j.done = true;
+                        mc->done.push_back(j);
+                        mc->in_flight--;
+                        mc->in_flight_stream -= j.stream || j.bg;
+                    }
+                    mc->dcv.notify_all();
+                    if (j.refill && j.bg) { g_rf_post += ggml_time_us() - j.t_done; }
+                };
+                // --moe refill-batch=0: refill jobs sync one by one. Otherwise their copies queue and one sync per 32 MiB ends a batch (the per-job sync left the link
+                // idle ~30 us a 2 MB expert: refill at 14.5 GB/s on a 24 GB/s link, nsys 2026-11-23)
+                static const bool refill_batch = [] { const char * v = moe_opt("refill-batch"); return !v || atoi(v) != 0; }();
+                if (refill_batch && nosync_used && j.refill && j.bg && !up_failed) {
+                    pend.push_back(finish);
+                    pend_bytes += (size_t) (srcs[0]->nb[2] + srcs[1]->nb[2] + srcs[2]->nb[2]);
+                    if (pend_bytes >= ((size_t) 32 << 20)) { flush_pend(); }
+                    continue;
+                }
+                flush_pend();   // an earlier batch first: its reports go out before this job's
                 const int64_t t_sy = ggml_time_us();   // dev: refill line
                 if (nosync_used) { cuda_thread_sync(); }
-                const int64_t d_sy = ggml_time_us() - t_sy;
-                race_stress_sleep();   // --moe race-stress: the copy is done, its report comes late
-                if (up_failed) { j.skipped = true; }
-                if (uap) { pool_leave(*uap, ulo, uhi, true); }
-                led_upload(mc, "up-done", j.layer_idx, j.expert, j.slot, j.bg);
-                j.t_done  = ggml_time_us();
-                if (j.refill && j.bg) { g_rf_n++; g_rf_b += (int64_t) (ls.v2n ? ls.v2n : 0); g_rf_busy += j.t_done - t0; g_rf_t1 = j.t_done; g_rf_rrd += t_read; g_rf_rsy += d_sy; if (busy_start || mc->cpu_busy) { g_rf_rbn++; g_rf_rbs += d_sy; } }
-                else if (g_rf_t0.load() != 0) { g_rf_on++; g_rf_ob += j.t_done - t0; g_rf_os += j.stream; g_rf_ou += j.urgent; g_rf_or += j.refill; g_rf_og += mc->gate_wait_us - gw_start; g_rf_orp += n_rp; g_rf_opin += n_pin; g_rf_ord += t_read; g_rf_obb += (int64_t) ls.v2n; g_rf_osy += d_sy; if (busy_start || mc->cpu_busy) { g_rf_obn++; g_rf_obs += d_sy; } }   // dev: other uploads while a refill runs
-                if (j.stream) {
-                    mc->st_up[ls.link]++;
-                    mc->st_late[ls.link] += mc->gpu_started >= (int64_t) j.layer_idx;
-                }
-                if (tr_on()) {
-                    const int64_t gs = mc->gpu_started;
-                    tr(TR_WORKER + (int) w, tr_fmt("L%zu e%d %s%s", j.layer_idx, j.expert, j.stream ? "stream" : j.urgent ? "predicted" : "swap",
-                                (j.stream || j.urgent) && gs >= (int64_t) j.layer_idx ? " LATE" : ""), t0, j.t_done - t0,
-                            tr_fmt("\"queued us\":%lld,\"read us\":%lld,\"link\":\"%s\",\"ahead at finish\":%lld",
-                                (long long) (t0 - j.t_queued), (long long) t_read, tr_fmt("%d", ls.link).c_str(), (long long) j.layer_idx - gs));
-                }
-                const bool overlap = busy_start || mc->cpu_busy;
-                const double dt = (double) (j.t_done - t0);
-                j.read_us = (float) t_read;
-                j.copy_us = (float) (dt - t_read);
-                {
-                    std::lock_guard<std::mutex> lk(mc->wmtx);
-                    mc->upload_us = mc->n_uploads++ ? 0.9*mc->upload_us + 0.1*dt : dt;
-                    mc->up_overlap += overlap;
-                    double & lu = mc->link_us[ls.link];
-                    const bool first = mc->n_link[ls.link]++ == 0;
-                    lu = first ? dt : 0.9*lu + 0.1*dt;
-                    double & lr = mc->read_link[ls.link];
-                    double & lc = mc->copy_link[ls.link];
-                    lr = first ? j.read_us : 0.9*lr + 0.1*j.read_us;
-                    lc = first ? j.copy_us : 0.9*lc + 0.1*j.copy_us;
-                    const double gbs = (double) (srcs[0]->nb[2] + srcs[1]->nb[2] + srcs[2]->nb[2]) / std::max(1.0, dt) / 1e3;
-                    double & lg = mc->gbs_link[ls.link];
-                    lg = first ? gbs : 0.9*lg + 0.1*gbs;
-                    mc->gbs_all = mc->n_uploads == 1 ? gbs : 0.9*mc->gbs_all + 0.1*gbs;
-                    j.done = true;
-                    mc->done.push_back(j);
-                    mc->in_flight--;
-                    mc->in_flight_stream -= j.stream || j.bg;
-                }
-                mc->dcv.notify_all();
-                if (j.refill && j.bg) { g_rf_post += ggml_time_us() - j.t_done; }
+                finish(ggml_time_us() - t_sy, false);
             }
         });
 
