@@ -12401,7 +12401,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     auto mine = [mc, link, cs_w0]() {
                         auto bg = mc->todo.end();   // the first background refill, taken only when no other job waits on this link
                         for (auto it = mc->todo.begin(); it != mc->todo.end(); ++it) {
-                            if (it->wait_ev && cs_w0 && g_cs_live.load(std::memory_order_relaxed)) { continue; }   // the stream's copy worker never blocks on a layer's compute
+                            // the stream's copy worker never blocks on a layer's compute while it has ring copies queued; with none queued it takes the job (the decode step
+                            // of the prompt's own call waits for it, before cs_end)
+                            if (it->wait_ev && cs_w0 && g_cs_live.load(std::memory_order_relaxed) && cs_worker_has(std::max(0, link))) { continue; }
                             if (link >= 0 && mc->layers[it->layer_idx].link != link) {
                                 continue;
                             }
