@@ -4104,41 +4104,6 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     } else if (mc_pp) {
         experts = down_g;   // the prompt chain computed every expert of the pass
         cb(experts, "ffn_moe_cache_merged", il);
-        // --moe down-chunk=1 (A/B): the stream's down projection, weighting and sum run in token chunks, each chunk's [n_embd, n_expert_used, t] output no larger
-        // than twice the layer's output, freed before the next: the pass's graph lends that much less of the expert cache (Qwen3.8 15.5k: down 1518 MiB at its
-        // peak). The stream's full down node joins no graph (cstream: the chain joins through its use), so it is rebuilt here from its sources.
-        static const bool down_chunk = [] { const char * e = moe_opt("down-chunk"); return e && atoi(e) != 0; }();
-        const int64_t n_used_c = (int64_t) hparams.n_expert_used(il);
-        const int64_t n_chunk  = std::min<int64_t>((n_used_c + 1) / 2, n_tokens / 512);
-        { static int said = 0; if (down_chunk && n_tokens >= 1024 && said++ < 4) { LLAMA_LOG_WARN("down-chunk: il %d tokens %lld cstream %d chunks %lld op %s bias %d norm %d defer %d pk %d ids_def %d ranges %zu scale %d\n", il, (long long) n_tokens,
-                (int) mc_cstream, (long long) n_chunk, ggml_op_name(down_g->op), down_exps_b != nullptr, post_exp_norm != nullptr, defer_prev != nullptr, (int) mc_defer_pk, mc_ids_def != nullptr, moe_ranges.size(), down_exps_s != nullptr); } }
-        if (down_chunk && mc_cstream && n_chunk > 1 && n_used_c == n_expert_used && down_g->op == GGML_OP_MUL_MAT_ID && !down_exps_b && !post_exp_norm &&
-                !weight_before_ffn && !defer_prev && !down_exps_s && mc_defer_pk <= 0 && !mc_ids_def && moe_ranges.empty()) {
-            ggml_tensor * w_d = down_g->src[0], * act = down_g->src[1], * ids = down_g->src[2], * sel = down_g->src[3];
-            ggml_tensor * out = nullptr;
-            for (int64_t c = 0; c < n_chunk; ++c) {
-                const int64_t t0 = n_tokens * c / n_chunk, nt = n_tokens * (c + 1) / n_chunk - t0;
-                ggml_tensor * act_c = ggml_view_3d(ctx0, act, act->ne[0], act->ne[1], nt, act->nb[1], act->nb[2], t0 * act->nb[2]);
-                ggml_tensor * ids_c = ggml_view_2d(ctx0, ids, ids->ne[0], nt, ids->nb[1], t0 * ids->nb[1]);
-                ggml_tensor * m = ggml_mul_mat_id(ctx0, w_d, act_c, ids_c);
-                memcpy(m->op_params, down_g->op_params, sizeof(m->op_params));
-                if (sel) { m->src[3] = ggml_view_2d(ctx0, sel, sel->ne[0], nt, sel->nb[1], t0 * sel->nb[1]); }
-                m->src[4] = down_g->src[4];
-                cb(m, "ffn_moe_cache_down", il);
-                ggml_tensor * w_c = ggml_view_3d(ctx0, weights, 1, n_used_c, nt, weights->nb[1], weights->nb[2], t0 * weights->nb[2]);
-                ggml_tensor * e = ggml_mul(ctx0, m, w_c);
-                cb(e, "ffn_moe_weighted", il);
-                ggml_build_forward_expand(gf, e);
-                ggml_tensor * v[LLAMA_MAX_EXPERTS] = { nullptr };
-                for (int64_t i = 0; i < n_used_c; ++i) { v[i] = ggml_view_2d(ctx0, e, n_embd, nt, e->nb[2], i * e->nb[1]); ggml_build_forward_expand(gf, v[i]); }
-                ggml_tensor * sum = v[0];
-                for (int64_t i = 1; i < n_used_c; ++i) { sum = ggml_add(ctx0, sum, v[i]); ggml_build_forward_expand(gf, sum); }
-                out = out ? ggml_concat(ctx0, out, sum, 1) : sum;
-                ggml_build_forward_expand(gf, out);
-            }
-            cb(out, "ffn_moe_out", il);
-            return out;
-        }
     } else if (mc_bell) {
         // the host chain of the picks the card does not hold: the same chain, on inputs the bell fills (the layer input, the missing picks), computed when the
         // layer rings (llama_moe_cache_bell_chain_fork). Its table says no expert is on a card: it computes every pick it is given. The gate op is shown all picks.
@@ -4165,7 +4130,36 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         experts = down_g;
         cb(experts, "ffn_moe_cache_merged", il);
     } else {
-        experts = expert_chain(cur, mc_cpu_ids ? mc_cpu_ids : selected_experts);
+        // --moe down-chunk=1 (A/B): a big pass's expert chain, weighting and sum run in token chunks, each chunk's [n_embd, n_expert_used, t] down output no
+        // larger than twice the layer's output and freed before the next: the pass's graph lends that much less of the expert cache (Qwen3.8 15.5k: the down
+        // output, 1518 MiB, is the graph's peak)
+        static const bool down_chunk = [] { const char * e = moe_opt("down-chunk"); return e && atoi(e) != 0; }();
+        const int64_t n_used_c = (int64_t) hparams.n_expert_used(il);
+        const int64_t n_chunk  = std::min<int64_t>((n_used_c + 1) / 2, n_tokens / 512);
+        ggml_tensor * ids_c0 = mc_cpu_ids ? mc_cpu_ids : selected_experts;
+        if (down_chunk && !mcache && n_chunk > 1 && n_used_c == n_expert_used && cur->ne[1] == 1 && cur->ne[2] == n_tokens && !down_exps_b && !post_exp_norm &&
+                !weight_before_ffn && !defer_prev && moe_ranges.empty()) {
+            ggml_tensor * out = nullptr;
+            for (int64_t c = 0; c < n_chunk; ++c) {
+                const int64_t t0 = n_tokens * c / n_chunk, nt = n_tokens * (c + 1) / n_chunk - t0;
+                ggml_tensor * x_c   = ggml_view_3d(ctx0, cur, cur->ne[0], 1, nt, cur->nb[1], cur->nb[2], t0 * cur->nb[2]);
+                ggml_tensor * ids_c = ggml_view_2d(ctx0, ids_c0, ids_c0->ne[0], nt, ids_c0->nb[1], t0 * ids_c0->nb[1]);
+                ggml_tensor * w_c   = ggml_view_3d(ctx0, weights, 1, n_used_c, nt, weights->nb[1], weights->nb[2], t0 * weights->nb[2]);
+                ggml_tensor * e = ggml_mul(ctx0, expert_chain(x_c, ids_c), w_c);
+                cb(e, "ffn_moe_weighted", il);
+                ggml_build_forward_expand(gf, e);
+                ggml_tensor * v[LLAMA_MAX_EXPERTS] = { nullptr };
+                for (int64_t i = 0; i < n_used_c; ++i) { v[i] = ggml_view_2d(ctx0, e, n_embd, nt, e->nb[2], i * e->nb[1]); ggml_build_forward_expand(gf, v[i]); }
+                ggml_tensor * sum = v[0];
+                for (int64_t i = 1; i < n_used_c; ++i) { sum = ggml_add(ctx0, sum, v[i]); ggml_build_forward_expand(gf, sum); }
+                out = out ? ggml_concat(ctx0, out, sum, 1) : sum;
+                ggml_build_forward_expand(gf, out);
+            }
+            { static int said = 0; if (said++ < 2) { LLAMA_LOG_WARN("%s: down-chunk: layer %d, %lld tokens in %lld chunks\n", __func__, il, (long long) n_tokens, (long long) n_chunk); } }
+            cb(out, "ffn_moe_out", il);
+            return out;
+        }
+        experts = expert_chain(cur, ids_c0);
     }
 
     if (mcache && !mc_pp && !mc_bell) {
