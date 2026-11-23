@@ -118,6 +118,7 @@ void llama_memory_recurrent_no_compute_fork(bool on);    // llama-memory-recurre
 static thread_local bool g_split_sub = false;          // decode() runs one pass of a call sized pass by pass (--moe split-pass=1)
 bool llama_dsplit_in_pass_loop_fork() { return g_split_sub; }   // llama-graph.cpp ds_plan: the pass was sized for all cards by the loop below (graph built on this thread)
 void llama_moe_prompt_progress_fork(uint32_t done);
+void llama_moe_last_pass_fork(bool last);   // llama-moecache-fork.cpp: the ubatch about to run is its call's last
 uint32_t llama_moe_ubadapt_cache_fork(uint32_t n_tokens, uint32_t planned, uint32_t ceil);
 uint32_t llama_moe_ubadapt_next_fork(uint32_t n_tokens, uint32_t ceil);
 void llama_moe_decision_fork(const char * name, const char * value, const char * why);
@@ -5006,6 +5007,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
 
     do {
         const auto & ubatch = mctx->get_ubatch();
+        llama_moe_last_pass_fork(!g_split_sub && (int64_t) n_tokens_prev + (int64_t) ubatch.n_tokens >= (int64_t) n_tokens_all);
 
         // count the outputs in this ubatch
         {
