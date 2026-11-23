@@ -104,3 +104,5 @@ qc-xs,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,xsize-pop=1",--env CUDA_VISIBLE
 qdchunk,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,down-chunk=1",--env CUDA_VISIBLE_DEVICES=0
 qdchw,qwen38,1,pf14k1k,64,"-bs --moe pool-v2=1,down-chunk=1",--env CUDA_VISIBLE_DEVICES=0 --env GGML_GALLOC_HW=1
 qdcdbg,qwen38,1,pf14k1k,64,"-bs --moe pool-v2=1,down-chunk=1",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_DC_DBG=1
+qc-sl2,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,swap-lead=2",--env CUDA_VISIBLE_DEVICES=0
+qc-sl4,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,swap-lead=4",--env CUDA_VISIBLE_DEVICES=0
