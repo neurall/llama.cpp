@@ -817,8 +817,15 @@ llama_context::llama_context(
 
         // TODO: move these checks to ggml_backend_sched
         // enabling pipeline parallelism in the scheduler increases memory usage, so it is only done when necessary
+        // cards that hold a layer or the output: -ts 1,0 leaves the second card listed but empty, and the pipeline's
+        // extra input copies (4 per split input) would then only cost VRAM on the one card that computes
+        const bool layers_on_several_cards = [&] {
+            ggml_backend_dev_t first = model.dev_output();
+            for (int il = 0; il < (int) model.hparams.n_layer_all; ++il) { if (model.dev_layer(il) != first) { return true; } }
+            return false;
+        }();
         bool pipeline_parallel =
-            model.n_devices() > 1 &&
+            model.n_devices() > 1 && layers_on_several_cards &&
             model.n_gpu_layers() > model.hparams.n_layer_all &&
             model.split_mode() == LLAMA_SPLIT_MODE_LAYER &&
             cparams.offload_kqv &&

@@ -1939,12 +1939,13 @@ static uint32_t common_fits_ubatch(common_params & params, bool experts_in_ram =
         uint32_t ngl = 0, nskip = 0, nctx = 0, nexp = 0;
         try {
             const auto dmd = common_get_device_memory_data(params.model.get_paths(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
-            int64_t left = 0, compute = 0;
+            // every card on its own: an empty card's free VRAM (-ts 1,0) cannot hold the other card's compute buffer
+            bool fits = true;
             for (size_t d = 0; d < devs.size() && d < dmd.size(); ++d) {   // the last entry of dmd is the host
-                left    += (int64_t) dmd[d].free - (int64_t) (dmd[d].model + dmd[d].context);
-                compute += (int64_t) dmd[d].compute;
+                const int64_t left = (int64_t) dmd[d].free - (int64_t) (dmd[d].model + dmd[d].context);
+                if (left <= 0 || (int64_t) dmd[d].compute * 2 > left) { fits = false; break; }
             }
-            if (left > 0 && compute * 2 <= left) { return ub; }
+            if (fits) { return ub; }
         } catch (const std::exception & e) {
             COM_DBG("ubatch probe failed (%s), keeping %u\n", e.what(), SAFE);
             return SAFE;
