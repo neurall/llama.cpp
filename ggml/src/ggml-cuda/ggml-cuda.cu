@@ -8370,6 +8370,20 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         return 2;
     }
 
+    // fork: a decode matvec and the elementwise chain after it in one kernel: mmvq runs the chain on each row it writes (ew-chain-fork.cu builds it)
+    if (node->op == GGML_OP_MUL_MAT && node->ne[1] == 1 && ggml_is_quantized(node->src[0]->type) && !node->src[2]) {
+        static const bool epi_on = !getenv("GGML_CUDA_MM_EPI") || atoi(getenv("GGML_CUDA_MM_EPI")) != 0;
+        extern bool ggml_cuda_ew_epi_build_fork(const ggml_cgraph * cgraph, int i, ggml_cuda_ew_epi & E, int & end);
+        ggml_cuda_ew_epi epi;
+        int end = 0;
+        if (epi_on && ggml_cuda_should_fuse_mul_mat_vec_q(node) && ggml_cuda_ew_epi_build_fork(cgraph, i, epi, end)) {
+            ggml_cuda_mm_fusion_args_host fusion{};
+            fusion.epi = &epi;
+            ggml_cuda_mul_mat_vec_q(*cuda_ctx, node->src[0], node->src[1], nullptr, node, &fusion);
+            return end - i;
+        }
+    }
+
     {   // fork: any other run of elementwise nodes in one kernel (ew-chain-fork.cu), after every fusion above had its chance
         extern int ggml_cuda_try_fuse_ew_chain_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i);
         if (const int n = ggml_cuda_try_fuse_ew_chain_fork(*cuda_ctx, cgraph, i)) {

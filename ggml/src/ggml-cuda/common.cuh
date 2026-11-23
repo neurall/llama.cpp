@@ -1497,6 +1497,19 @@ struct ggml_backend_cuda_context {
     }
 };
 
+// fork: an elementwise chain run on each matvec result as it is written (ew-chain-fork.cu builds it, ew-epi-fork.cuh runs it); one matvec column,
+// operand k read at (row % ne0)*nb0, an operand with p == nullptr is the matvec value itself
+struct ggml_cuda_ew_epi {
+    static constexpr int MAX_ST = 8, MAX_OPD = 4;
+    struct opd  { const char * p; int ne0; int nb0; };
+    struct step { uint8_t op; int8_t a, b; float p0, p1; };   // a, b: >= 0 the value of step a, < 0 operand -1 - a
+    opd    o[MAX_OPD];
+    step   st[MAX_ST];
+    int    n_st = 0;
+    int    dst_nb0 = 0;
+    char * dst = nullptr;
+};
+
 struct ggml_cuda_mm_fusion_args_host {
     const ggml_tensor * x_bias = nullptr;
     const ggml_tensor * gate = nullptr;
@@ -1509,6 +1522,7 @@ struct ggml_cuda_mm_fusion_args_host {
     const ggml_tensor * shared_up = nullptr;
     const ggml_tensor * shared_gate = nullptr;
     ggml_tensor * shared_dst = nullptr;
+    const ggml_cuda_ew_epi * epi = nullptr;   // fork
 };
 struct ggml_cuda_mm_fusion_args_device {
     const void * x_bias = nullptr;
@@ -1522,6 +1536,7 @@ struct ggml_cuda_mm_fusion_args_device {
     const void * shared_gate = nullptr;
     float * shared_dst = nullptr;
     uint32_t shared_stride_col_dst = 0;
+    ggml_cuda_ew_epi epi;   // fork: n_st 0 = none
 };
 
 struct ggml_cuda_kernel_launch_params {

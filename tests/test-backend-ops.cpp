@@ -4290,6 +4290,37 @@ struct test_norm_q8 : public test_case {
     }
 };
 
+// fork: a decode matvec and the elementwise chain after it (CUDA runs the chain in the matvec's write-out)
+struct test_mm_epi : public test_case {
+    const ggml_type type;
+    const int64_t K, R, T;
+    const int form;   // 0: add, scale, add (Inkling 2 convolve); 1: lone add; 2: silu(mm) * mm * c; 3: add of a broadcast scalar
+
+    std::string op_desc(ggml_tensor * t) override { GGML_UNUSED(t); return "MM_EPI"; }
+    bool run_whole_graph() override { return true; }
+    std::string vars() override { return VARS_TO_STR5(type, K, R, T, form); }
+    double max_nmse_err() override { return 5e-4; }
+
+    test_mm_epi(ggml_type type = GGML_TYPE_Q8_0, int64_t K = 256, int64_t R = 64, int64_t T = 1, int form = 0) : type(type), K(K), R(R), T(T), form(form) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * a  = ggml_new_tensor_2d(ctx, type, K, R);
+        ggml_tensor * x  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, K, T);
+        ggml_tensor * c  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, R, T);
+        ggml_tensor * d  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, R, T);
+        ggml_tensor * mm = ggml_mul_mat(ctx, a, x);
+        ggml_tensor * out;
+        switch (form) {
+            case 0:  out = ggml_add(ctx, ggml_scale(ctx, ggml_add(ctx, mm, c), 0.5f), d); break;
+            case 1:  out = ggml_add(ctx, mm, c); break;
+            case 2:  out = ggml_mul(ctx, ggml_mul(ctx, ggml_silu(ctx, mm), mm), c); break;
+            default: out = ggml_add(ctx, mm, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1)); break;
+        }
+        ggml_set_name(out, "out");
+        return out;
+    }
+};
+
 // GGML_OP_SILU_BACK
 struct test_silu_back : public test_case {
     const ggml_type type;
@@ -12499,6 +12530,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
     test_cases.emplace_back(new test_norm_q8(GGML_TYPE_Q8_0, 4096 + 256, 64, 2));
+    for (ggml_type t : {GGML_TYPE_Q8_0, GGML_TYPE_Q4_K, GGML_TYPE_IQ4_XS}) {
+        for (int form = 0; form < 4; ++form) {
+            test_cases.emplace_back(new test_mm_epi(t, 2304, 1024, 1, form));
+        }
+    }
+    test_cases.emplace_back(new test_mm_epi(GGML_TYPE_Q8_0, 2304, 1000, 1, 0));   // rows not a multiple of the rows a block writes
+    test_cases.emplace_back(new test_mm_epi(GGML_TYPE_Q8_0, 2304, 1024, 2, 0));   // two columns: no epilogue
     for (int64_t T : {1, 8}) {
         test_cases.emplace_back(new test_norm_q8(GGML_TYPE_Q4_K, 2304, 512, T, true));
     }

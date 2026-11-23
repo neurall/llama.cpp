@@ -2,6 +2,7 @@
 #include "quantize.cuh"
 #include "unary.cuh"
 #include "vecdotq.cuh"
+#include "ew-epi-fork.cuh"
 
 #include <cstdint>
 #include <type_traits>
@@ -951,6 +952,12 @@ static __global__ void mul_mat_vec_q(
                         }
                     }
                 }
+                if constexpr (has_fusion) {
+                    if (fusion.epi.n_st) {   // fork: the chain after this matvec, written in its place (one column, one channel)
+                        ewc_epi_write(fusion.epi, result, row0 + i);
+                        continue;
+                    }
+                }
                 dst[j*stride_col_dst + i] = result;
             }
         }
@@ -1234,7 +1241,7 @@ static void mul_mat_vec_q_switch_fusion(
         const uint32_t ids_stride, cudaStream_t stream) {
 
     const bool has_fusion = fusion.gate != nullptr || fusion.x_bias != nullptr || fusion.gate_bias != nullptr ||
-                            fusion.x_scale != nullptr || fusion.gate_scale != nullptr;
+                            fusion.x_scale != nullptr || fusion.gate_scale != nullptr || fusion.epi.n_st != 0;
     if constexpr (c_ncols_dst == 1) {
         if (has_fusion) {
             const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, nbytes_shared, stream);
@@ -1278,7 +1285,7 @@ static void mul_mat_vec_q_moe_launch(
     const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, 0, stream);
 
     const bool has_fusion = fusion.gate != nullptr || fusion.x_bias != nullptr || fusion.gate_bias != nullptr ||
-                            fusion.x_scale != nullptr || fusion.gate_scale != nullptr;
+                            fusion.x_scale != nullptr || fusion.gate_scale != nullptr || fusion.epi.n_st != 0;
 
     if (has_fusion && fusion.shared_up) {
         ggml_cuda_kernel_launch(mul_mat_vec_q_moe<type, rows_per_block, true, true>, launch_params,
@@ -1444,7 +1451,7 @@ static void mul_mat_vec_q_switch_ncols_dst(
                         int nw = (int) dims.second.y;
 #if defined(GGML_USE_HIP)
                         if constexpr (!c_small_k) {
-                            const int64_t fus = fusion.shared_up ? 2 : (fusion.gate || fusion.x_bias || fusion.gate_bias || fusion.x_scale || fusion.gate_scale) ? 1 : 0;
+                            const int64_t fus = fusion.shared_up ? 2 : (fusion.gate || fusion.x_bias || fusion.gate_bias || fusion.x_scale || fusion.gate_scale || fusion.epi.n_st) ? 1 : 0;
                             nw = mmvq_tuned_nwarps(device, type, nw, {(int64_t) ncols_x, (int64_t) nrows_x,
                                                                       (int64_t) dims.first.y * (has_ids ? -1 : 1), fus}, stream, run);
                         }
@@ -1766,6 +1773,10 @@ void ggml_cuda_mul_mat_vec_q(
         }
         fusion_local.glu_op = fusion->glu_op;
         fusion_local.glu_limit = fusion->glu_limit;
+        if (fusion->epi) {   // fork: one column, one channel, no ids (ggml_cuda_ew_epi_build_fork checks the chain)
+            GGML_ASSERT(!ids && !fusion->shared_up && ne1 == 1 && ne2 == 1 && ne3 == 1 && fusion->epi->n_st > 0);
+            fusion_local.epi = *fusion->epi;
+        }
     }
 
     // If src0 is a temporary compute buffer, clear any potential padding.
