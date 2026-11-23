@@ -1,4 +1,4 @@
-#include "llama-classpick-fork.h"
+#include "../src/llama-classpick-fork.h"
 #include <cstdio>
 #include <cassert>
 int main() {
