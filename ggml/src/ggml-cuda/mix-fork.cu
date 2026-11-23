@@ -3,8 +3,9 @@
 //   p      = soft_max(scale * mul_mat(states, repeat(query)))      [S, Q, T]
 //   out    = mul_mat(cont(transpose(states)), p)                   [E, Q, T]
 // 7 kernels; decode runs 120 such calls a token (2026-11-23: 840 of 5265 kernels a token on Inkling 2 Mini).
-// One block per token: each warp takes state rows (sum of squares and the Q query dots in one read), one warp per query
-// does the softmax over S, then every thread sums its embd columns over the S rows. The nodes are found by their links,
+// Two kernels, both spread over the card: one block per state row (sum of squares and the Q query dots in one read), then
+// blocks over embd chunks (softmax over S from those partials, each thread sums its column over the S rows).
+// One block per token was 22 us a call (one SM reads all S rows twice). The nodes are found by their links,
 // not by graph order, and every node between the first and the last must belong to the mix (views aside).
 // GGML_CUDA_MIX_FUSE=0 turns it off.
 #include "common.cuh"
@@ -32,40 +33,50 @@ static __device__ __forceinline__ float mix_x(const mix_args & A, int s, int t, 
                     : *(const float *) (A.b + e*A.b_nb0 + (s - A.sa)*A.b_nb1 + t*A.b_nb2);
 }
 
-static __global__ void mix_kernel(const __grid_constant__ mix_args A) {
-    const int t    = blockIdx.x;
-    const int lane = threadIdx.x % WARP_SIZE;
-    const int warp = threadIdx.x / WARP_SIZE;
-    const int nw   = blockDim.x / WARP_SIZE;
-
-    __shared__ float inv[MIX_MAX_S];
-    __shared__ float p[MIX_MAX_Q][MIX_MAX_S];
-
+// pass 1: one block per (state row, token): sum of squares and the Q query dots, to part[t][s][0..Q]
+static __global__ void mix_rows_kernel(const __grid_constant__ mix_args A, float * part) {
+    const int s = blockIdx.x, t = blockIdx.y;
     const char * qt = A.q + (t % A.q_ne2)*A.q_nb2;
-
-    for (int s = warp; s < A.S; s += nw) {
-        float ss = 0.0f;
-        float dq[MIX_MAX_Q] = {0.0f};
-        for (int e = lane; e < A.E; e += WARP_SIZE) {
-            const float v = mix_x(A, s, t, e);
-            ss += v*v;
+    float v[1 + MIX_MAX_Q] = {0.0f};
+    for (int e = threadIdx.x; e < A.E; e += blockDim.x) {
+        const float x = mix_x(A, s, t, e);
+        v[0] += x*x;
 #pragma unroll
-            for (int q = 0; q < MIX_MAX_Q; ++q) {
-                if (q < A.Q) { dq[q] += v * *(const float *) (qt + e*A.q_nb0 + q*A.q_nb1); }
-            }
-        }
-        ss = warp_reduce_sum(ss);
-#pragma unroll
-        for (int q = 0; q < MIX_MAX_Q; ++q) { dq[q] = warp_reduce_sum(dq[q]); }
-        if (lane == 0) {
-            const float r = rsqrtf(ss/A.E + A.eps);   // rms_norm's scale
-            inv[s] = r;
-#pragma unroll
-            for (int q = 0; q < MIX_MAX_Q; ++q) { if (q < A.Q) { p[q][s] = A.scale*r*dq[q]; } }
+        for (int q = 0; q < MIX_MAX_Q; ++q) {
+            if (q < A.Q) { v[1 + q] += x * *(const float *) (qt + e*A.q_nb0 + q*A.q_nb1); }
         }
     }
+    __shared__ float red[1 + MIX_MAX_Q][32];
+    const int lane = threadIdx.x % WARP_SIZE, warp = threadIdx.x / WARP_SIZE, nw = blockDim.x / WARP_SIZE;
+#pragma unroll
+    for (int k = 0; k < 1 + MIX_MAX_Q; ++k) {
+        v[k] = warp_reduce_sum(v[k]);
+        if (lane == 0) { red[k][warp] = v[k]; }
+    }
     __syncthreads();
+    if (warp == 0) {
+#pragma unroll
+        for (int k = 0; k < 1 + MIX_MAX_Q; ++k) {
+            float r = lane < nw ? red[k][lane] : 0.0f;
+            r = warp_reduce_sum(r);
+            if (lane == 0 && k <= A.Q) { part[((int64_t) t*A.S + s)*(1 + MIX_MAX_Q) + k] = r; }
+        }
+    }
+}
 
+// pass 2: blocks over (embd chunk, token): rms scale and softmax over S from the partials, then the chunk's columns
+static __global__ void mix_out_kernel(const __grid_constant__ mix_args A, const float * part) {
+    const int t = blockIdx.y;
+    const int lane = threadIdx.x % WARP_SIZE, warp = threadIdx.x / WARP_SIZE;
+    __shared__ float inv[MIX_MAX_S];
+    __shared__ float p[MIX_MAX_Q][MIX_MAX_S];
+    const float * pt = part + (int64_t) t*A.S*(1 + MIX_MAX_Q);
+    for (int s = threadIdx.x; s < A.S; s += blockDim.x) {
+        const float r = rsqrtf(pt[s*(1 + MIX_MAX_Q)]/A.E + A.eps);   // rms_norm's scale
+        inv[s] = r;
+        for (int q = 0; q < A.Q; ++q) { p[q][s] = A.scale*r*pt[s*(1 + MIX_MAX_Q) + 1 + q]; }
+    }
+    __syncthreads();
     if (warp < A.Q) {
         float mx = -INFINITY;
         for (int s = lane; s < A.S; s += WARP_SIZE) { mx = fmaxf(mx, p[warp][s]); }
@@ -76,18 +87,17 @@ static __global__ void mix_kernel(const __grid_constant__ mix_args A) {
         for (int s = lane; s < A.S; s += WARP_SIZE) { p[warp][s] /= sum; }
     }
     __syncthreads();
-
-    for (int e = threadIdx.x; e < A.E; e += blockDim.x) {
-        float o[MIX_MAX_Q] = {0.0f};
-        for (int s = 0; s < A.S; ++s) {
-            const float v = mix_x(A, s, t, e)*inv[s];
+    const int e = blockIdx.x*blockDim.x + threadIdx.x;
+    if (e >= A.E) { return; }
+    float o[MIX_MAX_Q] = {0.0f};
+    for (int s = 0; s < A.S; ++s) {
+        const float v = mix_x(A, s, t, e)*inv[s];
 #pragma unroll
-            for (int q = 0; q < MIX_MAX_Q; ++q) { o[q] += p[q][s]*v; }
-        }
+        for (int q = 0; q < MIX_MAX_Q; ++q) { if (q < A.Q) { o[q] += p[q][s]*v; } }
+    }
 #pragma unroll
-        for (int q = 0; q < MIX_MAX_Q; ++q) {
-            if (q < A.Q) { *(float *) (A.d + e*A.d_nb0 + q*A.d_nb1 + t*A.d_nb2) = o[q]; }
-        }
+    for (int q = 0; q < MIX_MAX_Q; ++q) {
+        if (q < A.Q) { *(float *) (A.d + e*A.d_nb0 + q*A.d_nb1 + t*A.d_nb2) = o[q]; }
     }
 }
 
@@ -167,6 +177,8 @@ int ggml_cuda_try_fuse_mix_fork(ggml_backend_cuda_context & ctx, const ggml_cgra
     A.S = (int) S; A.Q = (int) Q; A.E = (int) E;
     memcpy(&A.eps, R->op_params, sizeof(float));
     memcpy(&A.scale, sm->op_params, sizeof(float));
-    mix_kernel<<<(int) T, 256, 0, ctx.stream()>>>(A);
+    ggml_cuda_pool_alloc<float> part(ctx.pool(), T*S*(1 + MIX_MAX_Q));
+    mix_rows_kernel<<<dim3((unsigned) S, (unsigned) T), 256, 0, ctx.stream()>>>(A, part.get());
+    mix_out_kernel<<<dim3((unsigned) ((E + 127)/128), (unsigned) T), 128, 0, ctx.stream()>>>(A, part.get());
     return last - i;
 }
