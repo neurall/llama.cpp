@@ -5474,7 +5474,7 @@ static ggml_tensor * build_attn_iswa_impl(
         ggml_tensor * v_mla,
             float     kq_scale,
             int       il,
-        const std::function<ggml_tensor * (int64_t t0, int64_t nt)> & mask_block = nullptr,
+        const std::function<ggml_tensor * (int64_t t0, int64_t nt, ggml_tensor * after)> & mask_block = nullptr,
             int64_t   n_block = 0) {
     ggml_context * ctx0 = gctx.ctx0;
     ggml_cgraph  * gf   = gctx.gf;
@@ -5554,7 +5554,8 @@ static ggml_tensor * build_attn_iswa_impl(
             for (int64_t t0 = 0; t0 < n_q; t0 += n_block) {
                 const int64_t nt = std::min(n_block, n_q - t0);
                 ggml_tensor * q_b = ggml_view_3d(ctx0, q, q->ne[0], q->ne[1], nt, q->nb[1], q->nb[2], t0*q->nb[2]);
-                ggml_tensor * o_b = gctx.build_attn_mha(q_b, k, v, nullptr, mask_block(t0, nt), kv_rows, sinks, v_mla, 0, kq_scale, il);
+                // each block's mask waits for the block before (after): independent blocks are interleaved for the side streams and then every mask is live at once
+                ggml_tensor * o_b = gctx.build_attn_mha(q_b, k, v, nullptr, mask_block(t0, nt, cur), kv_rows, sinks, v_mla, 0, kq_scale, il);
                 cur = cur ? ggml_concat(ctx0, cur, o_b, 1) : o_b;
             }
         } else {
@@ -6238,8 +6239,11 @@ ggml_tensor * llm_graph_context::build_attn(
     const int64_t n_stream = raw->ne[3];
 
     // the mask of queries [t0, t0 + nt): their bias gathered by distance, plus the causal / window mask, one head per plane
-    auto mask_of = [&](int64_t t0, int64_t nt) {
+    auto mask_of = [&](int64_t t0, int64_t nt, ggml_tensor * after) {
         ggml_tensor * tb = ggml_view_3d(ctx0, table, table->ne[0], table->ne[1], nt, table->nb[1], table->nb[2], t0*table->nb[2]);
+        if (after) {   // + 0 x one value of the block before: the order, at the cost of one pass over this block's table (n_head x extent x nt)
+            tb = ggml_add(ctx0, tb, ggml_scale(ctx0, ggml_view_1d(ctx0, after, 1, 0), 0.0f));
+        }
         ggml_tensor * rp = ggml_view_2d(ctx0, rel_pos, n_kv, nt, rel_pos->nb[1], t0*rel_pos->nb[1]);
         ggml_tensor * kq_b = ggml_get_rows(ctx0, tb, rp);                                   // [n_head, n_kv, nt]
         kq_b = ggml_reshape_4d(ctx0, kq_b, n_head, n_kv, nt/n_stream, n_stream);
@@ -6267,7 +6271,7 @@ ggml_tensor * llm_graph_context::build_attn(
         n_block = b < n_tokens ? b : 0;
     }
     if (n_block == 0) {
-        return build_attn_iswa_impl(*this, inp_attn, wo, wo_b, wo_s, q_cur, k_cur, v_cur, nullptr, mask_of(0, n_tokens), nullptr, sinks, nullptr, kq_scale, il);
+        return build_attn_iswa_impl(*this, inp_attn, wo, wo_b, wo_s, q_cur, k_cur, v_cur, nullptr, mask_of(0, n_tokens, nullptr), nullptr, sinks, nullptr, kq_scale, il);
     }
     return build_attn_iswa_impl(*this, inp_attn, wo, wo_b, wo_s, q_cur, k_cur, v_cur, nullptr, nullptr, nullptr, sinks, nullptr, kq_scale, il, mask_of, n_block);
 }
