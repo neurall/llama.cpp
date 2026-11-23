@@ -1449,7 +1449,6 @@ static std::vector<uint8_t> g_cs_mix_graph, g_cs_mix_built;   // per entry of th
 static std::atomic<bool>   g_cs_live{false};           // a cstream pass may be on the GPU: flush_tables leaves the device tables to cs_layer (its copies are ordered on the upload stream) until cs_end
 static bool                g_cs_pred_built = false;    // the graph that runs carries the k arm's rankings (llama_moe_cache_cs_pred_fork when it was built)
 static std::atomic<bool>   g_last_pass{true};          // the running ubatch is its decode call's last (llama_moe_last_pass_fork): an early refill's places stay until decode
-void llama_moe_last_pass_fork(bool last) { g_last_pass.store(last, std::memory_order_relaxed); }
 static double              g_cs_k_pass = 0.0;          // the running cstream pass's prediction multiplier (cs_begin): 0 = the stream, every expert of an entry's range
 // user 2026-11-21: keep operation timestamps so a run shows where the time goes and what it waits on. optime_add(op, us) from scoped timers; llama_moe_cache_prompt_call_fork
 // prints the prompt call's table (ms, % of its wall time) and the decode steps' table every 128 steps, then clears them.
@@ -18265,6 +18264,8 @@ static void pv2_early_refill(moe_cache * mc, int k) {   // cache lock held, sche
                 done, mc->cs_order.size(), up.size(), b_up / 1e9);
     }
 }
+
+void llama_moe_last_pass_fork(bool last) { g_last_pass.store(last, std::memory_order_relaxed); }
 
 void llama_moe_cache_prompt_call_fork(bool on) {
     if (on) { g_optime_call_t0 = ggml_time_us(); }
