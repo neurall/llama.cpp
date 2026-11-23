@@ -909,8 +909,18 @@ void ggml_backend_tensor_memset(struct ggml_tensor * tensor, uint8_t value, size
     GGML_ASSERT(buf != NULL && "tensor buffer not set");
     GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
     GGML_ASSERT(offset + size <= ggml_nbytes(tensor) && "tensor write out of bounds");
-    GGML_ASSERT(buf->iface.memset_tensor != NULL && "memset not implemented by backend buffer");
     ggml_backend_fork_pool_access(tensor, (const char *) tensor->data + offset, size, "tensor_memset");
+
+    if (buf->iface.memset_tensor == NULL) {
+        GGML_ASSERT(buf->iface.set_tensor != NULL && "memset not implemented by backend buffer");
+
+        // fallback: write the value in chunks with set_tensor
+        const std::vector<uint8_t> chunk(std::min(size, (size_t) 1024*1024), value);
+        for (size_t chunk_offset = 0; chunk_offset < size; chunk_offset += chunk.size()) {
+            ggml_backend_tensor_set(tensor, chunk.data(), offset + chunk_offset, std::min(size - chunk_offset, chunk.size()));
+        }
+        return;
+    }
 
     buf->iface.memset_tensor(buf, tensor, value, offset, size);
 }
@@ -1987,6 +1997,14 @@ struct ggml_backend_sched {
     int prev_graph_size;
 
     int debug_realloc;
+
+    // inputs of the next split read from the backend of the current split before it computes, see ggml_backend_sched_prefetch_inputs
+    ggml_backend_event_t prefetch_events[GGML_SCHED_MAX_BACKENDS]; // created on first use, NULL if the backend has no events
+    bool                 prefetch_tried [GGML_SCHED_MAX_BACKENDS];
+    struct ggml_tensor * prefetched[GGML_SCHED_MAX_SPLIT_INPUTS];
+    int n_prefetched;
+    int prefetch_split;     // the split that reads the prefetched inputs
+    int prefetch_backend_id; // the backend that copies them
 };
 
 #define hash_id(tensor) ggml_hash_find_or_insert(&sched->hash_set, tensor)
@@ -2473,6 +2491,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
         split->i_start = 0;
         split->n_inputs = 0;
         int cur_backend_id = split->backend_id;
+        bool split_has_nodes = false;
         for (; i < graph->n_nodes; i++) {
             struct ggml_tensor * node = graph->nodes[i];
 
@@ -2485,6 +2504,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
             GGML_ASSERT(node_backend_id != -1); // all nodes should be assigned by now, this can happen if there is no CPU fallback
 
             // check if we should start a new split based on the sources of the current node
+            // this also applies to a split without inputs, e.g. one that follows a split that only writes to a host buffer
             bool need_new_split = false;
             // fork: the concat of an attention whose KV heads lie on several cards (--moe attn-split, llm_graph_context::build_attn): its inputs must not be copied at the start of the split
             // that runs the home card's own part, that would wait for the other cards first and the parts would run one after the other
@@ -2565,6 +2585,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                 split->n_inputs = 0;
                 cur_backend_id = node_backend_id;
             }
+            split_has_nodes = true;
 
             // find inputs that are not on the same backend
             for (int j = 0; j < GGML_MAX_SRC; j++) {
@@ -5730,6 +5751,7 @@ bool ggml_op_alloc_size_may_expand(enum ggml_op op) {
         case GGML_OP_ARGSORT:
         case GGML_OP_TOP_K:
         case GGML_OP_ARGMAX:
+        case GGML_OP_CONV_2D:
             return true;
         default:
             return false;
