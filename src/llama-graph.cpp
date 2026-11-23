@@ -6281,6 +6281,10 @@ ggml_tensor * llm_graph_context::build_attn(
     if (n_block == 0) {
         return build_attn_iswa_impl(*this, inp_attn, wo, wo_b, wo_s, q_cur, k_cur, v_cur, nullptr, mask_of(0, n_tokens, nullptr), nullptr, sinks, nullptr, kq_scale, il);
     }
+    // fork: one copy of each input on the layer's card, the blocks view that copy. A view of a graph input is a split input of its own: every block's
+    // view was copied to the card separately and held for the whole graph (Inkling 2 at 29.7k context, 1024-token pass: 123 GiB reserved on CUDA0)
+    rel_pos = ggml_cont(ctx0, rel_pos);
+    raw     = ggml_cont(ctx0, raw);
     return build_attn_iswa_impl(*this, inp_attn, wo, wo_b, wo_s, q_cur, k_cur, v_cur, nullptr, nullptr, nullptr, sinks, nullptr, kq_scale, il, mask_of, n_block);
 }
 
