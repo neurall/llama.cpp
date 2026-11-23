@@ -901,6 +901,13 @@ static void ggml_gallocr_allocate_node(ggml_gallocr_t galloc, struct ggml_tensor
                 }
             }
         }
+        if (galloc_hw_on() && ggml_op_can_inplace(node->op) && ggml_nbytes(node) >= ((size_t) 512 << 20) && node->src[0]) {   // fork: why a big node got no parent's buffer
+            struct ggml_tensor * p = node->src[0];
+            struct hash_node * p_hn = ggml_gallocr_hash_get(galloc, p);
+            GGML_LOG_WARN("galloc: %s %s %zu MiB not in place on %s %s: own %d, output %d, same layout %d, readers %d, views %d, view %d\n",
+                    node->name, ggml_op_desc(node), ggml_nbytes(node) >> 20, p->name, ggml_op_desc(p), ggml_gallocr_is_own(galloc, p),
+                    (p->flags & GGML_TENSOR_FLAG_OUTPUT) != 0, ggml_are_same_layout(node, p), p_hn->n_children, p_hn->n_views, ggml_impl_is_view(p));
+        }
         // allocate tensor from the buffer
         struct ggml_dyn_tallocr * alloc = galloc->buf_tallocs[buffer_id];
         ggml_backend_buffer_type_t buft = galloc->bufts[buffer_id];
