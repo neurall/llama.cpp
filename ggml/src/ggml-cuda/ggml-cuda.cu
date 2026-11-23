@@ -8544,7 +8544,15 @@ static int ggml_cuda_try_fuse_norm_q8_fork(ggml_backend_cuda_context & ctx, cons
         const ggml_tensor * b = t->src[1];
         mm = t->op == GGML_OP_MUL_MAT && b && b->data == out->data && ggml_nbytes(b) == ggml_nbytes(out) && ggml_is_contiguous(b) && ggml_is_quantized(t->src[0]->type) &&
              ggml_nrows(b) <= MMVQ_MAX_BATCH_SIZE && (b->ne[0] == ne0 || (ne0 % MATRIX_ROW_PADDING == 0 && b->ne[0] % MATRIX_ROW_PADDING == 0));
-        if (mm) { q_ne0 = b->ne[0]; }
+        if (mm) {   // the hc mix fusion (hcmix-fork.cu) takes a one-row Q8_0 matvec followed by scale and silu and reads f32: no q8_1 copy wanted
+            int n1 = k + 1;
+            while (n1 < cgraph->n_nodes && ggml_cuda_is_view_or_noop(cgraph->nodes[n1])) { ++n1; }
+            if (t->src[0]->type == GGML_TYPE_Q8_0 && ggml_nrows(b) == 1 && n1 < cgraph->n_nodes && cgraph->nodes[n1]->op == GGML_OP_SCALE && cgraph->nodes[n1]->src[0] == t) {
+                mm = false;
+                continue;
+            }
+            q_ne0 = b->ne[0];
+        }
     }
     static int log_left = getenv("GGML_CUDA_NORM_Q8_LOG") ? atoi(getenv("GGML_CUDA_NORM_Q8_LOG")) : 0;   // dev: why a norm is not fused
     if (log_left > 0 && !mm) {
