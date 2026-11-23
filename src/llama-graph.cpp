@@ -3843,8 +3843,6 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         parts.push_back({ mc_mix_b, llama_moe_cache_link_gbs_fork(ggml_backend_get_device(mc_mix_b)), 0, n_expert });
     }
     ggml_tensor * experts = nullptr;
-    if (il == 0 && n_tokens >= 1024 && getenv("LLAMA_DC_DBG")) { fprintf(stderr, "dc-dbg: tokens %lld mcache %d pp %d cstream %d parts %zu mix %d bell %d ranges %zu\n", (long long) n_tokens,
-            mcache != nullptr, (int) mc_pp, (int) mc_cstream, parts.size(), mc_mix_b != nullptr, mc_bell != nullptr, moe_ranges.size()); }
     if (!parts.empty()) {
         // The OWNER of the layer is the card that holds its dense weights (attention, norms, router): the router weight says which. Nothing below assumes two cards or
         // a particular link: any number of cards, each with its own expert range, and the owner may be any of them (or none: a layer whose dense part is on the CPU).
@@ -4042,6 +4040,37 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             mm_id_lo = (int32_t) parts[i].lo;
             mm_id_hi = (int32_t) parts[i].hi;
             ggml_tensor * chain_in = !moe_ranges.empty() ? range_in(parts[i].b) : (cur_part[i] ? cur_part[i] : cur);
+            // --moe down-chunk=1 (A/B): a one-card stream part's down matmul, weighting and sum in token chunks, each chunk's [n_embd, n_expert_used, t] output
+            // freed before the next: the pass's graph lends that much less of the expert cache (Qwen3.8 15.5k: the down output, 1518 MiB, is the graph's peak).
+            // The part's blocks are released behind the last chunk's matmul.
+            static const bool down_chunk = [] { const char * e = moe_opt("down-chunk"); return e && atoi(e) != 0; }();
+            const int64_t n_used_c = (int64_t) hparams.n_expert_used(il);
+            const int64_t n_chunk  = std::min<int64_t>((n_used_c + 1) / 2, n_tokens / 512);
+            if (down_chunk && parts[i].pc && parts.size() == 1 && moe_ranges.empty() && n_chunk > 1 && n_used_c == n_expert_used && !post_exp_norm &&
+                    !weight_before_ffn && !w_part[i] && !cur_part[i]) {
+                ggml_tensor * d = cs_chain(parts[i], chain_in);
+                ggml_tensor * act = d->src[1], * sl = d->src[2], * sel = d->src[3];
+                auto pin = [&](ggml_tensor * t) { ggml_backend_sched_set_tensor_backend(sched, t, parts[i].b); return t; };
+                ggml_tensor * out = nullptr;
+                for (int64_t c = 0; c < n_chunk; ++c) {
+                    const int64_t t0 = n_tokens * c / n_chunk, nt = n_tokens * (c + 1) / n_chunk - t0;
+                    ggml_tensor * act_c = ggml_view_3d(ctx0, act, act->ne[0], act->ne[1], nt, act->nb[1], act->nb[2], t0 * act->nb[2]);
+                    ggml_tensor * sl_c  = ggml_view_2d(ctx0, sl, sl->ne[0], nt, sl->nb[1], t0 * sl->nb[1]);
+                    ggml_tensor * m = ggml_mul_mat_id(ctx0, d->src[0], act_c, sl_c);
+                    memcpy(m->op_params, d->op_params, sizeof(m->op_params));
+                    m->src[3] = ggml_view_2d(ctx0, sel, sel->ne[0], nt, sel->nb[1], t0 * sel->nb[1]);
+                    m->src[4] = d->src[4];
+                    pin(m);
+                    ggml_tensor * w_c = ggml_view_3d(ctx0, weights, 1, n_used_c, nt, weights->nb[1], weights->nb[2], t0 * weights->nb[2]);
+                    ggml_tensor * e = pin(ggml_mul_inplace(ctx0, m, w_c));
+                    if (c + 1 == n_chunk) { ggml_format_name(e, "ffn_moe_cs_rel-%d", il); }
+                    ggml_tensor * sum = ggml_view_2d(ctx0, e, n_embd, nt, e->nb[2], 0);
+                    for (int64_t k = 1; k < n_used_c; ++k) { sum = pin(ggml_add(ctx0, sum, ggml_view_2d(ctx0, e, n_embd, nt, e->nb[2], k * e->nb[1]))); }
+                    out = out ? pin(ggml_concat(ctx0, out, sum, 1)) : sum;
+                    ggml_build_forward_expand(gf, out);
+                }
+                partial[i] = out;
+            } else
             partial[i] = reduce(parts[i].pc ? cs_chain(parts[i], chain_in) : expert_chain(chain_in, ids[i]), parts[i].b, w_part[i], parts[i].pc != nullptr);
             mm_id_backend = nullptr;
             mm_id_lo = mm_id_hi = 0;
