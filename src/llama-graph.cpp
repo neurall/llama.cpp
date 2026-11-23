@@ -3843,6 +3843,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         parts.push_back({ mc_mix_b, llama_moe_cache_link_gbs_fork(ggml_backend_get_device(mc_mix_b)), 0, n_expert });
     }
     ggml_tensor * experts = nullptr;
+    if (il == 0 && n_tokens >= 1024 && getenv("LLAMA_DC_DBG")) { fprintf(stderr, "dc-dbg: tokens %lld mcache %d pp %d cstream %d parts %zu mix %d bell %d ranges %zu\n", (long long) n_tokens,
+            mcache != nullptr, (int) mc_pp, (int) mc_cstream, parts.size(), mc_mix_b != nullptr, mc_bell != nullptr, moe_ranges.size()); }
     if (!parts.empty()) {
         // The OWNER of the layer is the card that holds its dense weights (attention, norms, router): the router weight says which. Nothing below assumes two cards or
         // a particular link: any number of cards, each with its own expert range, and the owner may be any of them (or none: a layer whose dense part is on the CPU).
