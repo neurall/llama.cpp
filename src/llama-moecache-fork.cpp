@@ -18233,6 +18233,9 @@ static void pv2_switch(moe_cache * mc) {
 static void pv2_early_refill(moe_cache * mc, int k) {   // cache lock held, scheduler thread
     static const bool on = [] { const char * x = moe_opt("early-refill"); return !x || atoi(x) != 0; }();
     auto & v = mc->v2;
+    { static int said = 0; if (k >= 0 && k < MAX_LINKS && mc->cs_done[k] + 2 >= mc->cs_order.size() && said++ < 6) {   // dev: why it ran or not
+        LLAMA_LOG_WARN("moe-cache: pool-v2: early refill check: on %d v2 %d H==M %d last pass %d k pass %.2f next %zu done %zu of %zu\n", on, v.on, v.H == v.M,
+                g_last_pass.load(), g_cs_k_pass, mc->cs_next[k], mc->cs_done[k], mc->cs_order.size()); } }
     if (!on || !v.on || v.H != v.M || !g_last_pass.load(std::memory_order_relaxed) || g_cs_k_pass > 0.0) { return; }
     if (k < 0 || k >= MAX_LINKS || mc->cs_next[k] < mc->cs_order.size()) { return; }   // entries still to plan take these places
     const size_t done = mc->cs_done[k];
