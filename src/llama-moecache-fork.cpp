@@ -18257,15 +18257,18 @@ static void pv2_early_refill(moe_cache * mc, int k) {   // cache lock held, sche
     // --moe early-refill-ahead=W (A/B): only the next W entries of this card count (the stream holds a window of a layer or two; the later layers' experts it
     // streams again anyway, so their places may hold computed layers' decode experts meanwhile). 0: every entry still to plan
     static const size_t ahead = [] { const char * x = moe_opt("early-refill-ahead"); return x ? (size_t) std::max(0, atoi(x)) : (size_t) 0; }();
-    size_t need = 0, have = 0, n_ahead = 0;
+    // per expert size: a size whose layers are all still ahead (Qwen3.8's last layer, 2.54 MiB) finds no window over the other sizes once their slack is taken
+    size_t need = 0, have = 0;
+    std::map<size_t, size_t> need_c, have_c, seen_c;
     for (size_t r = mc->cs_next[k]; r < mc->cs_order.size(); ++r) {
         const size_t lj = (size_t) mc->cs_order[r];
         if (lj >= mc->layers.size() || mc->layers[lj].link != k) { continue; }
-        if (ahead > 0 && n_ahead++ >= ahead) { break; }
         const layer_state & lq = mc->layers[lj];
+        if (ahead > 0 && seen_c[lq.v2n]++ >= ahead) { continue; }
         size_t held = 0;
         for (const int32_t a : lq.at) { held += a >= 0; }
         need += (lq.at.size() - held) * lq.v2n;
+        need_c[lq.v2n] += (lq.at.size() - held) * lq.v2n;
     }
     size_t b_pin = 0, b_tier = 0, b_later = 0;   // dev
     for (const auto & [x, r] : v.main.res) {
@@ -18276,6 +18279,7 @@ static void pv2_early_refill(moe_cache * mc, int k) {   // cache lock held, sche
         if (r.pin) { b_pin += r.n; continue; }
         if (v.tiered && !v.hv.empty() && v.hv[(size_t) r.id] >= 1000000000000000ll) { b_tier += r.n; continue; }   // decode tier: stays
         have += r.n;
+        have_c[r.n] += r.n;
     }
     { static int said = 0; if (said++ < 40) { LLAMA_LOG_WARN("moe-cache: pool-v2: early refill budget at %zu of %zu: prompt-only %.2f GB, still to stream %.2f GB; pinned %.2f, decode tier %.2f, other layers %.2f, tiered %d\n",
             done, mc->cs_order.size(), have / 1e9, need / 1e9, b_pin / 1e9, b_tier / 1e9, b_later / 1e9, (int) v.tiered); } }   // dev
@@ -18293,6 +18297,20 @@ static void pv2_early_refill(moe_cache * mc, int k) {   // cache lock held, sche
         part[miss.back().id] = m.part;
     }
     std::stable_sort(miss.begin(), miss.end(), [](const pv2_cand & a, const pv2_cand & b) { return a.heat > b.heat; });
+    size_t cap_k = cap;
+    if (ahead > 0) {   // each size refills only into its own computed prompt-only bytes beyond its next entries' need, one expert of it kept spare
+        std::map<size_t, int64_t> left_c;
+        for (const auto & [n, b] : have_c) { left_c[n] = (int64_t) b - (int64_t) need_c[n] - (int64_t) n; }
+        std::vector<pv2_cand> keep;
+        cap_k = 0;
+        for (const auto & m : miss) {
+            auto it = left_c.find(m.n);
+            if (it == left_c.end() || it->second < (int64_t) m.n) { continue; }
+            it->second -= (int64_t) m.n; cap_k += m.n; keep.push_back(m);
+        }
+        miss.swap(keep);
+        if (miss.empty()) { return; }
+    }
     auto computed = [&](int32_t id) {   // a layer this pass queued before the done event, on this card
         const size_t lj = (size_t) (id / v.E);
         const int32_t q = lj < mc->cs_pos.size() ? mc->cs_pos[lj] : -1;
@@ -18301,7 +18319,7 @@ static void pv2_early_refill(moe_cache * mc, int k) {   // cache lock held, sche
     std::vector<upload_job> jobs;
     std::vector<pv2_cand> up;
     size_t b_up = 0;
-    pv2_swap_in(mc, miss, part, computed, wait, csl(mc, mc->cs_order[done - 1]).cs_done_ev, jobs, up, b_up, cap);
+    pv2_swap_in(mc, miss, part, computed, wait, csl(mc, mc->cs_order[done - 1]).cs_done_ev, jobs, up, b_up, cap_k);
     pv2_queue(mc, jobs);
     static int said = 0;
     if (!up.empty() && said++ < 16) {
