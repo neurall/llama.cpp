@@ -4178,6 +4178,35 @@ struct test_ew_chain : public test_case {
     }
 };
 
+// fork: the depth mix of Inkling 2 (llama_model_inkling2::graph::mix), fused into one kernel on CUDA
+struct test_depth_mix : public test_case {
+    const int64_t E, S, Q, T;   // embd, states (S - 1 stacked blocks + cur; S = 1: cur alone), queries, tokens
+
+    std::string op_desc(ggml_tensor * t) override { GGML_UNUSED(t); return "DEPTH_MIX"; }
+    bool run_whole_graph() override { return true; }
+    std::string vars() override { return VARS_TO_STR4(E, S, Q, T); }
+
+    test_depth_mix(int64_t E = 256, int64_t S = 5, int64_t Q = 1, int64_t T = 1) : E(E), S(S), Q(Q), T(T) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * cur   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, E, T);
+        ggml_tensor * query = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, E, Q);
+        ggml_set_param(cur); ggml_set_param(query);
+        ggml_tensor * states = ggml_reshape_3d(ctx, cur, E, 1, T);
+        if (S > 1) {
+            ggml_tensor * stack = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, E, S - 1, T);
+            ggml_set_param(stack);
+            states = ggml_concat(ctx, stack, states, 1);
+        }
+        states = ggml_rms_norm(ctx, states, 1e-6f);
+        ggml_tensor * queries = ggml_repeat(ctx, query, ggml_new_tensor_3d(ctx, GGML_TYPE_F32, E, Q, T));
+        ggml_tensor * scores  = ggml_soft_max_ext(ctx, ggml_mul_mat(ctx, states, queries), nullptr, 1.0f/sqrtf((float) E), 0.0f);
+        ggml_tensor * out = ggml_mul_mat(ctx, ggml_cont(ctx, ggml_transpose(ctx, states)), scores);
+        ggml_set_name(out, "out");
+        return out;
+    }
+};
+
 // GGML_OP_SILU_BACK
 struct test_silu_back : public test_case {
     const ggml_type type;
@@ -12365,6 +12394,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_ew_chain({128, 32, 1, 1}, kind));
         test_cases.emplace_back(new test_ew_chain({4096, 7, 5, 2}, kind));
     }
+    for (int64_t S : {1, 2, 7, 33}) {
+        for (int64_t Q : {1, 3}) {
+            for (int64_t T : {1, 4, 40}) {
+                test_cases.emplace_back(new test_depth_mix(2048, S, Q, T));
+            }
+        }
+    }
+    test_cases.emplace_back(new test_depth_mix(100, 5, 2, 1));
     test_cases.emplace_back(new test_silu_back());
     test_cases.emplace_back(new test_sigmoid_back());
 
