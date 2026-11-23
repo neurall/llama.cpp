@@ -9778,14 +9778,15 @@ struct test_rel_bias_mask : public test_case {
     ggml_tensor * build_graph(ggml_context * ctx) override {
         const int64_t big = view ? n_tok + 3 : n_tok;
         ggml_tensor * table = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_head, n_dist, big);
-        ggml_tensor * rp    = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_kv, big);
+        ggml_tensor * kp    = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_kv);
+        ggml_tensor * tp    = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, big);
         ggml_tensor * mask  = ggml_new_tensor_2d(ctx, type_mask, n_kv, big);
         if (view) {
             table = ggml_view_3d(ctx, table, n_head, n_dist, n_tok, table->nb[1], table->nb[2], 2*table->nb[2]);
-            rp    = ggml_view_2d(ctx, rp, n_kv, n_tok, rp->nb[1], 2*rp->nb[1]);
+            tp    = ggml_view_1d(ctx, tp, n_tok, 2*tp->nb[0]);
             mask  = ggml_view_2d(ctx, mask, n_kv, n_tok, mask->nb[1], 2*mask->nb[1]);
         }
-        ggml_tensor * out = ggml_rel_bias_mask(ctx, table, rp, mask, type_out);
+        ggml_tensor * out = ggml_rel_bias_mask(ctx, table, kp, tp, mask, type_out);
         ggml_set_name(out, "out");
         return out;
     }
@@ -9794,7 +9795,7 @@ struct test_rel_bias_mask : public test_case {
         for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
             if (t->type == GGML_TYPE_I32) {
                 std::vector<int32_t> data(ggml_nelements(t));
-                for (auto & d : data) { d = rand() % n_dist; }
+                for (auto & d : data) { d = rand() % 8 == 0 ? INT32_MAX : rand() % (2*n_dist); }   // positions: distances below 0, inside and past the extent, empty cells
                 ggml_backend_tensor_set(t, data.data(), 0, data.size()*sizeof(int32_t));
             } else {
                 init_tensor_uniform(t);

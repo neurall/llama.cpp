@@ -11981,24 +11981,26 @@ void ggml_compute_forward_rel_bias_mask(
         const ggml_compute_params * params,
               ggml_tensor * dst) {
     const ggml_tensor * table   = dst->src[0];
-    const ggml_tensor * rel_pos = dst->src[1];
-    const ggml_tensor * mask    = dst->src[2];
+    const ggml_tensor * kv_pos  = dst->src[1];
+    const ggml_tensor * tok_pos = dst->src[2];
+    const ggml_tensor * mask    = dst->src[3];
 
     const int64_t n_kv   = dst->ne[0];
     const int64_t n_tok  = dst->ne[1];
     const int64_t n_head = dst->ne[2];
-    const int64_t n_dist = table->ne[1];
+    const int64_t ext    = table->ne[1] - 1;   // the last bucket: every distance past the extent, and cells after the token
 
+    const int32_t * kp = (const int32_t *) kv_pos->data;
     for (int64_t r = params->ith; r < n_tok*n_head; r += params->nth) {   // one (token, head) row per step
         const int64_t t = r % n_tok;
         const int64_t h = r / n_tok;
-        const int32_t * rp = (const int32_t *) ((const char *) rel_pos->data + t*rel_pos->nb[1]);
+        const int64_t tp = ((const int32_t *) tok_pos->data)[t];
         const char    * tb = (const char *) table->data + h*table->nb[0] + t*table->nb[2];
         const char    * mk = (const char *) mask->data + t*mask->nb[1];
         char          * o  = (char *) dst->data + t*dst->nb[1] + h*dst->nb[2];
         for (int64_t kv = 0; kv < n_kv; ++kv) {
-            const int32_t d = rp[kv];
-            GGML_ASSERT(d >= 0 && d < n_dist);
+            const int64_t dd = tp - kp[kv];
+            const int64_t d  = dd >= 0 && dd < ext ? dd : ext;
             const float m = mask->type == GGML_TYPE_F16 ? GGML_CPU_FP16_TO_FP32(((const ggml_fp16_t *) mk)[kv]) : ((const float *) mk)[kv];
             const float v = *(const float *) (tb + d*table->nb[1]) + m;
             if (dst->type == GGML_TYPE_F16) {

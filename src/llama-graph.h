@@ -805,8 +805,12 @@ public:
     llm_graph_input_rs           * get_recr() const { return inp_rs.get(); }
 
     // distance from the token to the cell, extent for the empty, future and more distant cells
-    ggml_tensor * self_rel_pos     = nullptr; // I32 [n_kv,     n_batch]
+    ggml_tensor * self_rel_pos     = nullptr; // I32 [n_kv,     n_batch] (fork: only with several streams)
     ggml_tensor * self_rel_pos_swa = nullptr; // I32 [n_kv_swa, n_batch]
+    // fork, one stream: the distances are computed in ggml_rel_bias_mask from the cell and token positions (the dense distances were n_kv x n_batch)
+    ggml_tensor * self_kv_pos      = nullptr; // I32 [n_kv]
+    ggml_tensor * self_kv_pos_swa  = nullptr; // I32 [n_kv_swa]
+    ggml_tensor * self_tok_pos     = nullptr; // I32 [n_batch]
 
     const uint32_t extent;
     const uint32_t extent_swa;

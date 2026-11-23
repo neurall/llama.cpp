@@ -1303,7 +1303,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "top_k_mask(mask, top_k, score, blocks, extra)",
     "moe_bell(ids, table, x)",
     "moe_rows(down, ids, slots)",
-    "rel_bias_mask(table, rel_pos, mask)",
+    "rel_bias_mask(table, kv_pos, tok_pos, mask)",
 
     "unary(x)",
 
@@ -6741,22 +6741,24 @@ struct ggml_tensor * ggml_moe_rows(
 struct ggml_tensor * ggml_rel_bias_mask(
         struct ggml_context * ctx,
         struct ggml_tensor  * table,
-        struct ggml_tensor  * rel_pos,
+        struct ggml_tensor  * kv_pos,
+        struct ggml_tensor  * tok_pos,
         struct ggml_tensor  * mask,
         enum ggml_type        type) {
-    GGML_ASSERT(table->type == GGML_TYPE_F32 && rel_pos->type == GGML_TYPE_I32);
+    GGML_ASSERT(table->type == GGML_TYPE_F32 && kv_pos->type == GGML_TYPE_I32 && tok_pos->type == GGML_TYPE_I32);
     GGML_ASSERT(mask->type == GGML_TYPE_F16 || mask->type == GGML_TYPE_F32);
     GGML_ASSERT(type == GGML_TYPE_F16 || type == GGML_TYPE_F32);
-    GGML_ASSERT(table->ne[2] == rel_pos->ne[1] && table->ne[3] == 1 && rel_pos->ne[2] == 1 && rel_pos->ne[3] == 1);
-    GGML_ASSERT(mask->ne[0] == rel_pos->ne[0] && mask->ne[1] == rel_pos->ne[1] && mask->ne[2] == 1 && mask->ne[3] == 1);
-    GGML_ASSERT(table->nb[0] == sizeof(float) && rel_pos->nb[0] == sizeof(int32_t) && mask->nb[0] == ggml_type_size(mask->type));
+    GGML_ASSERT(ggml_nelements(kv_pos) == mask->ne[0] && ggml_nelements(tok_pos) == mask->ne[1] && table->ne[2] == mask->ne[1] && table->ne[3] == 1);
+    GGML_ASSERT(mask->ne[2] == 1 && mask->ne[3] == 1 && table->ne[1] >= 1);
+    GGML_ASSERT(table->nb[0] == sizeof(float) && ggml_is_contiguous(kv_pos) && ggml_is_contiguous(tok_pos) && mask->nb[0] == ggml_type_size(mask->type));
 
-    struct ggml_tensor * result = ggml_new_tensor_3d(ctx, type, rel_pos->ne[0], rel_pos->ne[1], table->ne[0]);
+    struct ggml_tensor * result = ggml_new_tensor_3d(ctx, type, mask->ne[0], mask->ne[1], table->ne[0]);
 
     result->op     = GGML_OP_REL_BIAS_MASK;
     result->src[0] = table;
-    result->src[1] = rel_pos;
-    result->src[2] = mask;
+    result->src[1] = kv_pos;
+    result->src[2] = tok_pos;
+    result->src[3] = mask;
 
     return result;
 }

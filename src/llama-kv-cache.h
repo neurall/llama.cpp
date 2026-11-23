@@ -270,6 +270,7 @@ public:
     void set_input_attn_mask (const llm_attn_mask & attn_mask, const llama_ubatch * ubatch, bool causal_attn, uint32_t k0 = 0) const;   // fork: k0 = first cell of a dense mask (kq_mask_k0)
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
     void set_input_relative_pos(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t extent) const;
+    void set_input_kv_pos(ggml_tensor * dst, const llama_ubatch * ubatch) const;   // fork: each cell's position, INT32_MAX for an empty one (one stream)
 
     // true if llama_kv_cell_ext holds information that has to survive a state save/restore
     bool has_cell_ext() const;
@@ -504,6 +505,7 @@ public:
     void set_input_attn_mask (const llm_attn_mask & attn_mask, const llama_ubatch * ubatch, bool causal_attn) const;
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
     void set_input_relative_pos(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t extent) const;
+    void set_input_kv_pos(ggml_tensor * dst, const llama_ubatch * ubatch) const;   // fork: each cell's position, INT32_MAX for an empty one (one stream)
 
     // see llama_kv_cache::get_prev_tokens()
     void get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, std::vector<llama_token> & res) const;

@@ -2574,13 +2574,14 @@ extern "C" {
             struct ggml_tensor  * slots,
             void                * bell);
 
-    // fork: out[kv, t, h] = table[h, rel_pos[kv, t], t] + mask[kv, t], one plane per head (the relative-position bias of Inkling 2 gathered by
-    // distance into a flash-attention mask in one pass). table F32 [n_head, n_dist, n_tok], rel_pos I32 [n_kv, n_tok], mask F16/F32 [n_kv, n_tok];
-    // out is type (F16 or F32) [n_kv, n_tok, n_head]
+    // fork: out[kv, t, h] = table[h, b, t] + mask[kv, t], one plane per head (the relative-position bias of Inkling 2 gathered by distance into a
+    // flash-attention mask in one pass), b = d if 0 <= d < n_dist - 1 else n_dist - 1, d = tok_pos[t] - kv_pos[kv] (an empty cell: kv_pos INT32_MAX).
+    // table F32 [n_head, n_dist, n_tok], kv_pos I32 [n_kv], tok_pos I32 [n_tok], mask F16/F32 [n_kv, n_tok]; out is type (F16 or F32) [n_kv, n_tok, n_head]
     GGML_API struct ggml_tensor * ggml_rel_bias_mask(
             struct ggml_context * ctx,
             struct ggml_tensor  * table,
-            struct ggml_tensor  * rel_pos,
+            struct ggml_tensor  * kv_pos,
+            struct ggml_tensor  * tok_pos,
             struct ggml_tensor  * mask,
             enum ggml_type        type);
 
