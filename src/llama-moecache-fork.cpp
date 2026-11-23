@@ -18247,6 +18247,7 @@ static void pv2_early_refill(moe_cache * mc, int k) {   // cache lock held, sche
     if (k < 0 || k >= MAX_LINKS) { return; }
     const size_t done = mc->cs_done[k];
     if (done == 0 || done > mc->cs_order.size()) { return; }
+    for (; v.done_seen < done; ++v.done_seen) { pv2_pin_entry(mc, v.done_seen, false); }   // computed layers' pins go first: the budget counts unpinned residents only
     // budget: computed layers' prompt-only bytes beyond what the entries still to plan will take (their stream evicts the coldest unpinned residents, these first)
     size_t need = 0, have = 0;
     for (size_t r = mc->cs_next[k]; r < mc->cs_order.size(); ++r) {
@@ -18265,9 +18266,10 @@ static void pv2_early_refill(moe_cache * mc, int k) {   // cache lock held, sche
         if (v.tiered && !v.hv.empty() && v.hv[(size_t) r.id] >= 1000000000000000ll) { continue; }   // decode tier: stays
         have += r.n;
     }
+    { static int said = 0; if (said++ < 40) { LLAMA_LOG_WARN("moe-cache: pool-v2: early refill budget at %zu of %zu: prompt-only %.2f GB, still to stream %.2f GB\n",
+            done, mc->cs_order.size(), have / 1e9, need / 1e9); } }   // dev
     if (have <= need + (64u << 20)) { return; }
     const size_t cap = have - need;
-    for (; v.done_seen < done; ++v.done_seen) { pv2_pin_entry(mc, v.done_seen, false); }
     pv2_refresh(mc, false, false);   // decode heat on both sides of the comparison (the switch refreshes again)
     const bool wait = fixed_on() || !reheat_bg();
     std::unordered_map<int32_t, int8_t> part;
