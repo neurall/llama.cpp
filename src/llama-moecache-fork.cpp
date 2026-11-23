@@ -12675,14 +12675,14 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     mc->dcv.notify_all();
                     if (j.refill && j.bg) { g_rf_post += ggml_time_us() - j.t_done; }
                 };
-                // --moe refill-batch=0: refill jobs sync one by one. Otherwise their copies queue and one sync per 32 MiB ends a batch (the per-job sync left the link
+                // --moe refill-batch=MiB (default 32, 0: one by one): refill jobs' copies queue and one sync per that many MiB ends a batch (the per-job sync left the link
                 // idle ~30 us a 2 MB expert: refill at 14.5 GB/s on a 24 GB/s link, nsys 2026-11-23)
-                static const bool refill_batch = [] { const char * v = moe_opt("refill-batch"); const bool on = !v || atoi(v) != 0;
-                    LLAMA_LOG_WARN("moe-cache: refill uploads %s (--moe refill-batch=%s)\n", on ? "sync once per 32 MiB batch" : "sync per job", v ? v : "unset"); return on; }();
+                static const size_t refill_batch = [] { const char * v = moe_opt("refill-batch"); const size_t mb = v ? (size_t) std::max(0, atoi(v)) : 32;   // MiB a batch; 0: per job
+                    LLAMA_LOG_WARN("moe-cache: refill uploads sync once per %zu MiB (--moe refill-batch=%s; 0: per job)\n", mb, v ? v : "unset"); return mb << 20; }();
                 if (refill_batch && nosync_used && j.refill && j.bg && !up_failed) {
                     pend.push_back(finish);
                     pend_bytes += (size_t) (srcs[0]->nb[2] + srcs[1]->nb[2] + srcs[2]->nb[2]);
-                    if (pend_bytes >= ((size_t) 32 << 20)) { flush_pend(); }
+                    if (pend_bytes >= refill_batch) { flush_pend(); }
                     continue;
                 }
                 flush_pend();   // an earlier batch first: its reports go out before this job's
