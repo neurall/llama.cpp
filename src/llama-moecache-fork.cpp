@@ -14361,7 +14361,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
         const int32_t q = lj < mc->cs_pos.size() ? mc->cs_pos[lj] : -1;
         return !ahead && q >= 0 && (size_t) q >= p;
     };
-    static int64_t t_map = 0, t_send = 0, t_bank = 0, t_spin = 0, t_rest = 0, n_b = 0, n_r = 0, n_mvs = 0, n_frs = 0, n_withmv = 0, n_nofr = 0, n_none = 0, p_n[5] = {}, p_ns[5] = {}, n_vd = 0, n_vdc = 0, n_vo = 0, n_vq[3] = {}, n_vp[5] = {};   // where a batch's host time goes (dev timing, logged per 16 batches)
+    static int64_t t_map = 0, t_send = 0, t_bank = 0, t_spin = 0, t_rest = 0, n_b = 0, n_r = 0, n_mvs = 0, n_frs = 0, n_withmv = 0, n_nofr = 0, n_none = 0, p_n[7] = {}, p_ns[7] = {}, n_vd = 0, n_vdc = 0, n_vo = 0, n_vq[3] = {}, n_vp[7] = {};   // where a batch's host time goes (dev timing, logged per 16 batches)
     int64_t tq = ggml_time_us();
     auto lap = [&](int64_t & acc) { const int64_t t = ggml_time_us(); acc += t - tq; tq = t; };
     std::vector<pm_entry> m = pm_map_of(mc, busy);
@@ -14371,9 +14371,10 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     lap(t_send);
     const uint32_t k = (uint32_t) std::min<size_t>(want.size(), g_pm.max_rq);
     static const bool tier_guard = [] { const char * x = moe_opt("tier-guard"); return x && atoi(x) != 0; }();   // A/B: newcomers below the decode tier take windows, not its same-size experts
+    static const bool xsize_pop = [] { const char * x = moe_opt("xsize-pop"); return x && atoi(x) != 0; }();   // A/B: a colder expert of a larger size before a decode-set one of the newcomer's size
     pm_result * const rs = g_pm.rs, * const rs_dev = g_pm.rs_dev;
     for (uint32_t j = 0; j < k; ++j) {
-        g_pm.rq[j] = { ls.v2n, ls.v2u, heat_of(want[j]), pv2_id(mc, li, want[j]), (keep_dec ? 7 : 3) | (tier_guard && v.tiered ? 16 : 0) };   // bit 2: below the decode tier, take none of it   // pinned, movers to free bytes only (a kernel may still read a colder one)
+        g_pm.rq[j] = { ls.v2n, ls.v2u, heat_of(want[j]), pv2_id(mc, li, want[j]), (keep_dec ? 7 : 3) | (tier_guard && v.tiered ? 16 : 0) | (xsize_pop && v.tiered ? 32 : 0) };   // bit 2: below the decode tier, take none of it   // pinned, movers to free bytes only (a kernel may still read a colder one)
         rs[j].done = 0;
     }
     char * base = (char *) ggml_backend_buffer_get_base(mc->alias[v.ap_idx].buf);
@@ -14386,7 +14387,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     for (uint32_t j = 0; j < k; ++j) {
         const int32_t e = want[j];
         const pm_result & r = rs[j];
-        { const uint32_t pp = r.path < 5 ? r.path : 0; p_n[pp]++; p_ns[pp] += (int64_t) r.ns; }
+        { const uint32_t pp = r.path < 7 && r.path != 5 ? r.path : 0; p_n[pp]++; p_ns[pp] += (int64_t) r.ns; }
         GGML_ASSERT(!r.overflow && "pool-v2: gpu-alloc report overflow");
         if (r.s == UINT64_MAX) { left.push_back(e); n_none++; continue; }
         n_mvs += r.n_mv; n_frs += r.n_fr; n_withmv += r.n_mv > 0; n_nofr += r.n_fr == 0;
@@ -14402,7 +14403,7 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
             mapsync_card_wrote(&lo.pub, id % v.E);   // the card's alloc kernel wrote -1 there
             {   // dev: victims of the decode set (tier heat), and those a newcomer outside it took
                 const bool vd = v.tiered && v.hv[(size_t) id] >= (int64_t) 1e15, nd = v.tiered && g_pm.rq[j].hot >= (int64_t) 1e15;
-                if (vd) { n_vd++; if (!nd) { n_vdc++; const int32_t q = mc->cs_pos[(size_t) (id / v.E)]; n_vq[q < 0 ? 0 : ((size_t) q < p ? 1 : 2)]++; n_vp[r.path < 5 ? r.path : 0]++; } } else { n_vo++; }
+                if (vd) { n_vd++; if (!nd) { n_vdc++; const int32_t q = mc->cs_pos[(size_t) (id / v.E)]; n_vq[q < 0 ? 0 : ((size_t) q < p ? 1 : 2)]++; n_vp[r.path < 7 && r.path != 5 ? r.path : 0]++; } } else { n_vo++; }
             }
             evict_slot(mc, lo, id % v.E);
             pv2_out(mc, lo, id % v.E);
@@ -14443,9 +14444,9 @@ static void pm_place_batch(moe_cache * mc, size_t li, const std::vector<int32_t>
     if (++n_b % 16 == 0) { LLAMA_LOG_WARN("pool-v2: gpu-alloc host time, %lld batches of %lld allocs: map %.1f ms, send %.1f ms, bank wait %.1f ms, report wait %.1f ms (to the first %.1f ms, minus its card time %.1f ms), replay+apply %.1f ms (replay %.1f, ring wait queued %.1f, ops launched %.1f); %lld moves (%lld allocs with any), %lld frees, %lld allocs in free bytes, %lld refused, map %zu entries\n",
             (long long) n_b, (long long) n_r, t_map / 1e3, t_send / 1e3, t_bank / 1e3, t_spin / 1e3, t_first / 1e3, t_fc / 1e3, t_rest / 1e3, t_rp / 1e3, t_ew / 1e3, t_ops / 1e3, (long long) n_mvs, (long long) n_withmv, (long long) n_frs,
             (long long) n_nofr, (long long) n_none, m.size());
-        LLAMA_LOG_WARN("pool-v2: gpu-alloc card time by path: popped %lld (%.1f us each), scan+in place %lld (%.1f), free bytes/moves %lld (%.1f), refused %lld (%.1f), free-bytes fit %lld (%.1f); victims: %lld of the decode set (%lld taken by a newcomer outside it), %lld others; those by victim layer: outside the pass %lld, before this entry %lld, this entry or later %lld; by path 1-4: %lld %lld %lld %lld\n",
+        LLAMA_LOG_WARN("pool-v2: gpu-alloc card time by path: popped %lld (%.1f us each), scan+in place %lld (%.1f), free bytes/moves %lld (%.1f), refused %lld (%.1f), free-bytes fit %lld (%.1f), larger size %lld (%.1f); victims: %lld of the decode set (%lld taken by a newcomer outside it), %lld others; those by victim layer: outside the pass %lld, before this entry %lld, this entry or later %lld; by path 1-4, 6: %lld %lld %lld %lld %lld\n",
             (long long) p_n[1], p_ns[1] / 1e3 / std::max<int64_t>(1, p_n[1]), (long long) p_n[2], p_ns[2] / 1e3 / std::max<int64_t>(1, p_n[2]),
-            (long long) p_n[3], p_ns[3] / 1e3 / std::max<int64_t>(1, p_n[3]), (long long) p_n[4], p_ns[4] / 1e3 / std::max<int64_t>(1, p_n[4]), (long long) p_n[0], p_ns[0] / 1e3 / std::max<int64_t>(1, p_n[0]), (long long) n_vd, (long long) n_vdc, (long long) n_vo, (long long) n_vq[0], (long long) n_vq[1], (long long) n_vq[2], (long long) n_vp[1], (long long) n_vp[2], (long long) n_vp[3], (long long) n_vp[4]); }
+            (long long) p_n[3], p_ns[3] / 1e3 / std::max<int64_t>(1, p_n[3]), (long long) p_n[4], p_ns[4] / 1e3 / std::max<int64_t>(1, p_n[4]), (long long) p_n[0], p_ns[0] / 1e3 / std::max<int64_t>(1, p_n[0]), (long long) p_n[6], p_ns[6] / 1e3 / std::max<int64_t>(1, p_n[6]), (long long) n_vd, (long long) n_vdc, (long long) n_vo, (long long) n_vq[0], (long long) n_vq[1], (long long) n_vq[2], (long long) n_vp[1], (long long) n_vp[2], (long long) n_vp[3], (long long) n_vp[4], (long long) n_vp[6]); }
     static const bool check = [] { const char * x = moe_opt("map-check"); return x && atoi(x) != 0; }();
     if (check) {
         uint32_t c2 = 0;

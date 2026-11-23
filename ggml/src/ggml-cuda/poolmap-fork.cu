@@ -361,6 +361,8 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
     const int64_t cap_hot = (pin & 8) ? hot : (pin & 4) && hot < PM_TIER ? PM_TIER : INT64_MAX;   // bit 3 (a KV stretch's resident moving out): only a victim colder than it
     // bit 4 (--moe tier-guard=1, A/B): a newcomer below the decode tier takes no same-size expert of it, but may open a window over colder bytes
     const int64_t cap_take = (pin & 16) && hot < PM_TIER && cap_hot > PM_TIER ? PM_TIER : cap_hot;
+    // bit 5 (--moe xsize-pop=1, A/B): a newcomer below the decode tier takes a colder-than-tier expert of a larger size before a decode-set one of its own
+    const bool xs = (pin & 32) && hot < PM_TIER;
     pin &= 1;
     unsigned long long & sh_best = S.sh_best; unsigned long long & sh_key = S.sh_key; uint32_t & sh_idx = S.sh_idx;
     uint64_t * cov = S.cov; int64_t * cov_hot = S.cov_hot; uint32_t & n_cov = S.n_cov; uint32_t & n_mv = S.n_mv; uint32_t & n_fr = S.n_fr; uint32_t & ovf = S.ovf;
@@ -382,6 +384,57 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
         const pm_entry ne = v[S.pidx];
         pm_list_add(c, S, ne);
     };
+    // the coldest below-tier expert of the next larger size that holds n at a multiple of a leaves; the newcomer lands at its aligned start, the rest of
+    // its bytes free (path 6). false: none (the map unchanged)
+    auto xpop = [&]() -> bool {
+        if (!xs || !c.L.ok) { return false; }
+        const uint32_t m = *c.L.ncls;
+        uint64_t lo = n;
+        for (uint32_t step = 0; step < m; ++step) {
+            int jb = -1; uint64_t nb = UINT64_MAX;
+            for (uint32_t j = 0; j < m; ++j) { const uint64_t nj = c.L.cls[j].n; if (nj > lo && nj < nb) { nb = nj; jb = (int) j; } }
+            if (jb < 0) { return false; }
+            lo = nb;
+            const uint64_t o = pm_pop(c, S, jb, PM_TIER);
+            if (o == UINT64_MAX) { continue; }
+            if (threadIdx.x == 0) { S.pidx = pm_bs(c, o); }
+            __syncthreads();
+            const uint32_t vi = S.pidx;
+            const bool at = vi < *cnt && v[vi].off == o;
+            const pm_entry w = at ? v[vi] : pm_entry {};
+            const uint64_t st = pm_align(o, a);
+            __syncthreads();
+            if (!at) {   // a list out of step with the map: the host aborts
+                if (threadIdx.x == 0) { res->s = UINT64_MAX; res->n_mv = 0; res->n_fr = 0; res->overflow = 3; res->path = 6; __threadfence_system(); res->done = 1; }
+                __syncthreads();
+                return true;
+            }
+            if (st + n > o + w.size) { pm_list_add(c, S, w); continue; }   // its unit misses a: it stays
+            pm_free(c, S, vi);
+            pm_entry ne = {}; ne.size = n; ne.hot = hot; ne.id = id; ne.u = (uint32_t) a; ne.type = PM_MOE; ne.flags = pin ? PM_PIN : 0;
+            if (!pm_place(c, S, st, ne, &sh_idx)) { if (threadIdx.x == 0) { ovf = 2; } __syncthreads(); }
+            if (threadIdx.x == 0) {
+                res->fr[0] = { w.off, w.size, w.id, 0 };
+                res->s = st; res->n_mv = 0; res->n_fr = 1; res->overflow = ovf; res->path = 6; S.nf_n = 0;
+                __threadfence_system();
+                res->done = 1;
+            }
+            __syncthreads();
+            return true;
+        }
+        return false;
+    };
+    // own size below the tier, then a larger size below it, then own size up to the cap
+    auto pop_take = [&](uint32_t path) -> bool {
+        if (xs && cap_take > PM_TIER) {
+            const uint64_t o = pm_pop(c, S, jc, PM_TIER);
+            if (o != UINT64_MAX) { take_popped(o, path); return true; }
+        }
+        if (xpop()) { return true; }
+        const uint64_t o = pm_pop(c, S, jc, cap_take);
+        if (o != UINT64_MAX) { take_popped(o, path); return true; }
+        return false;
+    };
     if (left) {
         for (uint32_t i = threadIdx.x; i < *cnt; i += PM_T) {
             const pm_entry & e = v[i];
@@ -393,8 +446,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
     }
     // the stream's case, no scan: no free bytes hold n (the last request found none and changed no free bytes): the class's coldest leaves
     if (jc >= 0 && S.nf_n == n && S.nf_a == a) {
-        const uint64_t o = pm_pop(c, S, jc, cap_take);
-        if (o != UINT64_MAX) { take_popped(o, 1); return; }
+        if (pop_take(1)) { return; }
     }
     __syncthreads();
     if (threadIdx.x == 0) { S.nf_n = 0; }
@@ -421,8 +473,7 @@ static __device__ void pm_alloc_one(pm_ctx & c, pm_shared & S, uint64_t n, uint6
         if (same != ~0ull) { atomicMin(&S.sh_same, same); }
         __syncthreads();
         if (sh_best == ~0ull && jc >= 0) {
-            const uint64_t o = pm_pop(c, S, jc, cap_take);
-            if (o != UINT64_MAX) { take_popped(o, 2); return; }
+            if (pop_take(2)) { return; }
         }
         if (sh_best == ~0ull && S.sh_same == ~0ull && !left && cap_hot == INT64_MAX) {   // windows (a walk each) only when no free bytes and no same-size expert hold it
             unsigned long long key = ~0ull;
