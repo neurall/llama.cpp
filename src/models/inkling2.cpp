@@ -237,6 +237,21 @@ ggml_tensor * llama_model_inkling2::graph::convolve(
 
         dynamic = ggml_reshape_3d(ctx0, dynamic, n_conv, n_heads, n_tokens);
 
+        if (n_seq_tokens == 1) {
+            // one token a sequence: each lag's window is one column of x, read in place as [1, C/heads, heads, seqs]; taps, residual and
+            // scale stay in that frame, so the backend runs them as one elementwise chain instead of a cont + mul + add per lag
+            const int64_t cph = n_channels/n_heads;
+            auto frame = [&](ggml_tensor * t) { return ggml_reshape_4d(ctx0, t, 1, cph, n_heads, n_seqs); };
+            ggml_tensor * acc = frame(out);
+            for (int64_t lag = 0; lag < n_conv; ++lag) {
+                ggml_tensor * tap    = ggml_view_4d(ctx0, dynamic, 1, 1, n_heads, n_seqs, dynamic->nb[1], dynamic->nb[1], dynamic->nb[2], lag*dynamic->nb[0]);
+                ggml_tensor * window = ggml_view_4d(ctx0, x, 1, cph, n_heads, n_seqs, x->nb[1], cph*x->nb[1], x->nb[2], (n_conv - 1 - lag)*x->nb[0]);
+                acc = ggml_add(ctx0, acc, ggml_mul(ctx0, window, tap));
+            }
+            acc = ggml_scale(ctx0, ggml_add(ctx0, frame(cur), acc), 1.0f/sqrtf(2*n_conv + 1));
+            return ggml_reshape_2d(ctx0, acc, n_channels, n_tokens);
+        }
+
         for (int64_t lag = 0; lag < n_conv; ++lag) {
             ggml_tensor * tap    = ggml_view_3d(ctx0, dynamic, 1, n_heads, n_tokens, dynamic->nb[1], dynamic->nb[2], lag*dynamic->nb[0]);
             ggml_tensor * window = ggml_view_3d(ctx0, x, n_seq_tokens, n_channels, n_seqs, x->nb[1], x->nb[2], (n_conv - 1 - lag)*x->nb[0]);

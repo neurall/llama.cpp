@@ -119,6 +119,10 @@ static int ewc_op_of(const ggml_tensor * t, int & n_src) {
     }
 }
 
+static bool ewc_is_view(const ggml_tensor * t) {
+    return t->op == GGML_OP_NONE || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE;
+}
+
 static bool ewc_divides(const ggml_tensor * small, const ggml_tensor * big) {
     for (int d = 0; d < 4; ++d) { if (small->ne[d] <= 0 || big->ne[d] % small->ne[d] != 0) { return false; } }
     return true;
@@ -148,29 +152,42 @@ int ggml_cuda_try_fuse_ew_chain_fork(ggml_backend_cuda_context & ctx, const ggml
     if (!on || !ewc_node_ok(cgraph->nodes[i])) {
         return 0;
     }
-    // the longest run of fusable nodes from i
-    int end = i;
-    while (end + 1 < cgraph->n_nodes && end + 1 - i < EWC_MAX_STEP && ewc_node_ok(cgraph->nodes[end + 1])) { ++end; }
+    // the longest run of fusable nodes from i; view nodes of tensors outside the run (operand views) compute nothing and are passed over
+    int ix[EWC_MAX_STEP];
+    int n_ix = 0;
+    ix[n_ix++] = i;
+    for (int j = i + 1; j < cgraph->n_nodes && n_ix < EWC_MAX_STEP; ++j) {
+        const ggml_tensor * t = cgraph->nodes[j];
+        if (ewc_is_view(t)) {
+            bool of_run = false;
+            for (int k = 0; k < n_ix; ++k) { of_run |= t->view_src == cgraph->nodes[ix[k]] || t->src[0] == cgraph->nodes[ix[k]]; }
+            if (of_run) { break; }
+            continue;
+        }
+        if (!ewc_node_ok(t)) { break; }
+        ix[n_ix++] = j;
+    }
     // shrink until every node before the last is read only inside the run, shapes divide the last node's, and the operands fit
-    for (; end > i; --end) {
+    for (int m = n_ix; m > 1; --m) {
+        const int end = ix[m - 1];
         const ggml_tensor * last = cgraph->nodes[end];
         bool ok = true;
-        for (int k = i; k < end && ok; ++k) {
-            const ggml_tensor * t = cgraph->nodes[k];
+        for (int kk = 0; kk < m - 1 && ok; ++kk) {
+            const ggml_tensor * t = cgraph->nodes[ix[kk]];
             if ((t->flags & GGML_TENSOR_FLAG_OUTPUT) || !ewc_divides(t, last)) { ok = false; break; }
             int uses = 0;
-            for (int j = k + 1; j <= end; ++j) {
-                for (int s = 0; s < GGML_MAX_SRC; ++s) { uses += cgraph->nodes[j]->src[s] == t; }
+            for (int jj = kk + 1; jj < m; ++jj) {
+                for (int s = 0; s < GGML_MAX_SRC; ++s) { uses += cgraph->nodes[ix[jj]]->src[s] == t; }
             }
-            ok = uses == ggml_node_get_use_count(cgraph, k);
+            ok = uses == ggml_node_get_use_count(cgraph, ix[kk]);
         }
         if (!ok) { continue; }
         ewc_prog P{};
         int n_opd = 0;
-        for (int k = i; k <= end && ok; ++k) {
-            const ggml_tensor * t = cgraph->nodes[k];
+        for (int kk = 0; kk < m && ok; ++kk) {
+            const ggml_tensor * t = cgraph->nodes[ix[kk]];
             int n_src;
-            ewc_step & S = P.st[k - i];
+            ewc_step & S = P.st[kk];
             S.op = (uint8_t) ewc_op_of(t, n_src);
             S.a = S.b = 0;
             S.p0 = S.p1 = 0.0f;
@@ -180,7 +197,7 @@ int ggml_cuda_try_fuse_ew_chain_fork(ggml_backend_cuda_context & ctx, const ggml
                 const ggml_tensor * src = t->src[s];
                 int ref = 0;
                 bool inside = false;
-                for (int j = i; j < k; ++j) { if (cgraph->nodes[j] == src) { ref = j - i; inside = true; break; } }
+                for (int jj = 0; jj < kk; ++jj) { if (cgraph->nodes[ix[jj]] == src) { ref = jj; inside = true; break; } }
                 if (!inside) {
                     if (!ewc_divides(src, t)) { ok = false; break; }
                     int o = 0;
@@ -199,7 +216,7 @@ int ggml_cuda_try_fuse_ew_chain_fork(ggml_backend_cuda_context & ctx, const ggml
             }
         }
         if (!ok) { continue; }
-        P.n_st = end - i + 1;
+        P.n_st = m;
         for (int d = 0; d < 4; ++d) { P.ne[d] = (int) last->ne[d]; P.nb[d] = (int64_t) last->nb[d]; }
         P.dst = (char *) last->data;
         const int64_t n = ggml_nelements(last);
@@ -209,9 +226,9 @@ int ggml_cuda_try_fuse_ew_chain_fork(ggml_backend_cuda_context & ctx, const ggml
         if (log) {
             static std::set<std::string> said;
             std::string l;
-            for (int k = i; k <= end; ++k) { l += std::string(k == i ? "" : " ") + ggml_op_desc(cgraph->nodes[k]); }
+            for (int kk = 0; kk < m; ++kk) { l += std::string(kk == 0 ? "" : " ") + ggml_op_desc(cgraph->nodes[ix[kk]]); }
             l += " [" + std::to_string(last->ne[0]) + "," + std::to_string(last->ne[1]) + "," + std::to_string(last->ne[2]) + "]";
-            if (said.insert(l).second) { GGML_LOG_WARN("ew chain: %d nodes in one kernel: %s\n", end - i + 1, l.c_str()); }
+            if (said.insert(l).second) { GGML_LOG_WARN("ew chain: %d nodes in one kernel: %s\n", m, l.c_str()); }
         }
         return end - i;
     }
