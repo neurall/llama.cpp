@@ -842,6 +842,7 @@ static void ggml_gallocr_free_extra_space(ggml_gallocr_t galloc, struct ggml_ten
     }
 }
 
+static struct ggml_cgraph * galloc_hw_graph = NULL;   // fork: the graph being planned, for the in-place reason line
 static void ggml_gallocr_allocate_node(ggml_gallocr_t galloc, struct ggml_tensor * node, int buffer_id) {
     GGML_ASSERT(buffer_id >= 0);
     struct hash_node * hn = ggml_gallocr_hash_get(galloc, node);
@@ -907,6 +908,12 @@ static void ggml_gallocr_allocate_node(ggml_gallocr_t galloc, struct ggml_tensor
             GGML_LOG_WARN("galloc: %s %s %zu MiB not in place on %s %s: own %d, output %d, same layout %d, readers %d, views %d, view %d\n",
                     node->name, ggml_op_desc(node), ggml_nbytes(node) >> 20, p->name, ggml_op_desc(p), ggml_gallocr_is_own(galloc, p),
                     (p->flags & GGML_TENSOR_FLAG_OUTPUT) != 0, ggml_are_same_layout(node, p), p_hn->n_children, p_hn->n_views, ggml_impl_is_view(p));
+            for (int i = 0; galloc_hw_graph && i < ggml_graph_n_nodes(galloc_hw_graph); ++i) {
+                struct ggml_tensor * r = ggml_graph_node(galloc_hw_graph, i);
+                for (int j = 0; j < GGML_MAX_SRC; ++j) {
+                    if (r->src[j] == p) { GGML_LOG_WARN("galloc:   reader of %s: %s %s (src %d)\n", p->name, r->name, ggml_op_desc(r), j); }
+                }
+            }
         }
         // allocate tensor from the buffer
         struct ggml_dyn_tallocr * alloc = galloc->buf_tallocs[buffer_id];
@@ -954,6 +961,7 @@ static int get_node_buffer_id(const int * node_buffer_ids, int i) {
 }
 
 static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgraph * graph, const int * node_buffer_ids, const int * leaf_buffer_ids) {
+    galloc_hw_graph = graph;
     // clear hash tables
     ggml_hash_set_reset(&galloc->hash_set);
     memset(galloc->hash_values, 0, sizeof(struct hash_node) * galloc->hash_set.size);
