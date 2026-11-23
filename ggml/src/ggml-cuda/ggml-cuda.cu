@@ -8340,6 +8340,13 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         return 2;
     }
 
+    {   // fork: any other run of elementwise nodes in one kernel (ew-chain-fork.cu), after every fusion above had its chance
+        extern int ggml_cuda_try_fuse_ew_chain_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i);
+        if (const int n = ggml_cuda_try_fuse_ew_chain_fork(*cuda_ctx, cgraph, i)) {
+            return n;
+        }
+    }
+
     return 0;
 }
 

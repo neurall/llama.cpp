@@ -4135,6 +4135,49 @@ struct test_softcap : public test_case {
     }
 };
 
+// fork: runs of elementwise ops the CUDA chain fuser (ew-chain-fork.cu) runs as one kernel: Inkling 2's clip (a reduction between two runs,
+// a broadcast row factor growing to the full shape, a node read twice) and its loop control gate (the chain value as second operand, tanh, sub)
+struct test_ew_chain : public test_case {
+    const std::array<int64_t, 4> ne;
+    const int kind;   // 0 clip, 1 control, 2 mixed unary + transposed operand
+
+    std::string op_desc(ggml_tensor * t) override { GGML_UNUSED(t); return "EW_CHAIN"; }
+    bool run_whole_graph() override { return true; }
+    std::string vars() override { return VARS_TO_STR2(ne, kind); }
+
+    test_ew_chain(std::array<int64_t, 4> ne = {64, 4, 3, 1}, int kind = 0) : ne(ne), kind(kind) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * a = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne.data());
+        ggml_set_param(a);
+        ggml_set_name(a, "a");
+        ggml_tensor * out = nullptr;
+        if (kind == 0) {
+            ggml_tensor * sc = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, ne[0], ne[1]);
+            ggml_set_param(sc);
+            ggml_tensor * cur  = ggml_mul(ctx, a, sc);
+            ggml_tensor * norm = ggml_sqrt(ctx, ggml_sum_rows(ctx, ggml_sqr(ctx, cur)));
+            norm = ggml_scale_bias(ctx, norm, 1.0f, 1e-6f);
+            ggml_tensor * factor = ggml_div(ctx, ggml_fill(ctx, norm, 2.0f), norm);
+            out = ggml_mul(ctx, cur, ggml_clamp(ctx, factor, 0.0f, 1.0f));
+        } else if (kind == 1) {
+            ggml_tensor * f = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne.data());
+            ggml_tensor * g = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne.data());
+            ggml_tensor * m = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne.data());
+            ggml_set_param(f); ggml_set_param(g); ggml_set_param(m);
+            out = ggml_add(ctx, ggml_sub(ctx, a, ggml_mul(ctx, ggml_tanh(ctx, f), a)), ggml_mul(ctx, ggml_tanh(ctx, g), m));
+        } else {
+            ggml_tensor * b = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, ne[1], ne[0], ne[2], ne[3]);
+            ggml_set_param(b);
+            ggml_tensor * x = ggml_sigmoid(ctx, ggml_add(ctx, a, ggml_transpose(ctx, b)));
+            x = ggml_silu(ctx, ggml_scale(ctx, x, 3.0f));
+            out = ggml_exp(ctx, ggml_neg(ctx, ggml_abs(ctx, x)));
+        }
+        ggml_set_name(out, "out");
+        return out;
+    }
+};
+
 // GGML_OP_SILU_BACK
 struct test_silu_back : public test_case {
     const ggml_type type;
@@ -12317,6 +12360,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_scale(GGML_TYPE_BF16, {10, 10, 10, 10}, 2.0f, 1.0f, true, 1)); // view test, inplace
     test_cases.emplace_back(new test_scale(GGML_TYPE_F16, {10, 10, 10, 10}, 2.0f, 1.0f, false, 1)); // view test
     test_cases.emplace_back(new test_softcap(GGML_TYPE_F32, {10, 10, 10, 10}, 50.0f));
+    for (int kind : {0, 1, 2}) {
+        test_cases.emplace_back(new test_ew_chain({64, 4, 3, 1}, kind));
+        test_cases.emplace_back(new test_ew_chain({128, 32, 1, 1}, kind));
+        test_cases.emplace_back(new test_ew_chain({4096, 7, 5, 2}, kind));
+    }
     test_cases.emplace_back(new test_silu_back());
     test_cases.emplace_back(new test_sigmoid_back());
 
