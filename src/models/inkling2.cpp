@@ -230,6 +230,7 @@ ggml_tensor * llama_model_inkling2::graph::convolve(
     build_conv_state_store(inp, state, x, n_conv - 1, offset*(n_conv - 1)*ggml_element_size(state));
 
     ggml_tensor * out = ggml_ssm_conv(ctx0, x, weight);
+    ggml_build_forward_expand(gf, out);   // right after its state store, so the store, concat and conv are adjacent (one fused CUDA kernel)
     out = ggml_reshape_2d(ctx0, out, n_channels, n_tokens);
 
     if (dynamic) {
