@@ -5473,7 +5473,9 @@ static ggml_tensor * build_attn_iswa_impl(
         ggml_tensor * sinks,
         ggml_tensor * v_mla,
             float     kq_scale,
-            int       il) {
+            int       il,
+        const std::function<ggml_tensor * (int64_t t0, int64_t nt)> & mask_block = nullptr,
+            int64_t   n_block = 0) {
     ggml_context * ctx0 = gctx.ctx0;
     ggml_cgraph  * gf   = gctx.gf;
 
@@ -5545,7 +5547,19 @@ static ggml_tensor * build_attn_iswa_impl(
         ggml_tensor * k = use_kv_cur ? k_cur : mctx_cur->get_k(ctx0, il);
         ggml_tensor * v = use_kv_cur ? v_cur : mctx_cur->get_v(ctx0, il);
 
-        cur = gctx.build_attn_mha(q, k, v, kq_b, kq_mask, kv_rows, sinks, v_mla, 0, kq_scale, il);
+        const int64_t n_q = q->ne[2];
+        if (mask_block && n_block > 0 && n_q > n_block) {
+            // fork: a dense per-head mask (KV cells x tokens x heads) built for the whole pass grows with pass x context; the queries attend in
+            // blocks, each with its own block of the mask, so only one block of it exists at a time (Inkling 2 relative bias, see build_attn below)
+            for (int64_t t0 = 0; t0 < n_q; t0 += n_block) {
+                const int64_t nt = std::min(n_block, n_q - t0);
+                ggml_tensor * q_b = ggml_view_3d(ctx0, q, q->ne[0], q->ne[1], nt, q->nb[1], q->nb[2], t0*q->nb[2]);
+                ggml_tensor * o_b = gctx.build_attn_mha(q_b, k, v, nullptr, mask_block(t0, nt), kv_rows, sinks, v_mla, 0, kq_scale, il);
+                cur = cur ? ggml_concat(ctx0, cur, o_b, 1) : o_b;
+            }
+        } else {
+            cur = gctx.build_attn_mha(q, k, v, kq_b, kq_mask, kv_rows, sinks, v_mla, 0, kq_scale, il);
+        }
         cur = build_attn_scale_kv_output(ctx0, mctx_cur, cur, il);
         gctx.cb(cur, "kqv_out", il);
     }
@@ -6202,7 +6216,8 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * q_cur,
         ggml_tensor * k_cur,
         ggml_tensor * v_cur,
-        ggml_tensor * kq_b,
+        ggml_tensor * table,
+        ggml_tensor * rel_pos,
         ggml_tensor * sinks,
             float     kq_scale,
             int       il) const {
@@ -6216,18 +6231,45 @@ ggml_tensor * llm_graph_context::build_attn(
     //       needs a kv_rows flash attention with a per-head mask (CUDA has none)
     GGML_ASSERT(attn_mask.rows == nullptr);
 
-    // a mask per head, in the dense layout of the input mask, which flash attention takes in F16
-    ggml_tensor * kq_mask = attn_mask.raw;
-    if (kq_mask->type != GGML_TYPE_F32) {
-        kq_mask = ggml_cast(ctx0, kq_mask, GGML_TYPE_F32);
-    }
-    kq_mask = ggml_add(ctx0, kq_b, kq_mask);
-    if (cparams.flash_attn) {
-        kq_mask = ggml_cast(ctx0, kq_mask, GGML_TYPE_F16);
-    }
-    cb(kq_mask, "kq_mask_rel_pos", il);
+    ggml_tensor * raw = attn_mask.raw;   // [n_kv, n_tokens/n_stream, 1, n_stream]
+    const int64_t n_kv     = rel_pos->ne[0];
+    const int64_t n_tokens = rel_pos->ne[1];
+    const int64_t n_head   = table->ne[0];
+    const int64_t n_stream = raw->ne[3];
 
-    return build_attn_iswa_impl(*this, inp_attn, wo, wo_b, wo_s, q_cur, k_cur, v_cur, nullptr, kq_mask, nullptr, sinks, nullptr, kq_scale, il);
+    // the mask of queries [t0, t0 + nt): their bias gathered by distance, plus the causal / window mask, one head per plane
+    auto mask_of = [&](int64_t t0, int64_t nt) {
+        ggml_tensor * tb = ggml_view_3d(ctx0, table, table->ne[0], table->ne[1], nt, table->nb[1], table->nb[2], t0*table->nb[2]);
+        ggml_tensor * rp = ggml_view_2d(ctx0, rel_pos, n_kv, nt, rel_pos->nb[1], t0*rel_pos->nb[1]);
+        ggml_tensor * kq_b = ggml_get_rows(ctx0, tb, rp);                                   // [n_head, n_kv, nt]
+        kq_b = ggml_reshape_4d(ctx0, kq_b, n_head, n_kv, nt/n_stream, n_stream);
+        kq_b = ggml_cont(ctx0, ggml_permute(ctx0, kq_b, 2, 0, 1, 3));                       // [n_kv, nt/n_stream, n_head, n_stream]
+        cb(kq_b, "kq_b", il);
+        ggml_tensor * m = nt == n_tokens ? raw : ggml_view_4d(ctx0, raw, raw->ne[0], nt, raw->ne[2], raw->ne[3], raw->nb[1], raw->nb[2], raw->nb[3], t0*raw->nb[1]);
+        if (m->type != GGML_TYPE_F32) {
+            m = ggml_cast(ctx0, m, GGML_TYPE_F32);
+        }
+        m = ggml_add(ctx0, kq_b, m);
+        if (cparams.flash_attn) {
+            m = ggml_cast(ctx0, m, GGML_TYPE_F16);
+        }
+        cb(m, "kq_mask_rel_pos", il);
+        return m;
+    };
+
+    // fork: blocks of queries whose f32 bias stays under 512 MiB (a power of two, at least 64 tokens); one stream only (the blocks cut the token dim)
+    // shortcut: fixed 512 MiB budget per block, size it from the compute buffer the pass may use if a model needs bigger blocks
+    int64_t n_block = 0;
+    if (n_stream == 1) {
+        const int64_t per_token = n_kv * n_head * (int64_t) sizeof(float);
+        int64_t b = 64;
+        while (b * 2 * per_token <= (int64_t) 512 * 1024 * 1024 && b * 2 < n_tokens) { b *= 2; }
+        n_block = b < n_tokens ? b : 0;
+    }
+    if (n_block == 0) {
+        return build_attn_iswa_impl(*this, inp_attn, wo, wo_b, wo_s, q_cur, k_cur, v_cur, nullptr, mask_of(0, n_tokens), nullptr, sinks, nullptr, kq_scale, il);
+    }
+    return build_attn_iswa_impl(*this, inp_attn, wo, wo_b, wo_s, q_cur, k_cur, v_cur, nullptr, nullptr, nullptr, sinks, nullptr, kq_scale, il, mask_of, n_block);
 }
 
 void llm_graph_context::build_dense_out(
