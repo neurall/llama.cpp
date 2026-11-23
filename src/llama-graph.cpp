@@ -4110,6 +4110,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         static const bool down_chunk = [] { const char * e = moe_opt("down-chunk"); return e && atoi(e) != 0; }();
         const int64_t n_used_c = (int64_t) hparams.n_expert_used(il);
         const int64_t n_chunk  = std::min<int64_t>((n_used_c + 1) / 2, n_tokens / 512);
+        { static int said = 0; if (down_chunk && n_tokens >= 1024 && said++ < 4) { LLAMA_LOG_WARN("down-chunk: il %d tokens %lld cstream %d chunks %lld op %s bias %d norm %d defer %d pk %d ids_def %d ranges %zu scale %d\n", il, (long long) n_tokens,
+                (int) mc_cstream, (long long) n_chunk, ggml_op_name(down_g->op), down_exps_b != nullptr, post_exp_norm != nullptr, defer_prev != nullptr, (int) mc_defer_pk, mc_ids_def != nullptr, moe_ranges.size(), down_exps_s != nullptr); } }
         if (down_chunk && mc_cstream && n_chunk > 1 && n_used_c == n_expert_used && down_g->op == GGML_OP_MUL_MAT_ID && !down_exps_b && !post_exp_norm &&
                 !weight_before_ffn && !defer_prev && !down_exps_s && mc_defer_pk <= 0 && !mc_ids_def && moe_ranges.empty()) {
             ggml_tensor * w_d = down_g->src[0], * act = down_g->src[1], * ids = down_g->src[2], * sel = down_g->src[3];
