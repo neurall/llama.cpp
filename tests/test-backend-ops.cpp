@@ -4207,6 +4207,31 @@ struct test_depth_mix : public test_case {
     }
 };
 
+// fork: one-token short conv step (concat of past and the new column, state store, ssm_conv), as Inkling 2 convolve builds it
+struct test_conv_step : public test_case {
+    const int64_t K, C, S;   // conv width, channels, seqs
+
+    std::string op_desc(ggml_tensor * t) override { GGML_UNUSED(t); return "CONV_STEP"; }
+    bool run_whole_graph() override { return true; }
+    std::string vars() override { return VARS_TO_STR3(K, C, S); }
+
+    test_conv_step(int64_t K = 4, int64_t C = 256, int64_t S = 1) : K(K), C(C), S(S) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * past = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, K - 1, C, S);
+        ggml_tensor * cur  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, C, S);
+        ggml_tensor * w    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, K, C);
+        ggml_tensor * cell = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, (K - 1)*C, S);
+        ggml_tensor * x = ggml_concat(ctx, past, ggml_transpose(ctx, ggml_reshape_3d(ctx, cur, C, 1, S)), 0);
+        ggml_tensor * last = ggml_view_3d(ctx, x, K - 1, C, S, x->nb[1], x->nb[2], ggml_row_size(x->type, 1));
+        ggml_tensor * st = ggml_cpy(ctx, last, cell);
+        ggml_tensor * conv = ggml_ssm_conv(ctx, x, w);
+        ggml_tensor * out = ggml_concat(ctx, ggml_reshape_2d(ctx, st, (K - 1)*C, S), ggml_reshape_2d(ctx, conv, C, S), 0);
+        ggml_set_name(out, "out");
+        return out;
+    }
+};
+
 // GGML_OP_SILU_BACK
 struct test_silu_back : public test_case {
     const ggml_type type;
@@ -12402,6 +12427,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
     test_cases.emplace_back(new test_depth_mix(100, 5, 2, 1));
+    for (int64_t S : {1, 3}) {
+        test_cases.emplace_back(new test_conv_step(4, 2048, S));
+    }
+    test_cases.emplace_back(new test_conv_step(3, 100, 2));
     test_cases.emplace_back(new test_silu_back());
     test_cases.emplace_back(new test_sigmoid_back());
 

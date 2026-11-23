@@ -7414,6 +7414,12 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
             return n;
         }
     }
+    {   // fork: one-token short conv step (concat, state store, ssm_conv) in one kernel (conv-step-fork.cu)
+        extern int ggml_cuda_try_fuse_conv_step_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i);
+        if (const int n = ggml_cuda_try_fuse_conv_step_fork(*cuda_ctx, cgraph, i)) {
+            return n;
+        }
+    }
 
     // fork, dev: GGML_CUDA_FUSE_DUMP=N prints the ops around the first N matmuls of a graph of one token, to see which fusion a pattern misses and why
     static const int fuse_dump = getenv("GGML_CUDA_FUSE_DUMP") ? atoi(getenv("GGML_CUDA_FUSE_DUMP")) : 0;
