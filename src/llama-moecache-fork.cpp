@@ -15439,6 +15439,7 @@ static void cs_release(moe_cache * mc, ggml_backend_t cbe) {
         if (k < 0 || mc->cs_hooked[k] <= mc->cs_done[k] || mc->cs_hooked[k] > mc->cs_order.size()) { return; }
         cs_mark_done(mc, k, mc->cs_hooked[k], cbe);
         mc->cs_hook_us[k] = ggml_time_us();
+        pv2_early_refill(mc, k);   // the done marker moves here, not in cs_layer
         cs_ahead(mc, k, SIZE_MAX, jobs);
     }
     cs_issue(mc, jobs);
