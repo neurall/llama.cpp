@@ -18154,6 +18154,9 @@ extern "C" { GGML_API void ggml_backend_set_link_rate_fork(ggml_backend_dev_t de
 static void pv2_switch(moe_cache * mc) {
     optime_t _ot(OP_SWITCH);
     auto & v = mc->v2;
+    { static int said = 0; if (!mc->cs_order.empty() && said++ < 4) {   // dev: where the stream's hooks got to (early refill trigger)
+        LLAMA_LOG_WARN("moe-cache: pool-v2: switch sees order %zu hooks %llu done %zu next %zu hooked %zu last pass %d k pass %.2f\n", mc->cs_order.size(),
+                (unsigned long long) mc->cs_n_hook, mc->cs_done[0], mc->cs_next[0], mc->cs_hooked[0], g_last_pass.load(), g_cs_k_pass); } }
     if (v.tiered && !v.hv.empty()) {   // dev: what the prompt left in the heap, by the layer's place in the pass (8 bins): decode tier / prompt only
         size_t t[8] = {}, q[8] = {}, qp[8] = {};
         const size_t np = std::max<size_t>(1, mc->cs_order.size());
