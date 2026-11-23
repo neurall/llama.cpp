@@ -3329,6 +3329,10 @@ void llama_model::swap_layer_dev_fork(int a, int b) {
     std::swap(pimpl->dev_layer.at(a), pimpl->dev_layer.at(b));
 }
 
+void llama_model::copy_layer_dev_fork(int dst, int src) {
+    pimpl->dev_layer.at(dst) = pimpl->dev_layer.at(src);
+}
+
 ggml_backend_dev_t llama_model::dev_layer(int il) const {
     return pimpl->dev_layer.at(il).dev;
 }

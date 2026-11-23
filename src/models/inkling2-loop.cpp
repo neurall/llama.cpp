@@ -66,6 +66,9 @@ void llama_model_inkling2_loop::post_arch_tensors(llama_model_loader &) {
     // share the physical weights, each cache slot keeps its own KV and conv state
     for (int il = n_phys; il < (int) hparams.n_layer(); ++il) {
         layers[il] = layers[layer_phys(il)];
+        // fork: and its KV on the card that runs those weights (the layer split counted the slots as layers of their own: slots 25+ kept their KV
+        // on the second card, every query block copied it across, 92 GiB reserved at a 1024-token pass)
+        copy_layer_dev_fork(il, layer_phys(il));
     }
 }
 

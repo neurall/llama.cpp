@@ -1061,6 +1061,7 @@ struct llama_model {
 
     ggml_backend_dev_t dev_layer(int il) const;
     void swap_layer_dev_fork(int a, int b);   // fork: layers a and b traded GPUs (llama_context::swap_layers_fork)
+    void copy_layer_dev_fork(int dst, int src);   // fork: layer dst runs where layer src runs (a loop's cache slot and the layer whose weights it shares)
     ggml_backend_dev_t dev_output() const;
 
     ggml_backend_buffer_type_t select_buft(int il) const;
