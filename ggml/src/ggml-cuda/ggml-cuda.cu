@@ -7418,6 +7418,10 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
     }
     {   // fork, any model: rms_norm (+ weight mul) also writes the q8_1 copy its matvecs read (norm-q8-fork.cu)
         if (const int n = ggml_cuda_try_fuse_norm_q8_fork(*cuda_ctx, cgraph, i)) {
+            if (n < 0) {   // the norm alone ran: done, nothing skipped
+                nodes_fused[i] = true;
+                return 0;
+            }
             return n;
         }
     }
@@ -8540,7 +8544,7 @@ static int ggml_cuda_try_fuse_norm_q8_fork(ggml_backend_cuda_context & ctx, cons
         mm = t->op == GGML_OP_MUL_MAT && b && b->data == out->data && ggml_nbytes(b) == ggml_nbytes(out) && ggml_is_contiguous(b) && ggml_is_quantized(t->src[0]->type) && t->src[1]->ne[1]*t->src[1]->ne[2]*t->src[1]->ne[3] <= MMVQ_MAX_BATCH_SIZE;
     }
     static int log_left = getenv("GGML_CUDA_NORM_Q8_LOG") ? atoi(getenv("GGML_CUDA_NORM_Q8_LOG")) : 0;   // dev: why a norm is not fused
-    if (log_left > 0 && (!mm || last == i)) {
+    if (log_left > 0 && !mm) {
         --log_left;
         int k = last + 1;
         while (k < cgraph->n_nodes && ggml_cuda_is_view_or_noop(cgraph->nodes[k])) { ++k; }
@@ -8548,7 +8552,7 @@ static int ggml_cuda_try_fuse_norm_q8_fork(ggml_backend_cuda_context & ctx, cons
         GGML_LOG_WARN("norm-q8 skip %s: mul %d mm %d rows %lld uses %d next %s(%s) src1 %s\n", rms->name, last != i, mm, (long long) rows, ggml_node_get_use_count(cgraph, last),
                 nx ? ggml_op_desc(nx) : "-", nx && nx->src[0] ? ggml_type_name(nx->src[0]->type) : "-", nx && nx->src[1] ? nx->src[1]->name : "-");
     }
-    if (!mm || last == i) {   // shortcut: a bare rms_norm (no weight) is left to the usual path; it would need a one-node fusion return
+    if (!mm) {
         return 0;
     }
     const int64_t ne_pad = GGML_PAD(ne0, MATRIX_ROW_PADDING);
@@ -8571,6 +8575,10 @@ static int ggml_cuda_try_fuse_norm_q8_fork(ggml_backend_cuda_context & ctx, cons
     for (int k = 0; k < 4; ++k) { g_q8r_revive.k.ne[k] = q8_ne[k]; }
     for (int k = 0; k < 3; ++k) { g_q8r_revive.k.s[k] = q8_s[k]; }
     g_q8r_revive.lo = (uintptr_t) out->data; g_q8r_revive.hi = (uintptr_t) out->data + ggml_nbytes(out);
+    if (last == i) {   // a bare norm: no written() calls follow, the claim stands
+        g_q8r_revive.device = -1;
+        return -1;
+    }
     return last - i;
 }
 

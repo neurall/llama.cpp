@@ -4263,21 +4263,28 @@ struct test_loop_ctrl : public test_case {
 struct test_norm_q8 : public test_case {
     const ggml_type type;
     const int64_t E, N, T;
+    const bool bare;   // the norm feeds a matvec and, apart, a weight mul (Qwen3.8 hc layers)
 
     std::string op_desc(ggml_tensor * t) override { GGML_UNUSED(t); return "NORM_Q8"; }
     bool run_whole_graph() override { return true; }
-    std::string vars() override { return VARS_TO_STR4(type, E, N, T); }
+    std::string vars() override { return VARS_TO_STR5(type, E, N, T, bare); }
     double max_nmse_err() override { return 5e-4; }
 
-    test_norm_q8(ggml_type type = GGML_TYPE_Q8_0, int64_t E = 256, int64_t N = 64, int64_t T = 1) : type(type), E(E), N(N), T(T) {}
+    test_norm_q8(ggml_type type = GGML_TYPE_Q8_0, int64_t E = 256, int64_t N = 64, int64_t T = 1, bool bare = false) : type(type), E(E), N(N), T(T), bare(bare) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         ggml_tensor * x  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, E, T);
         ggml_tensor * w  = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, E);
         ggml_tensor * a  = ggml_new_tensor_2d(ctx, type, E, N);
         ggml_tensor * b  = ggml_new_tensor_2d(ctx, type, E, N);
-        ggml_tensor * h  = ggml_mul(ctx, ggml_rms_norm(ctx, x, 1e-6f), w);
-        ggml_tensor * out = ggml_add(ctx, ggml_mul_mat(ctx, a, h), ggml_mul_mat(ctx, b, h));
+        ggml_tensor * out;
+        if (bare) {
+            ggml_tensor * h = ggml_rms_norm(ctx, x, 1e-6f);
+            out = ggml_add(ctx, ggml_mul_mat(ctx, a, h), ggml_mul_mat(ctx, b, ggml_mul(ctx, h, w)));
+        } else {
+            ggml_tensor * h = ggml_mul(ctx, ggml_rms_norm(ctx, x, 1e-6f), w);
+            out = ggml_add(ctx, ggml_mul_mat(ctx, a, h), ggml_mul_mat(ctx, b, h));
+        }
         ggml_set_name(out, "out");
         return out;
     }
@@ -12492,6 +12499,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
     test_cases.emplace_back(new test_norm_q8(GGML_TYPE_Q8_0, 4096 + 256, 64, 2));
+    for (int64_t T : {1, 8}) {
+        test_cases.emplace_back(new test_norm_q8(GGML_TYPE_Q4_K, 2304, 512, T, true));
+    }
     test_cases.emplace_back(new test_silu_back());
     test_cases.emplace_back(new test_sigmoid_back());
 
