@@ -19,6 +19,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -199,8 +200,21 @@ void llama_rowread_ahead_fork(const ggml_tensor * t, int part, const int32_t * i
     row_reader & r = reader();
     {
         std::lock_guard<std::mutex> lk(r.mu);
-        r.q.erase(std::remove_if(r.q.begin(), r.q.end(), [&](const std::shared_ptr<row_job> & x) { return x->t == t && x->part == part && (!x->started || x->done); }), r.q.end());
-        r.q.push_back(j);
+        // a started job that holds some of these rows stays and they are not read twice (the next-token job, then the pass's own: 50-118 us a decode token
+        // waited on a second SSD read with the card idle, Qwen3.8 PLE); the rest of (t, part) gives way
+        const std::vector<int32_t> want = j->u;
+        r.q.erase(std::remove_if(r.q.begin(), r.q.end(), [&](const std::shared_ptr<row_job> & x) {
+            if (x->t != t || x->part != part) { return false; }
+            if (!x->started) { return true; }
+            if (!rowread_overlap(x->u, want)) { return x->done; }
+            if (!x->done || x->ok) {
+                std::vector<int32_t> d;
+                std::set_difference(j->u.begin(), j->u.end(), x->u.begin(), x->u.end(), std::back_inserter(d));
+                j->u.swap(d);
+            }
+            return false;
+        }), r.q.end());
+        if (!j->u.empty()) { r.q.push_back(j); }
     }
     g_ahead_used = true;
     r.cv.notify_all();
@@ -254,15 +268,20 @@ bool llama_rowread_fill_rows_fork(const ggml_tensor * t, int part, const int32_t
     mk.reserve(nu - n_ram);
     for (size_t k = 0; k < nu; ++k) { if (!hit[k]) { mr.push_back(u[k]); mk.push_back(k); } }
     std::vector<uint8_t> mb(mr.size()*rs);
-    std::shared_ptr<row_job> j;
+    // every read-ahead of (t, part), newest first: a decode pass's rows sit partly in the next-token job (asked at the last synchronize) and partly in its own
+    // (asked after the memory apply, without the rows the first holds); only a job holding a missing row is waited for
+    std::vector<std::shared_ptr<row_job>> js;
     const int64_t t0 = ggml_time_us();
-    if (g_ahead_used.load()) {
+    if (g_ahead_used.load() && !mr.empty()) {
         row_reader & r = reader();
         std::unique_lock<std::mutex> lk(r.mu);
-        for (auto it = r.q.rbegin(); it != r.q.rend() && !j; ++it) { if ((*it)->t == t && (*it)->part == part) { j = *it; } }
-        if (j) {
-            r.cv.wait(lk, [&] { return j->done; });
-            const auto it = std::find(r.q.begin(), r.q.end(), j);   // a newer read-ahead of t may have dropped it already
+        for (auto it = r.q.rbegin(); it != r.q.rend(); ++it) {
+            const auto & x = *it;
+            if (x->t == t && x->part == part && rowread_overlap(x->u, mr)) { js.push_back(x); }
+        }
+        for (const auto & x : js) {
+            r.cv.wait(lk, [&] { return x->done; });
+            const auto it = std::find(r.q.begin(), r.q.end(), x);
             if (it != r.q.end()) { r.q.erase(it); }
         }
     }
@@ -270,13 +289,9 @@ bool llama_rowread_fill_rows_fork(const ggml_tensor * t, int part, const int32_t
     bool ok = true;
     size_t n_miss = mr.size();
     if (!mr.empty()) {
-        std::vector<size_t> rest;
-        if (j && j->ok) {
-            rest = rowread_take(j->u, j->data.data(), mr, rs, mb.data());
-        } else {
-            rest.resize(mr.size());
-            for (size_t i = 0; i < mr.size(); ++i) { rest[i] = i; }
-        }
+        std::vector<size_t> rest(mr.size());
+        for (size_t i = 0; i < mr.size(); ++i) { rest[i] = i; }
+        for (const auto & x : js) { if (x->ok) { rest = rowread_take_rest(x->u, x->data.data(), mr, rest, rs, mb.data()); } }
         n_miss = rest.size();
         if (!rest.empty()) {
             std::vector<int32_t> rr(rest.size());

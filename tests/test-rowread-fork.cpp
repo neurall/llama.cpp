@@ -27,7 +27,29 @@ static void check(const std::vector<int32_t> & ahead, const std::vector<int32_t>
     }
 }
 
+// two read-aheads: the newer one first, the older one fills only what the newer lacks
+static void check2(const std::vector<int32_t> & a, const std::vector<int32_t> & b, const std::vector<int32_t> & need, const std::vector<size_t> & want_miss) {
+    const size_t rs = 5;
+    const std::vector<uint8_t> da = rows_of(a, rs), db = rows_of(b, rs), full = rows_of(need, rs);
+    std::vector<uint8_t> dst(need.size()*rs, 0xEE);
+    std::vector<size_t> rest(need.size());
+    for (size_t k = 0; k < rest.size(); ++k) { rest[k] = k; }
+    rest = rowread_take_rest(a, da.data(), need, rest, rs, dst.data());
+    rest = rowread_take_rest(b, db.data(), need, rest, rs, dst.data());
+    assert(rest == want_miss);
+    size_t m = 0;
+    for (size_t k = 0; k < need.size(); ++k) {
+        const bool missing = m < rest.size() && rest[m] == k;
+        for (size_t c = 0; c < rs; ++c) { assert(dst[k*rs + c] == (missing ? 0xEE : full[k*rs + c])); }
+        m += missing;
+    }
+}
+
 int main() {
+    check2({ 4, 9 }, { 1, 4, 7 }, { 1, 4, 7, 9 }, {});           // the next-token job holds some rows, the pass's own job the rest
+    check2({ 2 }, { 3 }, { 1, 2, 3, 8 }, { 0, 3 });              // neither holds 1 or 8: read now
+    check2({}, {}, { 5 }, { 0 });
+    assert(rowread_overlap({ 1, 5, 9 }, { 2, 9 }) && !rowread_overlap({ 1, 5 }, { 2, 6 }) && !rowread_overlap({}, { 1 }));
     check({ 1, 5, 9 }, { 1, 5, 9 }, {});                          // the read-ahead holds the pass
     check({}, { 2, 3 }, { 0, 1 });                                // none read ahead
     check({ 1, 2, 3, 4, 5, 6 }, { 2, 4, 6 }, {});                 // more read ahead than the pass takes
