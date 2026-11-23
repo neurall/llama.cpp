@@ -8536,12 +8536,15 @@ static int ggml_cuda_try_fuse_norm_q8_fork(ggml_backend_cuda_context & ctx, cons
             out = mul; w = mul->src[1]; last = j;
         }
     }
-    // a later quantized matvec reads it
+    // a later quantized matvec reads it: the output itself or a reshape of it (mmvq keys the slot by data pointer and its own flat rows)
     bool mm = false;
+    int64_t q_ne0 = ne0;   // the row length the matvec reads; another split of the rows gives the same q8_1 bytes when neither row needs padding
     for (int k = last + 1; k < cgraph->n_nodes && k <= last + 64 && !mm; ++k) {
         const ggml_tensor * t = cgraph->nodes[k];
-        const ggml_tensor * b = t->src[1];   // the output itself or a reshape of it: mmvq keys the slot by data pointer and flat rows
-        mm = t->op == GGML_OP_MUL_MAT && b && b->data == out->data && ggml_nbytes(b) == ggml_nbytes(out) && ggml_is_contiguous(b) && ggml_is_quantized(t->src[0]->type) && t->src[1]->ne[1]*t->src[1]->ne[2]*t->src[1]->ne[3] <= MMVQ_MAX_BATCH_SIZE;
+        const ggml_tensor * b = t->src[1];
+        mm = t->op == GGML_OP_MUL_MAT && b && b->data == out->data && ggml_nbytes(b) == ggml_nbytes(out) && ggml_is_contiguous(b) && ggml_is_quantized(t->src[0]->type) &&
+             ggml_nrows(b) <= MMVQ_MAX_BATCH_SIZE && (b->ne[0] == ne0 || (ne0 % MATRIX_ROW_PADDING == 0 && b->ne[0] % MATRIX_ROW_PADDING == 0));
+        if (mm) { q_ne0 = b->ne[0]; }
     }
     static int log_left = getenv("GGML_CUDA_NORM_Q8_LOG") ? atoi(getenv("GGML_CUDA_NORM_Q8_LOG")) : 0;   // dev: why a norm is not fused
     if (log_left > 0 && !mm) {
@@ -8568,8 +8571,9 @@ static int ggml_cuda_try_fuse_norm_q8_fork(ggml_backend_cuda_context & ctx, cons
     const int64_t ne_pad = GGML_PAD(ne0, MATRIX_ROW_PADDING);
     const size_t q8_bytes = rows*ne_pad*sizeof(block_q8_1)/QK8_1;
     // the key mmvq.cu builds for a contiguous input: flat rows
-    const int64_t q8_ne[4] = { ne0, rows, 1, 1 };
-    const int64_t q8_s[3]  = { ne0, ne0*rows, ne0*rows };
+    const int64_t q_rows = ne0*rows/q_ne0;
+    const int64_t q8_ne[4] = { q_ne0, q_rows, 1, 1 };
+    const int64_t q8_s[3]  = { q_ne0, q_ne0*q_rows, q_ne0*q_rows };
     for (int k = i; k <= last; ++k) { ggml_cuda_q8_written_fork(device, cgraph->nodes[k]); }
     bool hit = false;
     void * slot = ggml_cuda_q8_reuse_fork(device, ctx.curr_stream_no, out->data, q8_ne, q8_s, ggml_nbytes(out), q8_bytes, &hit);
