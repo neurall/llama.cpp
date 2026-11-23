@@ -106,3 +106,5 @@ qdchw,qwen38,1,pf14k1k,64,"-bs --moe pool-v2=1,down-chunk=1",--env CUDA_VISIBLE_
 qdcdbg,qwen38,1,pf14k1k,64,"-bs --moe pool-v2=1,down-chunk=1",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_DC_DBG=1
 qc-sl2,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,swap-lead=2",--env CUDA_VISIBLE_DEVICES=0
 qc-sl4,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,swap-lead=4",--env CUDA_VISIBLE_DEVICES=0
+qc-era2,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,early-refill-ahead=2",--env CUDA_VISIBLE_DEVICES=0
+qc-era4,qwen38,2,pf14k1k,1024,"-bs --moe pool-v2=1,early-refill-ahead=4",--env CUDA_VISIBLE_DEVICES=0
