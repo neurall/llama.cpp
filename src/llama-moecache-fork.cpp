@@ -18258,16 +18258,18 @@ static void pv2_early_refill(moe_cache * mc, int k) {   // cache lock held, sche
         for (const int32_t a : lq.at) { held += a >= 0; }
         need += (lq.at.size() - held) * lq.v2n;
     }
+    size_t b_pin = 0, b_tier = 0, b_later = 0;   // dev
     for (const auto & [x, r] : v.main.res) {
-        if (r.id < 0 || r.pin) { continue; }
+        if (r.id < 0) { continue; }
         const size_t lj = (size_t) (r.id / v.E);
         const int32_t q = lj < mc->cs_pos.size() ? mc->cs_pos[lj] : -1;
-        if (q < 0 || (size_t) q >= done || mc->layers[lj].link != k) { continue; }
-        if (v.tiered && !v.hv.empty() && v.hv[(size_t) r.id] >= 1000000000000000ll) { continue; }   // decode tier: stays
+        if (q < 0 || (size_t) q >= done || mc->layers[lj].link != k) { b_later += r.n; continue; }
+        if (r.pin) { b_pin += r.n; continue; }
+        if (v.tiered && !v.hv.empty() && v.hv[(size_t) r.id] >= 1000000000000000ll) { b_tier += r.n; continue; }   // decode tier: stays
         have += r.n;
     }
-    { static int said = 0; if (said++ < 40) { LLAMA_LOG_WARN("moe-cache: pool-v2: early refill budget at %zu of %zu: prompt-only %.2f GB, still to stream %.2f GB\n",
-            done, mc->cs_order.size(), have / 1e9, need / 1e9); } }   // dev
+    { static int said = 0; if (said++ < 40) { LLAMA_LOG_WARN("moe-cache: pool-v2: early refill budget at %zu of %zu: prompt-only %.2f GB, still to stream %.2f GB; pinned %.2f, decode tier %.2f, other layers %.2f, tiered %d\n",
+            done, mc->cs_order.size(), have / 1e9, need / 1e9, b_pin / 1e9, b_tier / 1e9, b_later / 1e9, (int) v.tiered); } }   // dev
     if (have <= need + (64u << 20)) { return; }
     const size_t cap = have - need;
     pv2_refresh(mc, false, false);   // decode heat on both sides of the comparison (the switch refreshes again)
