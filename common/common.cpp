@@ -2227,7 +2227,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
                 for (ggml_backend_dev_t d : g_gpu_used) { size_t f = 0, t = 0; ggml_backend_dev_memory(d, &f, &t); card_free.push_back(f); }
                 const int pick = fits_one_card_pick(model_size, (size_t) 1 << 30, card_free.data(), (int) card_free.size());
                 if (pick >= 0) {
-                    params.tensor_split[pick] = 1.0f;
+                    params.devices = { g_gpu_used[pick], nullptr };   // that card alone, as -dev: other visible cards would still join the dense/expert split
                     const uint32_t ub1 = common_fits_ubatch(params, false);
                     if (ub1 > 512) {
                         ub = ub1;
@@ -2236,7 +2236,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
                             string_format("model %.1f GiB fits the card's %.1f GiB free (pass %u there): a layer split only adds copies between the cards",
                                           model_size / 1073741824.0, card_free[pick] / 1073741824.0, ub1));
                     } else {
-                        params.tensor_split[pick] = 0.0f;
+                        params.devices.clear();
                     }
                 }
             }
