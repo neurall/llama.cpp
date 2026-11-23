@@ -8555,6 +8555,16 @@ static int ggml_cuda_try_fuse_norm_q8_fork(ggml_backend_cuda_context & ctx, cons
     if (!mm) {
         return 0;
     }
+    if (log_left > 0) {
+        --log_left;
+        for (int k = last + 1; k < cgraph->n_nodes && k <= last + 64; ++k) {
+            const ggml_tensor * t = cgraph->nodes[k];
+            if (t->op == GGML_OP_MUL_MAT && t->src[1] && t->src[1]->data == out->data) {
+                GGML_LOG_WARN("norm-q8 fuse %s ne %lld x %lld: matvec %s src0 %s src1 ne %lld %lld %lld %lld nb1 %zu\n", out->name, (long long) ne0, (long long) rows, t->name,
+                        ggml_type_name(t->src[0]->type), (long long) t->src[1]->ne[0], (long long) t->src[1]->ne[1], (long long) t->src[1]->ne[2], (long long) t->src[1]->ne[3], t->src[1]->nb[1]);
+            }
+        }
+    }
     const int64_t ne_pad = GGML_PAD(ne0, MATRIX_ROW_PADDING);
     const size_t q8_bytes = rows*ne_pad*sizeof(block_q8_1)/QK8_1;
     // the key mmvq.cu builds for a contiguous input: flat rows
