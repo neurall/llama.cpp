@@ -1183,6 +1183,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "TOP_K_MASK",
     "MOE_BELL",
     "MOE_ROWS",
+    "REL_BIAS_MASK",
 
     "UNARY",
 
@@ -1204,7 +1205,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "SIGMOID_BACK",
 };
 
-static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
+static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1302,6 +1303,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "top_k_mask(mask, top_k, score, blocks, extra)",
     "moe_bell(ids, table, x)",
     "moe_rows(down, ids, slots)",
+    "rel_bias_mask(table, rel_pos, mask)",
 
     "unary(x)",
 
@@ -1323,7 +1325,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "sigmoid_back(x)",
 };
 
-static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
+static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -6730,6 +6732,31 @@ struct ggml_tensor * ggml_moe_rows(
     result->src[0] = down;
     result->src[1] = ids;
     result->src[2] = slots;
+
+    return result;
+}
+
+// ggml_rel_bias_mask (fork)
+
+struct ggml_tensor * ggml_rel_bias_mask(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * table,
+        struct ggml_tensor  * rel_pos,
+        struct ggml_tensor  * mask,
+        enum ggml_type        type) {
+    GGML_ASSERT(table->type == GGML_TYPE_F32 && rel_pos->type == GGML_TYPE_I32);
+    GGML_ASSERT(mask->type == GGML_TYPE_F16 || mask->type == GGML_TYPE_F32);
+    GGML_ASSERT(type == GGML_TYPE_F16 || type == GGML_TYPE_F32);
+    GGML_ASSERT(table->ne[2] == rel_pos->ne[1] && table->ne[3] == 1 && rel_pos->ne[2] == 1 && rel_pos->ne[3] == 1);
+    GGML_ASSERT(mask->ne[0] == rel_pos->ne[0] && mask->ne[1] == rel_pos->ne[1] && mask->ne[2] == 1 && mask->ne[3] == 1);
+    GGML_ASSERT(table->nb[0] == sizeof(float) && rel_pos->nb[0] == sizeof(int32_t) && mask->nb[0] == ggml_type_size(mask->type));
+
+    struct ggml_tensor * result = ggml_new_tensor_3d(ctx, type, rel_pos->ne[0], rel_pos->ne[1], table->ne[0]);
+
+    result->op     = GGML_OP_REL_BIAS_MASK;
+    result->src[0] = table;
+    result->src[1] = rel_pos;
+    result->src[2] = mask;
 
     return result;
 }

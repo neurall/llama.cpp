@@ -432,6 +432,7 @@ extern "C" {
         GGML_OP_TOP_K_MASK,
         GGML_OP_MOE_BELL,   // fork: the decode bell (ggml/src/ggml-bell-fork.h)
         GGML_OP_MOE_ROWS,
+        GGML_OP_REL_BIAS_MASK,   // fork: relative-position bias gathered into a per-head attention mask (Inkling 2)
 
         GGML_OP_UNARY,
 
@@ -2572,6 +2573,16 @@ extern "C" {
             struct ggml_tensor  * ids,
             struct ggml_tensor  * slots,
             void                * bell);
+
+    // fork: out[kv, t, h] = table[h, rel_pos[kv, t], t] + mask[kv, t], one plane per head (the relative-position bias of Inkling 2 gathered by
+    // distance into a flash-attention mask in one pass). table F32 [n_head, n_dist, n_tok], rel_pos I32 [n_kv, n_tok], mask F16/F32 [n_kv, n_tok];
+    // out is type (F16 or F32) [n_kv, n_tok, n_head]
+    GGML_API struct ggml_tensor * ggml_rel_bias_mask(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * table,
+            struct ggml_tensor  * rel_pos,
+            struct ggml_tensor  * mask,
+            enum ggml_type        type);
 
     // custom operators
 

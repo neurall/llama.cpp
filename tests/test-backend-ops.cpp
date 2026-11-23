@@ -9762,6 +9762,47 @@ struct test_flash_attn_ext_mask_tail : public test_case {
     }
 };
 
+// fork: GGML_OP_REL_BIAS_MASK, the relative-position bias gathered by distance into a per-head mask (Inkling 2)
+struct test_rel_bias_mask : public test_case {
+    const int64_t n_kv, n_tok, n_head, n_dist;
+    const ggml_type type_mask, type_out;
+    const bool view;   // the inputs as row views of bigger tensors (the per-block slices of build_attn)
+
+    std::string vars() override {
+        return VARS_TO_STR7(n_kv, n_tok, n_head, n_dist, type_mask, type_out, view);
+    }
+
+    test_rel_bias_mask(int64_t n_kv, int64_t n_tok, int64_t n_head, int64_t n_dist, ggml_type type_mask, ggml_type type_out, bool view = false)
+        : n_kv(n_kv), n_tok(n_tok), n_head(n_head), n_dist(n_dist), type_mask(type_mask), type_out(type_out), view(view) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        const int64_t big = view ? n_tok + 3 : n_tok;
+        ggml_tensor * table = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_head, n_dist, big);
+        ggml_tensor * rp    = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_kv, big);
+        ggml_tensor * mask  = ggml_new_tensor_2d(ctx, type_mask, n_kv, big);
+        if (view) {
+            table = ggml_view_3d(ctx, table, n_head, n_dist, n_tok, table->nb[1], table->nb[2], 2*table->nb[2]);
+            rp    = ggml_view_2d(ctx, rp, n_kv, n_tok, rp->nb[1], 2*rp->nb[1]);
+            mask  = ggml_view_2d(ctx, mask, n_kv, n_tok, mask->nb[1], 2*mask->nb[1]);
+        }
+        ggml_tensor * out = ggml_rel_bias_mask(ctx, table, rp, mask, type_out);
+        ggml_set_name(out, "out");
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            if (t->type == GGML_TYPE_I32) {
+                std::vector<int32_t> data(ggml_nelements(t));
+                for (auto & d : data) { d = rand() % n_dist; }
+                ggml_backend_tensor_set(t, data.data(), 0, data.size()*sizeof(int32_t));
+            } else {
+                init_tensor_uniform(t);
+            }
+        }
+    }
+};
+
 // mask with 2 heads and 2 batches, broadcast over the Q heads and batches
 struct test_flash_attn_ext_mask_bcast : public test_flash_attn_ext {
     using test_flash_attn_ext::test_flash_attn_ext;
@@ -13941,6 +13982,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 
     // fork: a mask of the cells from k0 on (KV tail); the first case is OLMoE's first answer token after a 2761-token prompt, wrong on Vulkan (#356)
     test_cases.emplace_back(new test_flash_attn_ext_mask_tail(128, 16, 1, 2816,   1, 2560));
+    for (ggml_type tm : { GGML_TYPE_F16, GGML_TYPE_F32 }) {   // fork: Inkling 2 relative-bias mask (24 heads, 1025 distances)
+        for (ggml_type to : { GGML_TYPE_F16, GGML_TYPE_F32 }) {
+            test_cases.emplace_back(new test_rel_bias_mask(1000, 37, 24, 1025, tm, to));
+            test_cases.emplace_back(new test_rel_bias_mask(4096, 256, 24, 1025, tm, to, true));
+        }
+    }
     test_cases.emplace_back(new test_flash_attn_ext_mask_tail(128,  4, 4, 2816,   1, 2560));
     test_cases.emplace_back(new test_flash_attn_ext_mask_tail(128, 16, 1, 1024,  64,  768));
     test_cases.emplace_back(new test_flash_attn_ext_mask_tail(128,  4, 4, 1024,  64,  768, GGML_TYPE_Q8_0));

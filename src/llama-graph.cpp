@@ -6245,11 +6245,19 @@ ggml_tensor * llm_graph_context::build_attn(
             tb = ggml_add(ctx0, tb, ggml_scale(ctx0, ggml_view_1d(ctx0, after, 1, 0), 0.0f));
         }
         ggml_tensor * rp = ggml_view_2d(ctx0, rel_pos, n_kv, nt, rel_pos->nb[1], t0*rel_pos->nb[1]);
+        ggml_tensor * m = nt == n_tokens ? raw : ggml_view_4d(ctx0, raw, raw->ne[0], nt, raw->ne[2], raw->ne[3], raw->nb[1], raw->nb[2], raw->nb[3], t0*raw->nb[1]);
+        if (n_stream == 1) {
+            // fork: one op gathers the bias and adds the mask, writing the attention's mask type (it was get_rows, a permute copy, two casts and an add:
+            // 45% of an Inkling 2 prompt pass, nsys 2026-11-23)
+            m = ggml_rel_bias_mask(ctx0, tb, rp, m, cparams.flash_attn ? GGML_TYPE_F16 : GGML_TYPE_F32);
+            m = ggml_reshape_4d(ctx0, m, n_kv, nt, n_head, 1);
+            cb(m, "kq_mask_rel_pos", il);
+            return m;
+        }
         ggml_tensor * kq_b = ggml_get_rows(ctx0, tb, rp);                                   // [n_head, n_kv, nt]
         kq_b = ggml_reshape_4d(ctx0, kq_b, n_head, n_kv, nt/n_stream, n_stream);
         kq_b = ggml_cont(ctx0, ggml_permute(ctx0, kq_b, 2, 0, 1, 3));                       // [n_kv, nt/n_stream, n_head, n_stream]
         cb(kq_b, "kq_b", il);
-        ggml_tensor * m = nt == n_tokens ? raw : ggml_view_4d(ctx0, raw, raw->ne[0], nt, raw->ne[2], raw->ne[3], raw->nb[1], raw->nb[2], raw->nb[3], t0*raw->nb[1]);
         if (m->type != GGML_TYPE_F32) {
             m = ggml_cast(ctx0, m, GGML_TYPE_F32);
         }
