@@ -7414,6 +7414,12 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
             return n;
         }
     }
+    {   // fork: Inkling 2 loop controller (12 nodes) in two kernels (ctrl-fork.cu)
+        extern int ggml_cuda_try_fuse_ctrl_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i);
+        if (const int n = ggml_cuda_try_fuse_ctrl_fork(*cuda_ctx, cgraph, i)) {
+            return n;
+        }
+    }
     {   // fork: one-token short conv step (concat, state store, ssm_conv) in one kernel (conv-step-fork.cu)
         extern int ggml_cuda_try_fuse_conv_step_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i);
         if (const int n = ggml_cuda_try_fuse_conv_step_fork(*cuda_ctx, cgraph, i)) {

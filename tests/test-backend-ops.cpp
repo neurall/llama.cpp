@@ -4232,6 +4232,33 @@ struct test_conv_step : public test_case {
     }
 };
 
+// fork: Inkling 2 loop controller (two rms_norms, concat, down, tanh gain and forget, combine), message a strided view
+struct test_loop_ctrl : public test_case {
+    const int64_t E, R, T;
+
+    std::string op_desc(ggml_tensor * t) override { GGML_UNUSED(t); return "LOOP_CTRL"; }
+    bool run_whole_graph() override { return true; }
+    std::string vars() override { return VARS_TO_STR3(E, R, T); }
+
+    test_loop_ctrl(int64_t E = 256, int64_t R = 64, int64_t T = 1) : E(E), R(R), T(T) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * cur  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, E, T);
+        ggml_tensor * msgs = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, E, 4, T);
+        ggml_tensor * wd = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2*E, R);
+        ggml_tensor * wg = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, R, E);
+        ggml_tensor * wf = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, R, E);
+        ggml_tensor * msg = ggml_view_2d(ctx, msgs, E, T, msgs->nb[2], 2*msgs->nb[1]);
+        ggml_tensor * gate = ggml_concat(ctx, ggml_rms_norm(ctx, cur, 1e-6f), ggml_rms_norm(ctx, msg, 1e-6f), 0);
+        gate = ggml_mul_mat(ctx, wd, gate);
+        ggml_tensor * gain   = ggml_tanh(ctx, ggml_mul_mat(ctx, wg, gate));
+        ggml_tensor * forget = ggml_tanh(ctx, ggml_mul_mat(ctx, wf, gate));
+        ggml_tensor * out = ggml_add(ctx, ggml_sub(ctx, cur, ggml_mul(ctx, forget, cur)), ggml_mul(ctx, gain, msg));
+        ggml_set_name(out, "out");
+        return out;
+    }
+};
+
 // GGML_OP_SILU_BACK
 struct test_silu_back : public test_case {
     const ggml_type type;
@@ -12431,6 +12458,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_conv_step(4, 2048, S));
     }
     test_cases.emplace_back(new test_conv_step(3, 100, 2));
+    for (int64_t T : {1, 3}) {
+        test_cases.emplace_back(new test_loop_ctrl(2304, 64, T));
+    }
+    test_cases.emplace_back(new test_loop_ctrl(100, 40, 2));
     test_cases.emplace_back(new test_silu_back());
     test_cases.emplace_back(new test_sigmoid_back());
 
