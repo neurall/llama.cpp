@@ -15458,6 +15458,8 @@ static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id,
 // the end of a prompt call: the last pass's kernels done, the tables of every layer the passes changed written (flush_tables waited for this)
 static void cs_end(moe_cache * mc) {
     if (!g_cs_live.exchange(false)) { return; }
+    { std::lock_guard<std::mutex> wlk(mc->wmtx); }   // a worker between its pick and its wait sees the flag
+    mc->wcv.notify_all();   // jobs behind a layer's compute (early refill) were skipped while the stream ran: the workers take them now
     cs_drain(mc);
     g_cs_k_pass = 0.0;
     for (int k = 0; k < mc->n_links; ++k) {
