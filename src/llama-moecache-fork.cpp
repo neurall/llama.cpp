@@ -18119,7 +18119,7 @@ static bool cpu_gpu_shape_on() {
 // heap; victim_ok narrows the victims (the early refill: layers the running pass has computed), wait_ev is what each copy waits for (cache lock held)
 template <typename F>
 static void pv2_swap_in(moe_cache * mc, const std::vector<pv2_cand> & miss, std::unordered_map<int32_t, int8_t> & part, F victim_ok, bool wait,
-        ggml_backend_event_t wait_ev, std::vector<upload_job> & jobs, std::vector<pv2_cand> & up, size_t & b_up) {
+        ggml_backend_event_t wait_ev, std::vector<upload_job> & jobs, std::vector<pv2_cand> & up, size_t & b_up, size_t cap = SIZE_MAX) {
     auto & v = mc->v2;
     std::map<size_t, std::pair<std::vector<pv2_cold_t>, size_t>> cold;   // per expert size: coldest first, its cursor
     size_t n_ev = 0;
@@ -18129,7 +18129,9 @@ static void pv2_swap_in(moe_cache * mc, const std::vector<pv2_cand> & miss, std:
         return !lq.slot_in_flight[(size_t) x] && !lq.queued[(size_t) x] && lq.at[(size_t) x] >= 0 && victim_ok(id);
     };
     std::set<size_t> done_n;   // sizes with nothing colder left
+    size_t b_new = 0;
     for (const auto & c : miss) {   // hottest first
+        if (b_new + c.n > cap) { break; }
         if (done_n.count(c.n)) { continue; }
         auto ci = cold.find(c.n);
         if (ci == cold.end()) { ci = cold.emplace(c.n, std::make_pair(pv2_cold_order(v.main, c.n), (size_t) 0)).first; }
@@ -18143,6 +18145,7 @@ static void pv2_swap_in(moe_cache * mc, const std::vector<pv2_cand> & miss, std:
         jobs.push_back(pv2_job(mc, li, e, wait, part[c.id]));
         jobs.back().wait_ev = wait_ev;
         b_up += c.n;
+        b_new += c.n;
         up.push_back(c);
     }
     v.n_evict += n_ev;
@@ -18241,9 +18244,29 @@ static void pv2_early_refill(moe_cache * mc, int k) {   // cache lock held, sche
         LLAMA_LOG_WARN("moe-cache: pool-v2: early refill check: on %d v2 %d H==M %d last pass %d k pass %.2f next %zu done %zu of %zu\n", on, v.on, v.H == v.M,
                 g_last_pass.load(), g_cs_k_pass, mc->cs_next[k], mc->cs_done[k], mc->cs_order.size()); } }
     if (!on || !v.on || v.H != v.M || !g_last_pass.load(std::memory_order_relaxed) || g_cs_k_pass > 0.0) { return; }
-    if (k < 0 || k >= MAX_LINKS || mc->cs_next[k] < mc->cs_order.size()) { return; }   // entries still to plan take these places
+    if (k < 0 || k >= MAX_LINKS) { return; }
     const size_t done = mc->cs_done[k];
     if (done == 0 || done > mc->cs_order.size()) { return; }
+    // budget: computed layers' prompt-only bytes beyond what the entries still to plan will take (their stream evicts the coldest unpinned residents, these first)
+    size_t need = 0, have = 0;
+    for (size_t r = mc->cs_next[k]; r < mc->cs_order.size(); ++r) {
+        const size_t lj = (size_t) mc->cs_order[r];
+        if (lj >= mc->layers.size() || mc->layers[lj].link != k) { continue; }
+        const layer_state & lq = mc->layers[lj];
+        size_t held = 0;
+        for (const int32_t a : lq.at) { held += a >= 0; }
+        need += (lq.at.size() - held) * lq.v2n;
+    }
+    for (const auto & [x, r] : v.main.res) {
+        if (r.id < 0 || r.pin) { continue; }
+        const size_t lj = (size_t) (r.id / v.E);
+        const int32_t q = lj < mc->cs_pos.size() ? mc->cs_pos[lj] : -1;
+        if (q < 0 || (size_t) q >= done || mc->layers[lj].link != k) { continue; }
+        if (v.tiered && !v.hv.empty() && v.hv[(size_t) r.id] >= 1000000000000000ll) { continue; }   // decode tier: stays
+        have += r.n;
+    }
+    if (have <= need + (64u << 20)) { return; }
+    const size_t cap = have - need;
     for (; v.done_seen < done; ++v.done_seen) { pv2_pin_entry(mc, v.done_seen, false); }
     pv2_refresh(mc, false, false);   // decode heat on both sides of the comparison (the switch refreshes again)
     const bool wait = fixed_on() || !reheat_bg();
@@ -18263,12 +18286,12 @@ static void pv2_early_refill(moe_cache * mc, int k) {   // cache lock held, sche
     std::vector<upload_job> jobs;
     std::vector<pv2_cand> up;
     size_t b_up = 0;
-    pv2_swap_in(mc, miss, part, computed, wait, csl(mc, mc->cs_order[done - 1]).cs_done_ev, jobs, up, b_up);
+    pv2_swap_in(mc, miss, part, computed, wait, csl(mc, mc->cs_order[done - 1]).cs_done_ev, jobs, up, b_up, cap);
     pv2_queue(mc, jobs);
     static int said = 0;
     if (!up.empty() && said++ < 16) {
-        LLAMA_LOG_WARN("moe-cache: pool-v2: early refill at %zu of %zu layers queued: %zu experts (%.2f GB) into computed layers' places, behind their compute\n",
-                done, mc->cs_order.size(), up.size(), b_up / 1e9);
+        LLAMA_LOG_WARN("moe-cache: pool-v2: early refill at %zu of %zu layers (planned %zu) queued: %zu experts (%.2f GB) into computed layers' places, behind their compute; budget %.2f GB = prompt-only %.2f - still to stream %.2f\n",
+                done, mc->cs_order.size(), mc->cs_next[k], up.size(), b_up / 1e9, cap / 1e9, have / 1e9, need / 1e9);
     }
 }
 
