@@ -227,6 +227,19 @@ int ggml_cuda_try_fuse_ew_chain_fork(ggml_backend_cuda_context & ctx, const ggml
             static std::set<std::string> said;
             std::string l;
             for (int kk = 0; kk < m; ++kk) { l += std::string(kk == 0 ? "" : " ") + ggml_op_desc(cgraph->nodes[ix[kk]]); }
+            l += " <-";   // producers of the operands from outside the run
+            for (int kk = 0; kk < m; ++kk) {
+                const ggml_tensor * t = cgraph->nodes[ix[kk]];
+                for (int s = 0; s < 2 && t->src[s]; ++s) {
+                    const ggml_tensor * src = t->src[s];
+                    bool inside = false;
+                    for (int jj = 0; jj < kk; ++jj) { inside |= cgraph->nodes[ix[jj]] == src; }
+                    if (inside) { continue; }
+                    const ggml_tensor * pr = src;
+                    while (pr->view_src || (ewc_is_view(pr) && pr->src[0])) { pr = pr->view_src ? pr->view_src : pr->src[0]; }
+                    l += std::string(" ") + ggml_op_desc(pr) + (pr->op == GGML_OP_MUL_MAT ? "(" + std::string(ggml_type_name(pr->src[0]->type)) + ")" : "");
+                }
+            }
             l += " [" + std::to_string(last->ne[0]) + "," + std::to_string(last->ne[1]) + "," + std::to_string(last->ne[2]) + "]";
             if (said.insert(l).second) { GGML_LOG_WARN("ew chain: %d nodes in one kernel: %s\n", m, l.c_str()); }
         }
