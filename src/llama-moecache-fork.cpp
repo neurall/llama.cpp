@@ -18254,10 +18254,14 @@ static void pv2_early_refill(moe_cache * mc, int k) {   // cache lock held, sche
     if (done == 0 || done > mc->cs_order.size()) { return; }
     for (; v.done_seen < done; ++v.done_seen) { pv2_pin_entry(mc, v.done_seen, false); }   // computed layers' pins go first: the budget counts unpinned residents only
     // budget: computed layers' prompt-only bytes beyond what the entries still to plan will take (their stream evicts the coldest unpinned residents, these first)
-    size_t need = 0, have = 0;
+    // --moe early-refill-ahead=W (A/B): only the next W entries of this card count (the stream holds a window of a layer or two; the later layers' experts it
+    // streams again anyway, so their places may hold computed layers' decode experts meanwhile). 0: every entry still to plan
+    static const size_t ahead = [] { const char * x = moe_opt("early-refill-ahead"); return x ? (size_t) std::max(0, atoi(x)) : (size_t) 0; }();
+    size_t need = 0, have = 0, n_ahead = 0;
     for (size_t r = mc->cs_next[k]; r < mc->cs_order.size(); ++r) {
         const size_t lj = (size_t) mc->cs_order[r];
         if (lj >= mc->layers.size() || mc->layers[lj].link != k) { continue; }
+        if (ahead > 0 && n_ahead++ >= ahead) { break; }
         const layer_state & lq = mc->layers[lj];
         size_t held = 0;
         for (const int32_t a : lq.at) { held += a >= 0; }
