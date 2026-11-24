@@ -129,7 +129,10 @@ int ggml_cuda_try_fuse_conv_step_fork(ggml_backend_cuda_context & ctx, const ggm
             return a0 + ggml_nbytes(out) <= b0 || b0 + ggml_nbytes(t) <= a0;
         };
         // other threads read and write these while one thread writes its element of the run's output
-        if (apart(x) && apart(cell) && apart(past) && apart(nw)) {
+        // the new column may be the output itself (an in-place residual add): thread (c, s) reads its element, then writes it
+        const bool nw_own = nw->data == out->data && nw->nb[1] == sizeof(float) && out->nb[0] == sizeof(float) && ggml_nelements(out) == C*S &&
+                            (S == 1 || nw->nb[2] == C*sizeof(float));
+        if (apart(x) && apart(cell) && apart(past) && (apart(nw) || nw_own)) {
             cs_kernel_epi<<<grid, 128, 0, ctx.stream()>>>(A, P);
             return end - i;
         }
