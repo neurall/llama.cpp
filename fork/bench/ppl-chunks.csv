@@ -5490,3 +5490,21 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-24 15:20:43,ds_slice_no_hadamard_flag -np 1 -ub 512 -b 512,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,2,1.5815
 2026-11-24 15:22:32,ds_slice_no_hadamard_flag -np 1,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,1,1.3922
 2026-11-24 15:22:32,ds_slice_no_hadamard_flag -np 1,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,2,1.5815
+2026-11-24 15:23:49,ds_slice_no_hadamard_flag -np 1,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,1,1.3922
+2026-11-24 15:23:49,ds_slice_no_hadamard_flag -np 1,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,2,1.5815
+2026-11-24 15:25:49,ds_slice_no_hadamard_flag -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.668
+2026-11-24 15:25:49,ds_slice_no_hadamard_flag -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5224
+2026-11-24 15:26:14,ds_slice_no_hadamard_flag -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6718
+2026-11-24 15:26:14,ds_slice_no_hadamard_flag -np 1 --cpu-moe --moe-expert-cache 90,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5275
+2026-11-24 15:27:18,"ds_slice_no_hadamard_flag -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9385
+2026-11-24 15:27:18,"ds_slice_no_hadamard_flag -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9403
+2026-11-24 15:27:33,"ds_slice_no_hadamard_flag -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.94
+2026-11-24 15:27:33,"ds_slice_no_hadamard_flag -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9408
+2026-11-24 15:28:20,stock-b12676-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-24 15:28:20,stock-b12676-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-11-24 15:29:20,stock-b12676-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-24 15:29:20,stock-b12676-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-11-24 15:30:47,stock-b12676-official -np 1,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,1,1.3996
+2026-11-24 15:30:47,stock-b12676-official -np 1,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,2,1.5918
+2026-11-24 15:32:15,stock-b12676-official -np 1,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,1,1.3996
+2026-11-24 15:32:15,stock-b12676-official -np 1,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,2,1.5918

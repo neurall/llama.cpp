@@ -11735,3 +11735,7 @@ ds_slice_no_hadamard_flag-rg-qwen38-iq3-ppl,2026-11-24 15:14:22,bench /m/q/1/Qwe
 ds_slice_no_hadamard_flag-rg-q27-iq4nl-ppl,2026-11-24 15:16:46,bench /m/q/4/Qwen3.8-27B-IQ4_NL.gguf builds ds_slice_no_hadamard_flag variants v test ppl n=2,,
 ds_slice_no_hadamard_flag-rg-ink2m-ub512-ppl,2026-11-24 15:19:21,bench /m/ink/Inkling-2-Mini-UD-IQ4_XS.gguf builds ds_slice_no_hadamard_flag variants v test ppl n=2,,
 ds_slice_no_hadamard_flag-rg-ink2m-ppl,2026-11-24 15:22:27,bench /m/ink/Inkling-2-Mini-UD-IQ4_XS.gguf builds ds_slice_no_hadamard_flag variants v test ppl n=2,,
+ds_slice_no_hadamard_flag-rg-qwen36-ppl,2026-11-24 15:25:44,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds ds_slice_no_hadamard_flag variants v test ppl n=2,,
+ds_slice_no_hadamard_flag-rg-olmoe-ppl,2026-11-24 15:27:13,bench /m/o/4/OLMoE-1B-7B-0924-Q4_K_M.gguf builds ds_slice_no_hadamard_flag variants v test ppl n=2,,
+stock-b12676-official-rg-q27-iq4nl-ppl,2026-11-24 15:28:15,bench /m/q/4/Qwen3.8-27B-IQ4_NL.gguf builds stock-b12676-official variants v test ppl n=2,,
+stock-b12676-official-rg-ink2m-ppl,2026-11-24 15:30:42,bench /m/ink/Inkling-2-Mini-UD-IQ4_XS.gguf builds stock-b12676-official variants v test ppl n=2,,
