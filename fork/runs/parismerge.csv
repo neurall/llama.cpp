@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+pm-ds,ds,1,paris,64,,
+pm-iq1m,qn_iq1m,1,paris,64,,
+pm-q27mtp,q27_mtp,1,paris,64,,
+pm-glm35,glm35,1,paris,64,,
+pm-k31,k31,1,paris,64,,
