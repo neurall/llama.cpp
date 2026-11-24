@@ -232,7 +232,8 @@ def archive(pid, meta=None, final=False, db=STATS_DB):
     """the raw event log (+ kernel log) of one process into stats.db table evlog, zlib: every run kept, a slower one too (user 11-24: a regression is read
     without a rerun). Called every 60 s while a list runs (flusher) and once at the end with the run's meta; the row of a pid is replaced, never duplicated"""
     import sqlite3, zlib, json
-    txt = "".join(open(f, errors="replace").read() for f in (f"/dev/shm/evlog-{pid}.tsv", f"/dev/shm/evk-{pid}.tsv") if os.path.exists(f))
+    fs = (f"/dev/shm/evlog-{pid}.tsv",) + ((f"/dev/shm/evk-{pid}.tsv",) if final else ())   # live flush: the event log only (~16 MB); the CUPTI kernel log (~250 MB) at the end, not while the run is timed
+    txt = "".join(open(f, errors="replace").read() for f in fs if os.path.exists(f))
     if not txt: return
     con = sqlite3.connect(db, timeout=30)
     con.execute("CREATE TABLE IF NOT EXISTS evlog (pid INTEGER, t0 TEXT, ts TEXT, final INTEGER, meta TEXT, bytes INTEGER, log BLOB)")
@@ -240,7 +241,7 @@ def archive(pid, meta=None, final=False, db=STATS_DB):
     t0 = txt.split("\n", 1)[0]   # header line (clock pair): a reused pid is another row
     import datetime
     con.execute("DELETE FROM evlog WHERE pid=? AND t0=?", (int(pid), t0))
-    con.execute("INSERT INTO evlog VALUES (?,?,?,?,?,?,?)", (int(pid), t0, datetime.datetime.now().isoformat(timespec="seconds"), int(final), json.dumps(meta or {}), len(txt), zlib.compress(txt.encode(), 6)))
+    con.execute("INSERT INTO evlog VALUES (?,?,?,?,?,?,?)", (int(pid), t0, datetime.datetime.now().isoformat(timespec="seconds"), int(final), json.dumps(meta or {}), len(txt), zlib.compress(txt.encode(), 6 if final else 1)))
     con.commit(); con.close()
 
 
