@@ -7402,6 +7402,10 @@ static bool ggml_cuda_can_fuse(const struct ggml_cgraph *                cgraph,
 // try and fuse nodes and return the number of nodes to skip
 static int ggml_cuda_try_fuse_norm_q8_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i);
 
+// fork: how far ahead the matvec grouping looks, and the nodes it marked, for the stream note (sp_after) of the launch that ran them
+static constexpr int MM_MULTI_WIN = 120;
+static std::vector<int> g_mm_multi_far;
+
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i, std::vector<bool> & nodes_fused) {
 
     if (ggml_cuda_fusion_disabled()) {
@@ -8370,6 +8374,65 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         return 2;
     }
 
+    // fork: the later matvecs of the same input (Q, K, V, gate of one layer) in this node's launch: one quantize, one launch, the card filled once.
+    // A later one joins when nothing in between touches its output, writes its weight or the input, and it feeds no GLU (the gate/up fusion's)
+    // shortcut: members within MM_MULTI_WIN nodes and the plain kernel only (an epilogue member is left out), upgrade if a wider layer shows up
+    if (node->op == GGML_OP_MUL_MAT && node->ne[1] == 1 && node->ne[2] == 1 && node->ne[3] == 1 && ggml_is_quantized(node->src[0]->type) &&
+            cuda_ctx->stream_context().concurrent_events.empty()) {
+        static const bool multi_on = !getenv("GGML_CUDA_MM_MULTI") || atoi(getenv("GGML_CUDA_MM_MULTI")) != 0;
+        extern void ggml_cuda_mul_mat_vec_q_multi_fork(ggml_backend_cuda_context & ctx, const ggml_tensor * src1, int n, ggml_tensor * const * dst);
+        const auto plain = [&](const ggml_tensor * t) {
+            const ggml_tensor * w = t->src[0];
+            return t->op == GGML_OP_MUL_MAT && !t->src[2] && t->src[1] == node->src[1] && w->type == node->src[0]->type && w->ne[0] == node->src[0]->ne[0] &&
+                   w->nb[1] == node->src[0]->nb[1] && ggml_nrows(w) == w->ne[1] && t->ne[1] == 1 && t->ne[2] == 1 && t->ne[3] == 1 && ggml_is_contiguous(t) &&
+                   t->type == GGML_TYPE_F32 && ggml_cuda_should_fuse_mul_mat_vec_q(t);
+        };
+        const auto feeds_glu = [&](int j) {
+            for (int k = j + 1; k < cgraph->n_nodes && k <= j + 8; ++k) {
+                const ggml_tensor * t = cgraph->nodes[k];
+                if (t->op == GGML_OP_GLU && (t->src[0] == cgraph->nodes[j] || t->src[1] == cgraph->nodes[j])) { return true; }
+            }
+            return false;
+        };
+        if (multi_on && plain(node) && !feeds_glu(i)) {
+            constexpr int MAXM = 6;
+            ggml_tensor * mm[MAXM] = { node };
+            int idx[MAXM] = { i };
+            int n = 1;
+            for (int j = i + 1; j < cgraph->n_nodes && j <= i + MM_MULTI_WIN && n < MAXM; ++j) {
+                ggml_tensor * t = cgraph->nodes[j];
+                if (nodes_fused[j] || !plain(t) || feeds_glu(j)) { continue; }
+                bool safe = true;
+                for (int k = i + 1; k < j && safe; ++k) {
+                    const ggml_tensor * b = cgraph->nodes[k];
+                    bool member = false;
+                    for (int q = 1; q < n; ++q) { member |= idx[q] == k; }
+                    if (member) { continue; }
+                    safe = !ggml_cuda_tensors_overlap(t, b);
+                    for (int s2 = 0; s2 < GGML_MAX_SRC && safe; ++s2) { safe = !b->src[s2] || !ggml_cuda_tensors_overlap(t, b->src[s2]); }
+                    if (safe && !ggml_cuda_is_view_or_noop(b)) {
+                        safe = !ggml_cuda_tensors_overlap(t->src[0], b) && !ggml_cuda_tensors_overlap(node->src[1], b);
+                    }
+                }
+                for (int q = 0; q < n && safe; ++q) { safe = !ggml_cuda_tensors_overlap(t, mm[q]) && !ggml_cuda_tensors_overlap(t, node->src[1]); }
+                if (safe) { mm[n] = t; idx[n] = j; n++; }
+            }
+            if (n > 1) {
+                static std::atomic<int> said{0};
+                if (said.fetch_add(1) < 4) {
+                    GGML_LOG_WARN("CUDA%d mm-multi: %s and %d later matvecs of its input in one launch (last %d nodes on)\n", cuda_ctx->device, node->name, n - 1, idx[n - 1] - i);
+                }
+                ggml_cuda_mul_mat_vec_q_multi_fork(*cuda_ctx, node->src[1], n, mm);
+                nodes_fused[i] = true;   // ran here; the loop notes it and goes on
+                for (int q = 1; q < n; ++q) {
+                    nodes_fused[idx[q]] = true;
+                    g_mm_multi_far.push_back(idx[q]);
+                }
+                return 0;
+            }
+        }
+    }
+
     // fork: a decode matvec and the elementwise chain after it in one kernel: mmvq runs the chain on each row it writes (ew-chain-fork.cu builds it)
     // shortcut: rows <= 65536 keeps vocab-size heads out (each block's epilogue adds latency: Inkling 2 logits + softcap, 201024 rows, 442 -> 541 us),
     // upgrade to a per-shape cost estimate if a tall matvec with a long chain shows up
@@ -8746,6 +8809,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
     };
     // behind a launch: the event a later launch of the other stream waits for, and the note of what ran (the nodes a fusion marked further on, too)
     const auto sp_after = [&](int i, int n_skip, const std::vector<bool> & fused, const bool * fused_was) {
+        struct far_clear { ~far_clear() { g_mm_multi_far.clear(); } } far_c;
         if (sp.cur >= 0) {
             if (sp.plan.record[sp.cur]) {
                 CUDA_CHECK(cudaEventRecord(sp_event(GGML_STREAMS_MAX + (size_t) sp.cur), cuda_ctx->stream()));
@@ -8758,6 +8822,9 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
             for (int k = 0; k <= n_skip; ++k) { m.push_back(i + k); }
             for (int k = n_skip + 1; k < 16 && i + k < cgraph->n_nodes; ++k) {
                 if (fused[i + k] && !fused_was[k]) { m.push_back(i + k); }
+            }
+            for (int f : g_mm_multi_far) {   // the matvec grouping's members, however far ahead
+                if (std::find(m.begin(), m.end(), f) == m.end()) { m.push_back(f); }
             }
             rec_new.leader.push_back(i);
             rec_new.members.push_back(std::move(m));

@@ -4337,6 +4337,32 @@ struct test_mm_epi : public test_case {
     }
 };
 
+// fork: several matvecs of one input with other nodes between them (CUDA runs them in one launch, GGML_CUDA_MM_MULTI)
+struct test_mm_multi : public test_case {
+    const ggml_type type;
+    const int64_t K;
+    const std::array<int64_t, 3> R;
+
+    std::string op_desc(ggml_tensor * t) override { GGML_UNUSED(t); return "MM_MULTI"; }
+    bool run_whole_graph() override { return true; }
+    std::string vars() override { return VARS_TO_STR3(type, K, R); }
+    double max_nmse_err() override { return 5e-4; }
+
+    test_mm_multi(ggml_type type = GGML_TYPE_Q8_0, int64_t K = 256, std::array<int64_t, 3> R = {64, 32, 48}) : type(type), K(K), R(R) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * x  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, K, 1);
+        ggml_tensor * m0 = ggml_mul_mat(ctx, ggml_new_tensor_2d(ctx, type, K, R[0]), x);
+        ggml_tensor * a0 = ggml_scale(ctx, ggml_add(ctx, m0, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, R[0], 1)), 0.5f);
+        ggml_tensor * m1 = ggml_mul_mat(ctx, ggml_new_tensor_2d(ctx, type, K, R[1]), x);
+        ggml_tensor * a1 = ggml_sqr(ctx, m1);
+        ggml_tensor * m2 = ggml_mul_mat(ctx, ggml_new_tensor_2d(ctx, type, K, R[2]), x);
+        ggml_tensor * out = ggml_concat(ctx, ggml_concat(ctx, a0, a1, 0), m2, 0);
+        ggml_set_name(out, "out");
+        return out;
+    }
+};
+
 // GGML_OP_SILU_BACK
 struct test_silu_back : public test_case {
     const ggml_type type;
@@ -12558,6 +12584,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
     test_cases.emplace_back(new test_mm_epi(GGML_TYPE_Q8_0, 2304, 1000, 1, 0));   // rows not a multiple of the rows a block writes
     test_cases.emplace_back(new test_mm_epi(GGML_TYPE_Q8_0, 2304, 1024, 2, 0));   // two columns: no epilogue
+    for (ggml_type t : { GGML_TYPE_Q8_0, GGML_TYPE_Q4_K, GGML_TYPE_IQ4_XS, GGML_TYPE_Q6_K }) {
+        test_cases.emplace_back(new test_mm_multi(t, 2304, {3072, 1024, 1000}));
+        test_cases.emplace_back(new test_mm_multi(t, 256, {64, 33, 48}));
+    }
     for (int64_t T : {1, 8}) {
         test_cases.emplace_back(new test_norm_q8(GGML_TYPE_Q4_K, 2304, 512, T, true));
     }
