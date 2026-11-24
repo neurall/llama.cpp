@@ -44,8 +44,7 @@ static __device__ __forceinline__ float ewc_epi_get(const ggml_cuda_ew_epi & E, 
 }
 
 // runs the program on matvec row `row` whose value is acc, and writes the chain's last value
-// noinline: inlined, its step loop cost the gate/GLU-fused matvecs registers (Inkling 2 grid-576 matvec 30.5 -> 33.0 us)
-static __device__ __noinline__ void ewc_epi_write(const ggml_cuda_ew_epi & E, float acc, int row) {
+static __device__ __forceinline__ void ewc_epi_write(const ggml_cuda_ew_epi & E, float acc, int row) {
     float r[ggml_cuda_ew_epi::MAX_ST];
 #pragma unroll 1
     for (int s = 0; s < E.n_st; ++s) {
