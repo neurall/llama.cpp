@@ -1499,7 +1499,7 @@ def stop(p):
         p.wait()
 
 
-POWER_DAY, POWER_NIGHT = (280, 280), (280, 280)   # user 2026-11-19: "stay 280 280" (one-card decode campaign; was day 220/280, night 200/200). W per GPU (GPU0 = x4 card, GPU1 = x16)
+POWER_DAY, POWER_NIGHT = (280, 280), (100, 100)   # user 2026-11-24 night: "max 100w pl" (noise); day stays 280 280 (2026-11-19). W per GPU (GPU0 = x4 card, GPU1 = x16)
 
 
 def power_schedule(now=None):
@@ -5729,8 +5729,9 @@ def build_jobs():
     except Exception:
         avail = 24.0
     h = time.localtime().tm_hour
-    cap = 8 if h >= 22 or h < 7 else (os.cpu_count() or 8)   # user 2026-11-22: night builds on 8 threads (quiet fans)
-    return max(4, min(cap, int(avail // 3)))
+    if h >= 22 or h < 7:
+        return 4   # user 2026-11-24: night builds on max 4 threads (fan noise)
+    return max(4, min(os.cpu_count() or 8, int(avail // 3)))
 
 def _build_stock(a):
     """upstream llama.cpp built exactly like upstream's release workflow (job ubuntu-cuda, x64, CUDA 12.8: nvidia/cuda:12.8.2-devel-ubuntu24.04, GCC 13,
