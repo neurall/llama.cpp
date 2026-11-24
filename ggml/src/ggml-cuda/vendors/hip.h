@@ -122,6 +122,7 @@ typedef uint64_t ggml_cuda_thread_mask_t;
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
 #define cudaDeviceGetStreamPriorityRange hipDeviceGetStreamPriorityRange
 #define cudaStreamCreateWithPriority hipStreamCreateWithPriority
+#define __grid_constant__   // CUDA 11.7+ const kernel params; HIP passes them by value as before
 #define cudaStreamDestroy hipStreamDestroy
 #define cudaStreamFireAndForget hipStreamFireAndForget
 #define cudaStreamNonBlocking hipStreamNonBlocking

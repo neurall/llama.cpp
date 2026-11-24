@@ -2,10 +2,16 @@
 // coldest anchor, mover destinations, victims) is a parallel pass over the entries with a block-wide minimum; the edits (free + merge, split + place) shift
 // the vector in place. The report goes to mapped host memory, `done` last. Same steps and tie-breaks as pv2_alloc_do (the host reference).
 // A second kernel then copies the movers' bytes and points the expert tables at their new places (freed experts: -1).
+#ifdef GGML_USE_HIP
+#include "vendors/hip.h"
+#include <hipcub/hipcub.hpp>
+namespace cub = hipcub;
+#else
 #include <cuda_runtime.h>
+#include <cub/cub.cuh>
+#endif
 #include <cstdio>
 #include <cstdlib>
-#include <cub/cub.cuh>
 #ifndef CUDA_CHECK
 #define CUDA_CHECK(x) do { cudaError_t e_ = (x); if (e_ != cudaSuccess) { fprintf(stderr, "CUDA error %s at %s:%d\n", cudaGetErrorString(e_), __FILE__, __LINE__); abort(); } } while (0)
 #endif
@@ -601,6 +607,17 @@ static __device__ pm_lists pm_lists_of(void * scratch, uint32_t cap) {
     L.buf = (pm_le *) (b + 4096); L.pend = L.buf + (size_t) 2 * PM_NC * cap; L.pre = (uint32_t *) (L.pend + (size_t) PM_NC * PM_PEND); L.cap = cap; L.ok = true;
     return L;
 }
+// alloc time for the report; shortcut: HIP has no %globaltimer, reports 0 ns there, use wall_clock64() and its rate if HIP timings are needed
+static __device__ __forceinline__ uint64_t pm_now_ns() {
+#ifdef GGML_USE_HIP
+    return 0;
+#else
+    uint64_t t;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+    return t;
+#endif
+}
+
 // user 2026-11-22: the host asks for a list of allocs (sizes may differ) in one launch and goes on; each gets its report, in order (later ones see the
 // earlier ones' map). First the host's changes since the last batch (or the lists built from a map sent whole), last the pending newcomers merged
 static __global__ void __launch_bounds__(PM_T) k_pm_alloc(pm_entry * v, uint32_t * cnt, uint32_t cap, uint64_t lo, uint64_t hi, const pm_req * rq, uint32_t n_rq, pm_result * res,
@@ -613,9 +630,9 @@ static __global__ void __launch_bounds__(PM_T) k_pm_alloc(pm_entry * v, uint32_t
     pm_apply_delta(c, S, bt);
     for (uint32_t k = 0; k < n_rq; ++k) {
         const pm_req q = rq[k];
-        uint64_t t0 = 0; if (threadIdx.x == 0) { asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t0)); }
+        uint64_t t0 = 0; if (threadIdx.x == 0) { t0 = pm_now_ns(); }
         pm_alloc_one(c, S, q.n, q.a, q.id, q.hot, q.pin, q.kind, res + k);
-        if (threadIdx.x == 0) { uint64_t t1; asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t1)); res[k].ns = t1 - t0; }
+        if (threadIdx.x == 0) { res[k].ns = pm_now_ns() - t0; }
     }
     if (c.L.ok) { for (int j = 0; j < (int) *c.L.ncls; ++j) { if (c.L.cls[j].np) { pm_merge(c, S, j); } } }
 }
