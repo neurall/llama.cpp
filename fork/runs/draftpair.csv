@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+dp-ds-tet,ds,2,tetrisc,1024,,
+dp-ds-edit,ds,2,edit4c,1024,,
+dp-ink-tet,ink2m,2,tetrisc,1024,,
+dp-ink-edit,ink2m,2,edit4c,1024,,

@@ -1,0 +1,34 @@
+#!/bin/bash
+# The Adamant engine (github.com/nixcat-dev/adamant, Basalt fork for Ada/Ampere) behind run.py's llama-server contract, like ../strata/llama-server.
+# Takes -m MODEL.gguf and --port, ignores the rest. The pack is the GGUF converted once (same bytes): /m2/m/adamant/<gguf stem without -0000N-of-0000M>.basalt.
+# The arm is the build folder's name:
+#   adamant        its defaults: MTP + suffix drafting, its KV default (fp16)
+#   adamant-plain  no drafting (--spec 0 --suffix-draft 0)
+# One request at a time, 32k context, no vision, like every cell.
+A=/p/bw/ext/adamant
+case "$1" in
+    --version) echo "version: 1 (adamant $(git -C $A rev-parse --short HEAD))"; exit 0 ;;
+    --help|-h) echo "usage: llama-server -m MODEL --port PORT (Adamant stand-in, other flags are ignored)"; exit 0 ;;
+esac
+model= port=8080
+while [ $# -gt 0 ]; do
+    case "$1" in -m|--model) model=$2; shift ;; --port) port=$2; shift ;; esac
+    shift
+done
+[ -n "$model" ] || { echo "adamant stand-in: no -m MODEL" >&2; exit 2; }
+stem=$(basename "$model" .gguf); stem=${stem%-00001-of-0000[0-9]}
+pack=/m2/m/adamant/$stem.basalt
+[ -f "$pack" ] || { echo "adamant stand-in: no pack $pack (convert the GGUF first)" >&2; exit 2; }
+arm=$(basename "$(dirname "$0")")
+IFS=, read -ra vis <<< "${CUDA_VISIBLE_DEVICES:-0,1}"; gpus=$(seq -s, 0 $((${#vis[@]} - 1)))
+args=(serve --model "$pack" --port "$port" --gpu "$gpus" --parallel 1 --vision off --no-grammar --max-context 32768)
+case "$arm" in *-plain) args+=(--spec 0 --suffix-draft 0) ;; esac
+export PATH=$A/../adamant-venv/bin:$PATH
+"$A/bin/basalt" "${args[@]}" 2>&1 | while IFS= read -r l; do
+    echo "$l"
+    # its ready line comes before the model is loaded: tell run.py only once /health says loaded
+    [[ $l == *"[server]"*ready* ]] && ( until curl -s -m 5 "http://127.0.0.1:$port/health" | grep -q '"loaded": true'; do sleep 1; done; echo "main: server is listening on http://127.0.0.1:$port" ) &
+done &
+p=$!
+trap 'pkill -TERM -P $p; kill $p 2>/dev/null; wait' TERM INT
+wait $p
