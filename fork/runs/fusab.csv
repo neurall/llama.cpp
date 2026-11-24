@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+fa-ds-12k,ds,2,pf12k1k,1024,,
+fa-qn-12k,qn_iq4xs,2,pf12k1k,1024,,
+fa-ds-tet,ds,2,tetrisc,1024,,
