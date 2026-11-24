@@ -633,6 +633,12 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_MIRRORED);
         }
 
+        // Inkling 2: the K / V short convolutions run per channel, and their input-dependent taps per KV head: split with the heads of attn_k / attn_v
+        static const std::regex pattern_kv_conv("blk\\.\\d*\\.attn_(k|v)_conv(_proj)?\\.weight");
+        if (std::regex_match(tensor_name, pattern_kv_conv)) {
+            return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_1, "attn_output.weight");
+        }
+
         // standard attention
         if (std::regex_match(tensor_name, pattern_q_weight) || std::regex_match(tensor_name, pattern_kv_weight)) {
             return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_1, "attn_output.weight", "ssm_out.weight");
