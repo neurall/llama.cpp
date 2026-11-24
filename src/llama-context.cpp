@@ -2579,7 +2579,7 @@ const int32_t * llama_context::get_mtp_dsa_selection(size_t * size) {
     for (size_t row = 0; row < mtp_dsa_sel_seq.size(); ++row) {
         const llama_seq_id seq_id = mtp_dsa_sel_seq[row];
         GGML_ASSERT(seq_id >= 0);
-        const auto & cells = mem_idx->get_cells(seq_id);
+        const auto & cells = mem_idx->get_cache()->get_cells(seq_id);
 
         for (size_t j = 0; j < mtp_dsa_sel_width; ++j) {
             const size_t i = row*mtp_dsa_sel_width + j;
