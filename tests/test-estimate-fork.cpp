@@ -516,6 +516,18 @@ int main() {
         if (fits_one_card_pick(23 * G, G, two, 2) != -1)   { printf("FAIL one card: 23 GiB + 1 reserve on 2x23 does not fit one card\n"); g_fail++; }
         if (fits_one_card_pick(5 * G, G, two, 1) != -1)    { printf("FAIL one card: a single card needs no pick\n"); g_fail++; }
     }
+    {   // one card or the layer split, from measured ms per token (Qwen3.6 two 3090s 12k/1k 2026-11-24: split 8400 i/s 160 o/s, one card 6200 i/s 151 o/s)
+        const double q_one_p = 1000.0 / 6200, q_one_g = 1000.0 / 151, q_spl_p = 1000.0 / 8400, q_spl_g = 1000.0 / 160;
+        if (!place_one_card_pick(false, 0, 0, false, 0, 0, 12000, 1024)) { printf("FAIL place: nothing measured should try one card first\n"); g_fail++; }
+        if (place_one_card_pick(true, q_one_p, q_one_g, false, 0, 0, 12000, 1024)) { printf("FAIL place: one card measured, split not: should try the split\n"); g_fail++; }
+        if (!place_one_card_pick(false, 0, 0, true, q_spl_p, q_spl_g, 12000, 1024)) { printf("FAIL place: split measured, one card not: should try one card\n"); g_fail++; }
+        if (place_one_card_pick(true, q_one_p, q_one_g, true, q_spl_p, q_spl_g, 12000, 1024)) { printf("FAIL place: Qwen3.6 numbers should keep the split\n"); g_fail++; }
+        // Inkling 2 Mini two 3090s 12k chat 2026-11-23: split 1074 i/s 33.9 o/s, one card 1372 i/s 56.9 o/s
+        if (!place_one_card_pick(true, 1000.0 / 1372, 1000.0 / 56.9, true, 1000.0 / 1074, 1000.0 / 33.9, 12000, 1024)) { printf("FAIL place: Inkling numbers should keep one card\n"); g_fail++; }
+        // by total time: faster prompt, slower decode; a long answer decides for decode
+        if (!place_one_card_pick(true, 0.20, 10.0, true, 0.10, 12.0, 1000, 4096)) { printf("FAIL place: long answers should pick the faster decode\n"); g_fail++; }
+        if (place_one_card_pick(true, 0.20, 10.0, true, 0.10, 12.0, 60000, 16)) { printf("FAIL place: long prompts should pick the faster prompt\n"); g_fail++; }
+    }
 
     printf(g_fail ? "%d failed\n" : "estimators: all passed\n", g_fail);
     return g_fail ? 1 : 0;

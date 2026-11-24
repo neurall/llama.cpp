@@ -541,3 +541,13 @@ static inline int fits_one_card_pick(size_t model, size_t reserve, const size_t 
     for (int i = 1; i < n; ++i) { if (free[i] > free[best]) { best = i; } }
     return model + reserve <= free[best] ? best : -1;
 }
+
+// One card or the layer split for a model that fits one card is measured, not guessed: the split runs prompt passes pipelined over both cards and on
+// power-capped cards each card decodes its half faster (Qwen3.6 two 3090s 12k/1k 2026-11-24: split 8400 i/s 160 o/s, one card 6200 i/s 151 o/s), while
+// Inkling 2 Mini loses on the split (above). A placement without a record is tried first (one card before the split); with both, the smaller total time
+// for n_p prompt tokens plus n_g answer tokens wins (p, g: ms per prompt / answer token). True: one card.
+static inline bool place_one_card_pick(bool have_one, double p1, double g1, bool have_split, double p2, double g2, double n_p, double n_g) {
+    if (!have_one)   { return true; }
+    if (!have_split) { return false; }
+    return n_p * p1 + n_g * g1 <= n_p * p2 + n_g * g2;
+}

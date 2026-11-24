@@ -343,6 +343,7 @@ struct server_batch {
 // of 8 steps (text and cache warm-up affect both alike) for `probe` tokens each. Re-checks every
 // `recheck` tokens. LLAMA_SPEC_DEPTH=N pins the depth (0 = never draft).
 std::pair<std::string, std::string> common_spec_state_key(const common_params & params);   // common/common.cpp (no shared header)
+void common_place_record(double p_ms, int n_p, double g_ms, int n_g);   // common/common.cpp: one card vs layer split, measured per request
 
 struct spec_depth_tuner {
     static inline std::pair<std::string, std::string> key;   // fork: where the settled depth is stored (common_spec_state_key), read back at the next start
@@ -987,6 +988,7 @@ struct server_slot {
     }
 
     void print_timings() const {
+        common_place_record(stats.t_prompt_per_token_ms(), (int) stats.n_prompt_processed, stats.t_gen_per_token_ms(), (int) stats.n_gen);
         llama_moe_decision_fork("phase", string_format("decode -> idle: %d tokens %.1f s %.1f t/s %.1f ms per token", (int) stats.n_gen, stats.t_gen_ms() / 1e3, stats.n_gen_tps(), stats.t_gen_per_token_ms()).c_str(), "");
         // fork: the request's totals in the decisions, so stats.log (--moe stats) tells requests apart and a drop reads against the picks around it
         llama_moe_decision_fork("request", string_format("prompt %d tokens %.1f s %.1f t/s, decode %d tokens %.1f s %.1f t/s", (int) stats.n_prompt_processed, stats.t_prompt_ms() / 1e3, stats.n_prompt_tps(),
