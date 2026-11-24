@@ -225,6 +225,39 @@ def load_pid(pid):
     return recs
 
 
+STATS_DB = "/p/bw/data/stats.db"   # beside runs.db's stats logs (runlog.STATS_DB); local only, never published
+
+
+def archive(pid, meta=None, final=False, db=STATS_DB):
+    """the raw event log (+ kernel log) of one process into stats.db table evlog, zlib: every run kept, a slower one too (user 11-24: a regression is read
+    without a rerun). Called every 60 s while a list runs (flusher) and once at the end with the run's meta; the row of a pid is replaced, never duplicated"""
+    import sqlite3, zlib, json
+    txt = "".join(open(f, errors="replace").read() for f in (f"/dev/shm/evlog-{pid}.tsv", f"/dev/shm/evk-{pid}.tsv") if os.path.exists(f))
+    if not txt: return
+    con = sqlite3.connect(db, timeout=30)
+    con.execute("CREATE TABLE IF NOT EXISTS evlog (pid INTEGER, t0 TEXT, ts TEXT, final INTEGER, meta TEXT, bytes INTEGER, log BLOB)")
+    con.execute("CREATE INDEX IF NOT EXISTS i_evlog_pid ON evlog (pid, t0)")
+    t0 = txt.split("\n", 1)[0]   # header line (clock pair): a reused pid is another row
+    import datetime
+    con.execute("DELETE FROM evlog WHERE pid=? AND t0=?", (int(pid), t0))
+    con.execute("INSERT INTO evlog VALUES (?,?,?,?,?,?,?)", (int(pid), t0, datetime.datetime.now().isoformat(timespec="seconds"), int(final), json.dumps(meta or {}), len(txt), zlib.compress(txt.encode(), 6)))
+    con.commit(); con.close()
+
+
+def flusher(every=60):
+    """background thread of run.py while -ev is on: every live server log into stats.db each `every` s (a hang, kill or crash keeps what ran)"""
+    import threading, time
+    def loop():
+        while True:
+            time.sleep(every)
+            for f in glob.glob("/dev/shm/evlog-*.tsv"):
+                m = re.search(r"-(\d+)\.tsv$", f)
+                if m and os.path.getsize(f) >= 100_000:
+                    try: archive(m.group(1))
+                    except Exception as e: print("evlog flush:", e, file=sys.stderr)
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def after_run(d):
     """run.py calls this with every stored run while the event log is on (-ev): the biggest process's logs (the server; probes leave small ones) go into
     token_times.db; kept as /dev/shm/evlog-last.tsv + evk-last.tsv for --html, every other log of the run deleted (RAM)"""
@@ -239,6 +272,8 @@ def after_run(d):
             "build": d.get("build"), "commit": d.get("commit"), "test": d.get("test"), "args": d.get("args"),
             "arm": " ".join(x for x in ((d.get("args") or "").strip(), os.environ.get("PERF_CELL_ENV", "").strip()) if x),   # 1-card (--env CUDA_VISIBLE_DEVICES=0) and 2-card rows apart
             "cats": os.environ.get("GGML_EVLOG", ""), "n_prompt": int(m.group(1)) if m else 0, "n_gen": d.get("n_gen"), "pp": d.get("pp")}
+    try: archive(pid, meta, final=True)
+    except Exception as e: print("evlog archive:", e, file=sys.stderr)
     try:
         res = store(load_pid(pid), meta)
         print("token_times: " + ", ".join(f"{ph}{ck} {per:.0f}us{' (best)' if kept else ''}" for ph, ck, per, kept in res), file=sys.stderr)

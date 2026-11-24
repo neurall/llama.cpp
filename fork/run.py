@@ -8719,6 +8719,8 @@ def run_list(name, argv):
     if o.no_pool is not None: os.environ["RUN_KEEP_POOL"] = "1"   # -nm: the cells never unmount the pool either (pool_sanity); a model bigger than the pool loads without it, the pool stays for the next ones
     if o.dbg: os.environ["RUN_DBG"] = "1"   # the cells and servers of the list see it
     if getattr(o, "evlog", None): os.environ["GGML_EVLOG"] = o.evlog   # dev event log, only the categories asked for (ggml-evlog-fork.h); servers inherit it, records go to /dev/shm/evlog-<pid>.tsv and GET /evlog
+    if getattr(o, "evlog", None) and not o.dry:   # every live server log into stats.db each 60 s, the whole log at each run's end (evlog.archive)
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import evlog; evlog.flusher()
     if "kern" in (getattr(o, "evlog", None) or "").split(","):   # every kernel + copy of any CUDA engine (ours, stock, strata) by CUPTI injection, /dev/shm/evk-<pid>.tsv
         so = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "libevkern.so")
         if not os.path.exists(so):   # built once on the box (CUPTI from the pip nvidia cu13 wheel)
