@@ -564,6 +564,14 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         if (scalar_only && ret.axis >= 0 && ret.axis < GGML_MAX_DIMS) {
             ret = {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, {1}, 1};
         }
+        if (ret.axis == GGML_BACKEND_SPLIT_AXIS_UNKNOWN) {
+            // name the op and its sources' split axes: an arch's own ops need a rule, this says which
+            GGML_LOG_ERROR("%s: no split rule for %s '%s':", __func__, ggml_op_desc(tensor), tensor->name);
+            for (size_t i = 0; i < GGML_MAX_SRC; i++) {
+                if (tensor->src[i]) { GGML_LOG_ERROR(" src%zu '%s' axis %d", i, tensor->src[i]->name, (int) src_ss[i].axis); }
+            }
+            GGML_LOG_ERROR("\n");
+        }
         GGML_ASSERT(ret.axis != GGML_BACKEND_SPLIT_AXIS_UNKNOWN);
         return ret;
     };
