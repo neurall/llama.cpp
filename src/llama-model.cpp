@@ -638,6 +638,11 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
         if (ud->model->arch == LLM_ARCH_INKLING2 || ud->model->arch == LLM_ARCH_INKLING2_LOOP) {
             const bool ffn = tensor_name.find(".ffn_") != std::string::npos && tensor_name.find("ffn_post_conv") == std::string::npos &&
                              tensor_name.find("ffn_res_query") == std::string::npos && tensor_name.find("ffn_norm") == std::string::npos;
+            // shortcut: bisect switch for the garbage answer under -sm tensor (1 = all mirrored, 2 = only routed experts split); remove once found
+            static const int bis = getenv("LLAMA_INK_TP_BISECT") ? atoi(getenv("LLAMA_INK_TP_BISECT")) : 0;
+            if (bis == 1 || (bis == 2 && tensor_name.find("_exps") == std::string::npos)) {
+                return {GGML_BACKEND_SPLIT_AXIS_MIRRORED, tensor, 0, 0};
+            }
             if (!ffn && tensor_name != "output.weight") {
                 return {GGML_BACKEND_SPLIT_AXIS_MIRRORED, tensor, 0, 0};
             }
