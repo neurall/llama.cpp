@@ -633,10 +633,14 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_MIRRORED);
         }
 
-        // Inkling 2: the K / V short convolutions run per channel, and their input-dependent taps per KV head: split with the heads of attn_k / attn_v
-        static const std::regex pattern_kv_conv("blk\\.\\d*\\.attn_(k|v)_conv(_proj)?\\.weight");
-        if (std::regex_match(tensor_name, pattern_kv_conv)) {
-            return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_1, "attn_output.weight");
+        // Inkling 2 (first version): attention, its convolutions, their shared state and the KV run whole on every card; only the FFN / experts split.
+        // The conv state packs K, V, the attention output and the FFN output channels in one tensor, so split heads would need a split view of it.
+        if (ud->model->arch == LLM_ARCH_INKLING2 || ud->model->arch == LLM_ARCH_INKLING2_LOOP) {
+            const bool ffn = tensor_name.find(".ffn_") != std::string::npos && tensor_name.find("ffn_post_conv") == std::string::npos &&
+                             tensor_name.find("ffn_res_query") == std::string::npos && tensor_name.find("ffn_norm") == std::string::npos;
+            if (!ffn && tensor_name != "output.weight") {
+                return {GGML_BACKEND_SPLIT_AXIS_MIRRORED, tensor, 0, 0};
+            }
         }
 
         // standard attention
