@@ -3470,6 +3470,13 @@ common_speculative_init_result::common_speculative_init_result(
             const uint64_t want    = per_tok ? llama_model_size(model_dft) / per_tok : cparams.n_ubatch;
             uint32_t ub = 64;
             while (ub * 2 <= cparams.n_ubatch && ub * 2 <= want) { ub *= 2; }
+            // a DSV4 draft with the prompt ring never takes more than its window (n_swa rows injected) plus a draft block in one call:
+            // ubatch 4096 reserved 15.5 GiB outside the block pool on DeepSeek 4.1 (1 MiB of vocab rows a token)
+            char hc[32];
+            if (llama_model_meta_val_str(model_dft, "dflash.hyper_connection.count", hc, sizeof(hc)) >= 0 && std::atoi(hc) > 0) {
+                const uint32_t ring = (uint32_t) llama_model_n_swa(model_dft) + 64;
+                while (ub > 64 && ub / 2 >= ring) { ub /= 2; }
+            }
             if (ub < cparams.n_ubatch) {
                 LOG_INF("%s: draft ubatch %u (target %u): vocab-wide rows %.1f MiB a token, draft weights %.0f MiB\n", __func__, ub, cparams.n_ubatch,
                         per_tok / 1048576.0, llama_model_size(model_dft) / 1048576.0);
