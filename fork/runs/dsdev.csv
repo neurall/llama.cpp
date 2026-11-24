@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+dsdev-dev,ds,1,edit4c,512,,
+dsdev-host,ds,1,edit4c,512,,--env LLAMA_DFLASH_DEV=0
