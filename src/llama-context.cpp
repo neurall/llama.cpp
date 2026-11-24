@@ -13,6 +13,7 @@ void llama_moe_set_opt(const char * key, const char * value);
 #include "llama-dsplit-fork.h"
 #include "llama-estimate-fork.h"   // thread_search: the decode thread search's rule
 #include "llama-kvpad-fork.h"      // the pad of a decode pass from what a rebuild costs
+#include "llama-passplan-fork.h"   // ppx_equal_pass: equal prompt passes
 #include "llama-kv-cache.h"
 #include "llama-moestate-fork.h"
 
@@ -5024,7 +5025,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     bool llama_moe_cache_kv_tail_grow_fork(ggml_backend_sched_t sched, uint32_t n);   // llama-moecache-fork.cpp (no header edit)
     if (cparams.moe_cache && memory) { llama_moe_cache_kv_tail_grow_fork(sched.get(), n_tokens_all); }
     const uint32_t n_ubatch_split = g_split_sub && cparams.moe_cache ? (llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_tokens_all), n_tokens_all) : 0;
-    uint32_t n_ubatch_call = n_ubatch_split > 0 ? n_ubatch_split : cparams.moe_cache ? llama_moe_ubadapt_cache_fork(n_tokens_all, llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_ubatch_lim), n_ubatch_lim) : llama_moe_ubadapt_next_fork(n_tokens_all, n_ubatch_lim);
+    uint32_t n_ubatch_call = n_ubatch_split > 0 ? n_ubatch_split : cparams.moe_cache ? llama_moe_ubadapt_cache_fork(n_tokens_all, llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_ubatch_lim), n_ubatch_lim) : ppx_equal_pass((uint32_t) n_tokens_all, llama_moe_ubadapt_next_fork(n_tokens_all, n_ubatch_lim), 0);   // equal passes, same count: a short tail pass costs nearly a full one (Qwen3.6 split: 768 tokens 0.7 s, 2048 1.0 s)
     if (g_pass_cap_fork > 0) { n_ubatch_call = std::min(n_ubatch_call, g_pass_cap_fork); }   // the rest of a call after the pool refused one of its passes (below)
     if (cparams.moe_cache && memory) { llama_moe_cache_pp_repass_fork(n_tokens_all, n_ubatch_call); }   // fork: the planner's features follow the pass size that runs
     if (n_tokens_all > 1) { llama_moe_prompt_begin_fork((uint32_t) n_tokens_all, n_ubatch_call); }
