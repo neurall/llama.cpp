@@ -2222,7 +2222,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
             for (size_t i = 0; i < llama_max_devices(); ++i) { user_ts = user_ts || params.tensor_split[i] != 0.0f; }
             size_t n_gpu_dev = 0;
             for (size_t i = 0; i < ggml_backend_dev_count(); ++i) { n_gpu_dev += ggml_backend_dev_is_gpu(ggml_backend_dev_get(i)) ? 1 : 0; }
-            if (n_gpu > 1 && !in_ram && !user_ts && params.devices.empty() && n_gpu_dev == g_gpu_used.size() && g_gpu_used.size() <= llama_max_devices()) {
+            if (n_gpu > 1 && !in_ram && !user_ts && params.split_mode != LLAMA_SPLIT_MODE_TENSOR && params.devices.empty() && n_gpu_dev == g_gpu_used.size() && g_gpu_used.size() <= llama_max_devices()) {
                 std::vector<size_t> card_free;
                 for (ggml_backend_dev_t d : g_gpu_used) { size_t f = 0, t = 0; ggml_backend_dev_memory(d, &f, &t); card_free.push_back(f); }
                 const int pick = fits_one_card_pick(model_size, (size_t) 1 << 30, card_free.data(), (int) card_free.size());
