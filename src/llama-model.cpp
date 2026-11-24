@@ -548,8 +548,14 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             const size_t layer_index_start = tensor_name.find("_l", 6);
             GGML_ASSERT(layer_index_start != std::string::npos);
             il = std::stoull(tensor_name.substr(layer_index_start + 2));
-            prefix = "blk." + std::to_string(il) + ".";
-            rotation = get_il_eff(il) % ud->n_devices;
+            // a looped model's cache slot uses the weights of its physical block (layers[il] aliases it): that block's prefix and rotation
+            size_t il_w = il;
+            if (il < ud->model->layers.size() && ud->model->layers[il].wo) {
+                const std::string wn = ggml_get_name(ud->model->layers[il].wo);
+                if (wn.compare(0, 4, "blk.") == 0) { il_w = std::stoull(wn.substr(4, wn.find('.', 4) - 4)); }
+            }
+            prefix = "blk." + std::to_string(il_w) + ".";
+            rotation = get_il_eff(il_w) % ud->n_devices;
         } else {
             il = 0;
             rotation = hparams.n_layer() % ud->n_devices;
