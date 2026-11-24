@@ -3272,6 +3272,22 @@ common_speculative_init_result::common_speculative_init_result(
 
         pimpl->model.reset(model_dft);
 
+        // the draft's compute buffer grows with ubatch x its vocab (logits, markov rows): with the target's ubatch (4096 on Inkling 2 Mini,
+        // vocab 200k) it asked 6.3 GiB for a 0.5 GB draft and failed. Its ubatch: the largest power of two <= the target's whose vocab-wide
+        // rows (8 bytes a vocab entry a token) stay within the draft's own weight size, at least 64 (a draft block batch); prompt features
+        // go in chunks of n_ubatch (process()).
+        {
+            const uint64_t per_tok = (uint64_t) llama_vocab_n_tokens(llama_model_get_vocab(model_dft)) * 8;
+            const uint64_t want    = per_tok ? llama_model_size(model_dft) / per_tok : cparams.n_ubatch;
+            uint32_t ub = 64;
+            while (ub * 2 <= cparams.n_ubatch && ub * 2 <= want) { ub *= 2; }
+            if (ub < cparams.n_ubatch) {
+                LOG_INF("%s: draft ubatch %u (target %u): vocab-wide rows %.1f MiB a token, draft weights %.0f MiB\n", __func__, ub, cparams.n_ubatch,
+                        per_tok / 1048576.0, llama_model_size(model_dft) / 1048576.0);
+                cparams.n_ubatch = ub;
+            }
+        }
+
         llama_context * ctx_dft = llama_init_from_model(model_dft, cparams);
         if (ctx_dft == nullptr) {
             LOG_ERR("%s: failed to create MTP context\n", __func__);
