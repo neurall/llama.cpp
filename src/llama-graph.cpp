@@ -2786,7 +2786,7 @@ ggml_tensor * llm_graph_context::build_ffn(
 // the architectures whose routed experts use the clamped swiglu (the stock path, the expert cache and its JIT pool must agree)
 static bool moe_uses_swiglu_clamp(llm_arch arch, const llama_hparams & hparams) {
     return arch == LLM_ARCH_MAPLE || arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_DEEPSEEK41 || arch == LLM_ARCH_GLM5_NEXT ||
-           (arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0) || arch == LLM_ARCH_HY_V4;
+           (arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0) || arch == LLM_ARCH_HY_V4 || arch == LLM_ARCH_HY_V4_FLASH;
 }
 
 ggml_tensor * llm_graph_context::build_moe_ffn(
