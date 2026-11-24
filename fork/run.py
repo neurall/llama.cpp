@@ -928,6 +928,8 @@ consistent best = the highest value that at least two runs agree on within 5% (a
             con = connect(); ensure(con, cols)
             con.execute(ins(cols), row_values(d, cols))
             con.commit(); con.close()
+            if os.environ.get("GGML_EVLOG"):   # dev event log on (-ev): this run's per-token composition into token_times.db
+                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import evlog; evlog.after_run(d)
         except Exception as e:
             print("runs.db:", e, file=sys.stderr)
     def insert_output(ts, hw, build, test, model, md5, text, uniq4, chars, code, ask=None):
@@ -8643,6 +8645,7 @@ def run_list(name, argv):
     ap.add_argument("-b", "--build", default="latest"); ap.add_argument("-onl", "-o", "--only", help="rows whose name contains TEXT; comma list: glm-,mimo-"); ap.add_argument("-t", "--test", help="rows whose test is TEXT (comma list): best1k = only the best-prompt input rows, edit4c, tetrisc"); ap.add_argument("-n", "--dry", action="store_true")
     ap.add_argument("-skp", "--skip", help="skip rows whose name contains TEXT; comma list: glm-,mimo-")
     ap.add_argument("-ng", "--gpus", dest="n_gpus", type=int, metavar="N", help="use only N cards: the best N (fastest slot, then fastest card), the fastest one last; 0 = CPU only. Remote machines (-pc) and this host")
+    ap.add_argument("-ev", "--evlog", dest="evlog", default=None, metavar="CATS", help="dev event log on for these categories only (comma list of sched,graph,copy,sync,gpu,upload,rampool,loader,planner,pool,decode,server,sys, or all). Off by default; every category costs time, so ask only for what the question needs. Read with run.py evlog")
     ap.add_argument("-dbg", "--dbg", dest="dbg", action="store_true", help="a dev run: stats and logging on (the engine's research logs and stats.log with planner events, TOK lines every 10 tokens and NVML samples every 100 ms, split pass stamps; run.py's machine samplers, live status probes and server polls). Off by default (user 2026-11-15): a plain run and every benchmark (gainers, gate) measure what users get")
     ap.add_argument("-joe", "--simjoe", action="store_true", help="the old desktop on PC1 (also the word simjoe): one chiplet (16 threads, 40-42 GB/s), RAM held down to 128 GiB, no huge-page pool, stock -t 8; rows as machine pc1joe")
     ap.add_argument("--joe-ram", type=int, metavar="GIB", help="simjoe: installed RAM of the emulated box (default 128)")
@@ -8715,6 +8718,13 @@ def run_list(name, argv):
     if o.day and not o.power: o.power = "220/280"
     if o.no_pool is not None: os.environ["RUN_KEEP_POOL"] = "1"   # -nm: the cells never unmount the pool either (pool_sanity); a model bigger than the pool loads without it, the pool stays for the next ones
     if o.dbg: os.environ["RUN_DBG"] = "1"   # the cells and servers of the list see it
+    if getattr(o, "evlog", None): os.environ["GGML_EVLOG"] = o.evlog   # dev event log, only the categories asked for (ggml-evlog-fork.h); servers inherit it, records go to /dev/shm/evlog-<pid>.tsv and GET /evlog
+    if "kern" in (getattr(o, "evlog", None) or "").split(","):   # every kernel + copy of any CUDA engine (ours, stock, strata) by CUPTI injection, /dev/shm/evk-<pid>.tsv
+        so = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "libevkern.so")
+        if not os.path.exists(so):   # built once on the box (CUPTI from the pip nvidia cu13 wheel)
+            cu = glob.glob(os.path.expanduser("~/v/lib/python3*/site-packages/nvidia/cu13"))[0]
+            subprocess.run(["g++", "-O2", "-shared", "-fPIC", "-o", so, so.replace("libevkern.so", "evkern.cpp"), f"-I{cu}/include", "-I/usr/local/cuda/include", f"-L{cu}/lib", "-l:libcupti.so.13", f"-Wl,-rpath,{cu}/lib"], check=True)
+        os.environ["CUDA_INJECTION64_PATH"] = so
     if "simjoe" in argv or o.simjoe:   # the old desktop on PC1 (simjoe_setup): set for the cells, undone at the end
         if o.machine != "pc1": sys.exit("simjoe: PC1 only")
         jc = {"ram": o.joe_ram or JOE["ram"], "threads": o.joe_threads or JOE["threads"], "bw": o.joe_bw or 0.0, "link": JOE["link"] if o.joe_link is None else o.joe_link, "card": o.joe_card}
@@ -12320,6 +12330,8 @@ def _shared_state():
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["evlog"]:   # its own argparse (evlog.py): options go through untouched
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import evlog; evlog.main(sys.argv[2:]); sys.exit(0)
     _shared_state()
     import atexit
     atexit.register(_sync_runs_db)
