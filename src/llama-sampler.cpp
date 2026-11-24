@@ -1,3 +1,4 @@
+#include "../ggml/src/ggml-evlog-fork.h"
 #include "llama-sampler.h"
 
 #include "llama-impl.h"
@@ -894,6 +895,7 @@ uint32_t llama_sampler_backend_n_nodes(const llama_sampler * sampler) {
 }
 
 llama_token llama_sampler_sample(struct llama_sampler * smpl, struct llama_context * ctx, int32_t idx) {
+    GGML_EV_SCOPE(GGML_EV_DECODE, "sample");
     const llama_token   sampled_token  = llama_get_sampled_token_ith     (ctx, idx);
     const float *       sampled_probs  = llama_get_sampled_probs_ith     (ctx, idx);
     const float *       sampled_logits = llama_get_sampled_logits_ith    (ctx, idx);

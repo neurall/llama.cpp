@@ -1,3 +1,4 @@
+#include "ggml-evlog-fork.h"
 #include "ggml.h"
 #include "ggml-impl.h"
 #include "ggml-backend.h"
@@ -2564,11 +2565,13 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                     ggml_cgraph * cgraph_ij = bcj.cgraphs[i].cgraph_main;
                     nodes.push_back(cgraph_ij->nodes[cgraph_ij->n_nodes-1]);
                 }
-                backend_allreduce_success = backend_ctx->comm_allreduce(backend_ctx->comm_ctx, nodes.data());
+                { GGML_EV_SCOPE(GGML_EV_SCHED, "meta allreduce comm"); backend_allreduce_success = backend_ctx->comm_allreduce(backend_ctx->comm_ctx, nodes.data()); }
             }
 
             if (!backend_allreduce_success) {
+                const uint64_t ev_t0 = GGML_EV_ON(GGML_EV_SCHED) ? ggml_evlog_now() : 0;
                 const ggml_status status = allreduce_fallback(i);
+                if (ev_t0) { ggml_evlog_rec(GGML_EV_SCHED, "meta allreduce", ev_t0, ggml_evlog_now(), (int64_t) i, 0); }
                 if (status != GGML_STATUS_SUCCESS) {
                     return status;
                 }

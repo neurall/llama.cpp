@@ -4043,7 +4043,7 @@ g_st_m[1] = ggml_time_us();     auto * res = get_gf_res_prev();
             //const auto t_start_us = ggml_time_us();
 
             llama_moe_cache_bell_begin_fork();
-            gf = model.build_graph(gparams);
+            { GGML_EV_SCOPE(GGML_EV_DECODE, "build_graph", (int64_t) ubatch.n_tokens); gf = model.build_graph(gparams); }
             llama_moe_cache_bell_expand_fork(gf);   // --moe bell=1: the bells' host chains go behind everything else
             llama_moe_cache_graph_built_fork();
 
@@ -4062,7 +4062,10 @@ g_st_m[1] = ggml_time_us();     auto * res = get_gf_res_prev();
 
             static const bool dbg_rb = getenv("LLAMA_REBUILD_DEBUG") != nullptr;   // squeeze repro (Qwen3.6, 4.7 GiB): which build of the graph the inputs belong to
             if (dbg_rb) { LLAMA_LOG_WARN("%s: graph build attempt %d: %d tokens, %d nodes, %d splits so far\n", __func__, attempt, (int) ubatch.n_tokens, ggml_graph_n_nodes(gf), ggml_backend_sched_get_n_splits(sched.get())); }
-            if (ggml_backend_sched_alloc_graph(sched.get(), gf)) {
+            const uint64_t ev_a0 = GGML_EV_ON(GGML_EV_DECODE) ? ggml_evlog_now() : 0;
+            const bool ev_alloc_ok = ggml_backend_sched_alloc_graph(sched.get(), gf);
+            if (ev_a0) { ggml_evlog_rec(GGML_EV_DECODE, "alloc_graph", ev_a0, ggml_evlog_now(), ggml_graph_n_nodes(gf), 0); }
+            if (ev_alloc_ok) {
                 // fork: --moe alias=1 lends the pool blocks this graph's tensors reach to it; when the graph reached into the KV zone (kv-tail), the zone moved behind
                 // it and this graph's views of the KV point at the old place: it is built again (the next graph of this size gets its lend before it is built)
                 bool moved = cparams.moe_cache_started && !cparams.ctx_other && llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens);   // only the pool's own context (see above)
@@ -4142,6 +4145,7 @@ g_st_m[3] = ggml_time_us();     const int64_t t_fill0 = ggml_time_us();   // for
         // FIXME this call causes a crash if any model inputs were not used in the graph and were therefore not allocated
         {   // fork: the inputs go to their card as one batch (ggml-backend.cpp, ggml_backend_tensor_set_batch_begin_fork)
             struct set_batch { set_batch() { ggml_backend_tensor_set_batch_begin_fork(); } ~set_batch() { ggml_backend_tensor_set_batch_end_fork(); } } batch;
+            GGML_EV_SCOPE(GGML_EV_DECODE, "set_inputs", (int64_t) ubatch.n_tokens);
             res->set_inputs(&ubatch);
         }
         g_st_m[5] = ggml_time_us();
@@ -6163,6 +6167,7 @@ void llama_context::sched_graph_realloc(ggml_backend_sched_t sched, ggml_cgraph 
 ggml_status llama_context::graph_compute(
             ggml_cgraph * gf,
                    bool   batched) {
+    GGML_EV_SCOPE(GGML_EV_DECODE, "graph_compute", ggml_graph_n_nodes(gf));
     int n_threads        = batched ? cparams.n_threads_batch : cparams.n_threads;
     ggml_threadpool_t tp = batched ? threadpool_batch        : threadpool;
 
