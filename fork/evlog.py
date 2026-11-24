@@ -184,10 +184,15 @@ def connect(db=DB):
     con = sqlite3.connect(db)
     con.executescript("""
       CREATE TABLE IF NOT EXISTS best (id INTEGER PRIMARY KEY, hw TEXT, model TEXT, build TEXT, test TEXT, cats TEXT, phase TEXT, ck INTEGER, ts TEXT, args TEXT,
-                                       tokens INTEGER, period_us REAL, commit_ TEXT, improved_ts TEXT, prev_us REAL, UNIQUE (hw, model, build, test, cats, phase, ck));
+                                       tokens INTEGER, period_us REAL, commit_ TEXT, improved_ts TEXT, prev_us REAL, arm TEXT DEFAULT '', UNIQUE (hw, model, build, test, arm, cats, phase, ck));
       CREATE TABLE IF NOT EXISTS slice (id INTEGER, lane TEXT, name TEXT, us REAL, calls REAL);
       CREATE TABLE IF NOT EXISTS seq (id INTEGER, lane TEXT, text TEXT);
       CREATE INDEX IF NOT EXISTS i_slice ON slice (id); CREATE INDEX IF NOT EXISTS i_seq ON seq (id);""")
+    if "arm" not in [r[1] for r in con.execute("PRAGMA table_info(best)")]:   # 11-24: arm (args + cell --env) joins the key; old rows get their args as arm
+        con.executescript("""ALTER TABLE best RENAME TO best_old;
+          CREATE TABLE best (id INTEGER PRIMARY KEY, hw TEXT, model TEXT, build TEXT, test TEXT, cats TEXT, phase TEXT, ck INTEGER, ts TEXT, args TEXT,
+                             tokens INTEGER, period_us REAL, commit_ TEXT, improved_ts TEXT, prev_us REAL, arm TEXT DEFAULT '', UNIQUE (hw, model, build, test, arm, cats, phase, ck));
+          INSERT INTO best SELECT *, coalesce(args, '') FROM best_old; DROP TABLE best_old;""")
     return con
 
 
@@ -197,14 +202,14 @@ def store(recs, meta, db=DB):
     con = connect(db); res = []
     for req, phase, ck, n, per, sl, seq in comp(recs, meta.get("n_prompt") or 0, int(float(meta.get("n_gen") or 0)), float(meta.get("pp") or 0)):
         if req: continue
-        key = (meta["hw"], meta["model"], meta["build"], meta["test"], meta["cats"], phase, ck)
-        old = con.execute("SELECT id, period_us FROM best WHERE hw=? AND model=? AND build=? AND test=? AND cats=? AND phase=? AND ck=?", key).fetchone()
+        key = (meta["hw"], meta["model"], meta["build"], meta["test"], meta.get("arm") or "", meta["cats"], phase, ck)
+        old = con.execute("SELECT id, period_us FROM best WHERE hw=? AND model=? AND build=? AND test=? AND arm=? AND cats=? AND phase=? AND ck=?", key).fetchone()
         if old and old[1] <= per:
             res.append((phase, ck, per, False)); continue
         if old:
             con.execute("DELETE FROM slice WHERE id=?", (old[0],)); con.execute("DELETE FROM seq WHERE id=?", (old[0],)); con.execute("DELETE FROM best WHERE id=?", (old[0],))
         import datetime   # user 11-24: when a better token time happened, and on which commit
-        cur = con.execute("INSERT INTO best (hw, model, build, test, cats, phase, ck, ts, args, tokens, period_us, commit_, improved_ts, prev_us) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        cur = con.execute("INSERT INTO best (hw, model, build, test, arm, cats, phase, ck, ts, args, tokens, period_us, commit_, improved_ts, prev_us) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                           key + (meta.get("ts"), meta.get("args"), n, per, meta.get("commit"), datetime.datetime.now().isoformat(timespec="seconds"), old[1] if old else None))
         con.executemany("INSERT INTO slice VALUES (?,?,?,?,?)", [(cur.lastrowid, ln, nm, us, calls) for (ln, nm), (us, calls) in sl.items() if us >= 0.05 or calls >= 0.5])
         con.executemany("INSERT INTO seq VALUES (?,?,?)", [(cur.lastrowid, ln, t) for ln, t in seq.items()])
@@ -231,7 +236,9 @@ def after_run(d):
     if size[pid] < 100_000: return   # run.py stores more than one row per cell; only the server's log is a run (probes leave ~100 bytes)
     m = re.search(r"prompt_n=(\d+)", str(d.get("note") or ""))
     meta = {"ts": d.get("ts"), "hw": d.get("hw"), "model": re.sub(r"-0000\d-of-0000\d", "", str(d.get("model") or "").split(" ")[0]).removesuffix(".gguf"),
-            "build": d.get("build"), "commit": d.get("commit"), "test": d.get("test"), "args": d.get("args"), "cats": os.environ.get("GGML_EVLOG", ""), "n_prompt": int(m.group(1)) if m else 0, "n_gen": d.get("n_gen"), "pp": d.get("pp")}
+            "build": d.get("build"), "commit": d.get("commit"), "test": d.get("test"), "args": d.get("args"),
+            "arm": " ".join(x for x in ((d.get("args") or "").strip(), os.environ.get("PERF_CELL_ENV", "").strip()) if x),   # 1-card (--env CUDA_VISIBLE_DEVICES=0) and 2-card rows apart
+            "cats": os.environ.get("GGML_EVLOG", ""), "n_prompt": int(m.group(1)) if m else 0, "n_gen": d.get("n_gen"), "pp": d.get("pp")}
     try:
         res = store(load_pid(pid), meta)
         print("token_times: " + ", ".join(f"{ph}{ck} {per:.0f}us{' (best)' if kept else ''}" for ph, ck, per, kept in res), file=sys.stderr)
