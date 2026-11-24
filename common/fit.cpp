@@ -10,6 +10,7 @@
 #include <array>
 #include <cassert>
 #include <stdexcept>
+#include <cstring>
 #include <cinttypes>
 #include <set>
 #include <string>
@@ -322,8 +323,25 @@ static void common_params_fit_impl(
 
             dmds_t measured;
             try {
-                measured = common_get_device_memory_data_impl(
-                    extra->paths_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nsk_extra, nct_extra, nex_extra, log_level);
+                try {
+                    measured = common_get_device_memory_data_impl(
+                        extra->paths_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nsk_extra, nct_extra, nex_extra, log_level);
+                } catch (const std::runtime_error & e) {
+                    // fork: a draft that borrows the target's embeddings/head (DSpark, DFlash, EAGLE3) needs a target context: measure it against a dry one.
+                    // Without it the draft counted 0 and the auto context left no room: Inkling 2 + DSpark draft, cudaMalloc of its 394 MiB compute buffer failed at load
+                    if (!strstr(e.what(), "requires ctx_other")) { throw; }
+                    llama_model_params mp_dry = *mparams;
+                    mp_dry.no_alloc  = true;
+                    mp_dry.load_mode = LLAMA_LOAD_MODE_NONE;
+                    llama_model_ptr model_dry(common_model_load(paths_model, mp_dry));
+                    if (!model_dry) { throw; }
+                    llama_context_ptr ctx_dry(llama_init_from_model(model_dry.get(), *cparams));
+                    if (!ctx_dry) { throw; }
+                    llama_context_params cp_extra = *extra->cparams;
+                    cp_extra.ctx_other = ctx_dry.get();
+                    measured = common_get_device_memory_data_impl(
+                        extra->paths_model, extra->mparams, &cp_extra, devs_extra, ngl_extra, nsk_extra, nct_extra, nex_extra, log_level);
+                }
             } catch (const std::runtime_error & e) {
                 // the extra model is optional, fit the main model alone rather than giving up
                 LOG_WRN("%s: failed to measure the memory of the extra model, fitting without it: %s\n", __func__, e.what());
