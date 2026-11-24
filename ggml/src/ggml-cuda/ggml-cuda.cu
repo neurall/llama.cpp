@@ -8371,7 +8371,9 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
     }
 
     // fork: a decode matvec and the elementwise chain after it in one kernel: mmvq runs the chain on each row it writes (ew-chain-fork.cu builds it)
-    if (node->op == GGML_OP_MUL_MAT && node->ne[1] == 1 && ggml_is_quantized(node->src[0]->type) && !node->src[2]) {
+    // shortcut: rows <= 65536 keeps vocab-size heads out (each block's epilogue adds latency: Inkling 2 logits + softcap, 201024 rows, 442 -> 541 us),
+    // upgrade to a per-shape cost estimate if a tall matvec with a long chain shows up
+    if (node->op == GGML_OP_MUL_MAT && node->ne[1] == 1 && node->ne[0] <= 65536 && ggml_is_quantized(node->src[0]->type) && !node->src[2]) {
         static const bool epi_on = !getenv("GGML_CUDA_MM_EPI") || atoi(getenv("GGML_CUDA_MM_EPI")) != 0;
         extern bool ggml_cuda_ew_epi_build_fork(const ggml_cgraph * cgraph, int i, ggml_cuda_ew_epi & E, int & end);
         ggml_cuda_ew_epi epi;
