@@ -250,7 +250,6 @@ ggml_tensor * llama_model_inkling2::graph::convolve(
                 acc = ggml_add(ctx0, acc, ggml_mul(ctx0, window, tap));
             }
             acc = ggml_scale(ctx0, ggml_add(ctx0, frame(cur), acc), 1.0f/sqrtf(2*n_conv + 1));
-            ggml_build_forward_expand(gf, acc);   // right after the conv: the backend runs this run inside the conv kernel
             return ggml_reshape_2d(ctx0, acc, n_channels, n_tokens);
         }
 
@@ -267,9 +266,7 @@ ggml_tensor * llama_model_inkling2::graph::convolve(
         }
     }
 
-    ggml_tensor * res = ggml_scale(ctx0, ggml_add(ctx0, cur, out), 1.0f/sqrtf((dynamic ? 2 : 1)*n_conv + 1));
-    ggml_build_forward_expand(gf, res);   // right after the conv (K and V are read much later): the backend runs it inside the conv kernel
-    return res;
+    return ggml_scale(ctx0, ggml_add(ctx0, cur, out), 1.0f/sqrtf((dynamic ? 2 : 1)*n_conv + 1));
 }
 
 // mix a cross-pass message into a looped layer input: (1 - forget)*cur + gain*message, both gated on cur and message
