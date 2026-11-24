@@ -11242,6 +11242,12 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             if (!l.ffn_gate_inp->buffer || ggml_backend_buffer_is_host(l.ffn_gate_inp->buffer)) {
                 continue; // no device home for the cache
             }
+            if (!ggml_is_quantized(l.ffn_up_exps->type) || !ggml_is_quantized(l.ffn_gate_exps->type) || !ggml_is_quantized(l.ffn_down_exps->type)) {
+                // fork: unquantized experts cannot share the dummy slot (see the check below); the layer stays uncached instead of the whole cache going off
+                // (Hy4-flash IQ2-AH: only the MTP layer 42 keeps BF16 experts, 2026-11-24)
+                LLAMA_LOG_WARN("%s: layer %d not cached: %s experts are not quantized\n", __func__, (int) il, ggml_type_name(l.ffn_up_exps->type));
+                continue;
+            }
             groups[ggml_backend_buffer_get_type(l.ffn_gate_inp->buffer)].push_back({(int) il, &l});
         }
 
