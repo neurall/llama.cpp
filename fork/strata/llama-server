@@ -10,7 +10,7 @@
 # Every arm: one request at a time (--parallel 1, as every cell), 32k context (the longest cell prompt is 17.7k), no picture reader, no tuning run.
 . /p/bw/sh/env.sh
 case "$1" in
-    --version) echo "version: 1 (strata 0.2.15, engine 0.1.60)"; exit 0 ;;
+    --version) echo "version: 1 ($("$S" --version | cut -d"(" -f1 | xargs), engine $(ls -t /p/bw/sh/data/strata/components/engine | head -1 | cut -d- -f1))"; exit 0 ;;
     --help|-h) echo "usage: llama-server -m MODEL --port PORT (Strata stand-in, other flags are ignored)"; exit 0 ;;
 esac
 model= port=8080
@@ -23,16 +23,21 @@ arm=$(basename "$(dirname "$0")")
 IFS=, read -ra vis <<< "${CUDA_VISIBLE_DEVICES:-0,1}"; gpus=$(seq -s, 0 $((${#vis[@]} - 1)))   # CUDA_VISIBLE_DEVICES=0 = one card (the engine counts the visible cards from 0)
 args=(--yes --no-tui --model-path "$model" --gpu "$gpus" --context 32k --parallel 1 --vision off --tune skip --access local --port "$port" --no-api-key --data-dir /p/bw/sh/models)
 case "$arm" in
-    *-plain) args+=(--kv fp16 --drafting off --mtp off --set suffix-draft=0) ;;
-    *-full)  args+=(--kv fp16 --drafting off --mtp off --set suffix-draft=0 --set STRATA_ROUTE_TAIL_SKIP=0); export STRATA_ROUTE_TAIL_SKIP=0 ;;
+    *-plain) args+=(--kv fp16 --drafting off --mtp off) ;;
+    *-full)  args+=(--kv fp16 --drafting off --mtp off --set STRATA_ROUTE_TAIL_SKIP=0); export STRATA_ROUTE_TAIL_SKIP=0 ;;
 esac
+# prompt lookup off; the Inkling engine (strata-inkling) has no such option and stops at start on it
+[[ $arm == *-plain || $arm == *-full ]] && [[ $(basename "$model") != Inkling* ]] && args+=(--set suffix-draft=0)
 "$S" launch --stop >/dev/null 2>&1   # a server a killed run left behind
 if [[ $arm == *-nsys ]]; then
     # the engine under nsys (engine-nsys.sh beside this file): Strata's own server, started directly on the settings of the model's last launch with the engine
     # replaced by the wrapper. Not through `strata launch`: it checks every engine file against its manifest and puts a changed engine aside.
     last=$(grep -l -F "$model" "$XDG_STATE_HOME"/strata/launch/*-32k.json 2>/dev/null | head -1)
     [ -n "$last" ] || { echo "strata stand-in: no earlier launch of $model (run the -full arm once: its settings are used)" >&2; exit 2; }
-    T=$(dirname "$(dirname "$(readlink -f "$S")")"); here=$(dirname "$(readlink -f "$0")"); cfg=$(mktemp); ready=$(mktemp -u)
+    export STRATA_NSYS_EXE=$(grep -o '"exe": *"[^"]*"' "$last" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    T=$(dirname "$(dirname "$(readlink -f "$S")")")
+    c=$(grep -o '"cwd": *"[^"]*"' "$last" | head -1 | sed 's/.*"\([^"]*\)"$/\1/'); [ -f "$c/serve/server.py" ] && T=$c   # the launch's control component (Inkling: 0.1.66, the terminal's server cannot read its tokenizer)
+    here=$(dirname "$(readlink -f "$0")"); cfg=$(mktemp); ready=$(mktemp -u)
     "$T/python/bin/python3.12" -c 'import json, sys; d = json.load(open(sys.argv[1])); d.update(exe=sys.argv[3], port=int(sys.argv[4]), log=sys.argv[2] + ".engine.log"); json.dump(d, open(sys.argv[2], "w"))' "$last" "$cfg" "$here/engine-nsys.sh" "$port"
     echo "strata stand-in ($arm): server.py on the settings of $last, the engine under nsys"
     "$T/python/bin/python3.12" "$T/serve/server.py" --engine strata --config "$cfg" --port "$port" --no-api-key --gpu "$gpus" --ready-file "$ready" &

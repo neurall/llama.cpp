@@ -6,3 +6,5 @@ rg-glm,glm,2,ppl,2048,"--cpu-moe",--clean-state
 rg-mimo,mimo,2,ppl,2048,"--cpu-moe",--clean-state
 rg-q27-iq4nl,q27_iq4nl,4,ppl,2048,"",--clean-state --env CUDA_VISIBLE_DEVICES=1
 rg-qni4,qn_iq4xs,2,ppl,2048,"--cpu-moe",--clean-state
+rg-ink2m-ub512,ink2m,2,ppl,2048,"-ub 512 -b 512",--clean-state
+rg-ink2m,ink2m,2,ppl,2048,"",--clean-state

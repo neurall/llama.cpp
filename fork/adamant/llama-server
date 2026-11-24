@@ -5,6 +5,7 @@
 #   adamant        its defaults: MTP + suffix drafting, its KV default (fp16)
 #   adamant-plain  no drafting (--spec 0 --suffix-draft 0)
 # One request at a time, 32k context, no vision, like every cell.
+# Local patches in /p/bw/ext/adamant/serve: router.py serves the one model to requests without a model name; service.py request_timings takes ttft as the prompt time when the engine clock reads less (it read 0.1 s for 13786 tokens).
 A=/p/bw/ext/adamant
 case "$1" in
     --version) echo "version: 1 (adamant $(git -C $A rev-parse --short HEAD))"; exit 0 ;;

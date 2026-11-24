@@ -8,3 +8,27 @@ tb-ds-b8k-fake4,ds,1,pfbest1k,256,-b 8192 -ub 4096 --moe fake-oom=4,
 tb-ds-b8k-fake2,ds,1,pfbest1k,256,-b 8192 -ub 4096 --moe fake-oom=2,
 tb-mimo-b8k,mimo,1,pf12k1k,256,-b 8192 -ub 4096,
 tb-mimo-b8k-fake2,mimo,1,pf12k1k,256,-b 8192 -ub 4096 --moe fake-oom=2,
+tb-ink2m-paris,ink2m,1,paris,64,,
+tb-ink2m-ub4k,ink2m,1,pf2k,64,"-ub 4096 -b 4096",
+tb-ink2m-ub512,ink2m,1,pf2k,64,"-ub 512 -b 512",
+tb-ink2m-nsys,ink2m,1,pf2k,8,"-ub 4096 -b 4096",--wrap "nsys profile --trace=cuda --sample=none --cpuctxsw=none --cuda-graph-trace=node -o /home/o/.claude/jobs/44ecfe4e/tmp/ink_nsys --force-overwrite=true"
+tb-ink2m-auto,ink2m,4,pf2k,64,,
+tb-olmoe-vram,olmoei,4,pf2k,256,,
+tb-olmoe-cache,olmoei,4,pf2k,256,"--moe mode=cache",
+tb-ink2m-ts1,ink2m,4,pf2k,64,"-ts 1,0",
+tb-ink2m-12k,ink2m,2,pf12k1k,1024,,"--chat ""Explain in detail what this code does."""
+tb-ink2m-nsys2d,ink2m,1,pf12k1k,128,,"--chat ""Explain in detail what this code does."" --wrap ""nsys profile --trace=cuda,nvtx --sample=none --cpuctxsw=none --cuda-graph-trace=node -o /home/o/.claude/jobs/44ecfe4e/tmp/ink_2g_dec --force-overwrite=true"""
+tb-ink2m-nsys1d,ink2m,1,pf12k1k,128,,"--chat ""Explain in detail what this code does."" --wrap ""nsys profile --trace=cuda,nvtx --sample=none --cpuctxsw=none --cuda-graph-trace=node -o /home/o/.claude/jobs/44ecfe4e/tmp/ink_1g_dec --force-overwrite=true"""
+tb-qn-12k,qn_iq4xs,2,pf12k1k,1024,,"--chat ""Explain in detail what this code does."""
+tb-qn-nsys1d,qn_iq4xs,1,pf12k1k,128,,"--chat ""Explain in detail what this code does."" --wrap ""nsys profile --trace=cuda,nvtx --sample=none --cpuctxsw=none --cuda-graph-trace=node -o /home/o/.claude/jobs/44ecfe4e/tmp/qn_1g_dec --force-overwrite=true"""
+tb-qn-normlog,qn_iq4xs,1,pf12k1k,16,,"--chat ""Explain in detail what this code does."" --env GGML_CUDA_NORM_Q8_LOG=40"
+tb-qn-q8log,qn_iq4xs,1,pf12k1k,16,,"--chat ""Explain in detail what this code does."" --env GGML_CUDA_Q8_REUSE_LOG=1 --env GGML_CUDA_NORM_Q8_LOG=400"
+tb-ink2m-ewlog,ink2m,1,pf12k1k,16,,"--chat ""Explain in detail what this code does."" --env GGML_CUDA_EW_CHAIN_LOG=2"
+tb-ink2m-12k-noepi,ink2m,2,pf12k1k,1024,,"--chat ""Explain in detail what this code does."" --env GGML_CUDA_MM_EPI=0"
+tb-ink2m-nsys1d-noepi,ink2m,1,pf12k1k,128,,"--chat ""Explain in detail what this code does."" --wrap ""nsys profile --trace=cuda,nvtx --sample=none --cpuctxsw=none --cuda-graph-trace=node -o /home/o/.claude/jobs/44ecfe4e/tmp/ink_1g_dec_noepi --force-overwrite=true"" --env GGML_CUDA_MM_EPI=0"
+tb-ink2m-sdbg,ink2m,1,pf12k1k,16,,"--chat ""Explain in detail what this code does."" --env GGML_CUDA_STREAMS_DEBUG=1"
+tb-ink2m-sdbg-noepi,ink2m,1,pf12k1k,16,,"--chat ""Explain in detail what this code does."" --env GGML_CUDA_STREAMS_DEBUG=1 --env GGML_CUDA_MM_EPI=0"
+tb-qn-12k-noepi,qn_iq4xs,2,pf12k1k,1024,,"--chat ""Explain in detail what this code does."" --env GGML_CUDA_MM_EPI=0"
+tb-ink2m-12k-nomulti,ink2m,2,pf12k1k,1024,,"--chat ""Explain in detail what this code does."" --env GGML_CUDA_MM_MULTI=0"
+tb-qn-12k-nomulti,qn_iq4xs,2,pf12k1k,1024,,"--chat ""Explain in detail what this code does."" --env GGML_CUDA_MM_MULTI=0"
+tb-ink2m-12k-mwin40,ink2m,2,pf12k1k,1024,,"--chat ""Explain in detail what this code does."" --env GGML_CUDA_MM_MULTI_WIN=40"
