@@ -15,6 +15,8 @@ but mostly just from more efficient vram mgmt
 llama-server -m MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf
 ```
 
+**Support:** if this fork helps you, please support my open-source development (nothing fancy, just rent, food and hardware): [paypal.me/neuralll](https://paypal.me/neuralll)
+
 **Download:** the [latest release](https://github.com/neurall/llama.cpp/releases/latest) has one package per OS with CPU, CUDA, Vulkan and HIP backends (Linux `tar.gz`, Windows `zip`). NVIDIA cards also need the `cudart-` archive if CUDA 13 is not installed.
 
 ## Results
