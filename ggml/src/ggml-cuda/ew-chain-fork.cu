@@ -244,6 +244,30 @@ bool ggml_cuda_ew_after_fork(const ggml_cgraph * cgraph, int i_src, int i_from, 
             return false;
         }
     }
+    // outside operands must be ready when src is: a node produced after everything src reads would make the fused launch wait for it, and the
+    // stream plan keep it on the main chain (Inkling 2: the gate matvec beside attention took the MUL by the attention output, -1% decode)
+    const auto base_of = [](const ggml_tensor * t) { while (t->view_src) { t = t->view_src; } return t; };
+    const auto index_of = [&](const ggml_tensor * t, int below) {
+        for (int k = below; k >= 0; --k) { if (cgraph->nodes[k] == t) { return k; } }
+        return -1;   // a leaf (weights, inputs)
+    };
+    int i_dep = -1;   // the latest node src reads
+    for (int s = 0; s < GGML_MAX_SRC; ++s) {
+        if (src->src[s]) { i_dep = std::max(i_dep, index_of(base_of(src->src[s]), i_src - 1)); }
+    }
+    for (int k = 0; k < m; ++k) {
+        for (int s = 0; s < GGML_MAX_SRC; ++s) {
+            const ggml_tensor * o = cgraph->nodes[ix[k]]->src[s];
+            if (!o) { continue; }
+            bool inside = false;
+            for (int r = 0; r < m && !inside; ++r) { inside = o == cgraph->nodes[ix[r]]; }
+            for (int q = 0; q < n_v && !inside; ++q) { inside = o == cgraph->nodes[vs[q]]; }
+            if (inside || base_of(o) == src) { continue; }
+            if (index_of(base_of(o), end) > i_dep) {
+                return false;
+            }
+        }
+    }
     // operands over src's memory: only src's elements in the last node's own order (contiguous, same shape as the last node)
     const char * s0 = (const char *) src->data, * s1 = s0 + ggml_nbytes(src);
     int n_src_opd = 0;
