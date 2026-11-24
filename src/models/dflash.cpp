@@ -555,6 +555,11 @@ ggml_tensor * llama_model_dflash::graph_base::build_layers(ggml_tensor * inp_tok
 }
 
 ggml_tensor * llama_model_dflash::graph_base::build_logits(ggml_tensor * cur) {
+    // fork: the lm head runs on the output rows only. A draft block outputs every row (same graph as before); the worst-case reserve (n_ubatch
+    // tokens, n_outputs_max outputs) sized vocab-wide rows for all of them: Inkling 2 Mini DSpark, ubatch 256, 394 MiB outside the pool at load
+    if (cur->ne[1] > n_outputs) {   // DSpark selects its rows (and the head's inputs) before this
+        cur = ggml_get_rows(ctx0, cur, build_inp_out_ids());
+    }
     const auto [output, output_s] = get_lm_head(*this, model);
     cur = build_lora_mm(output, cur, output_s);
 

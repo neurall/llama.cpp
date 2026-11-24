@@ -486,6 +486,18 @@ llama_model_dflash::graph_dspark::graph_dspark(const llm_graph_params & params) 
 
     ggml_tensor * cur = build_layers(inp_tokens);
 
+    // fork: only the output rows reach the lm head and the Markov head (build_logits): a draft block outputs every row, the worst-case reserve
+    // (n_ubatch tokens) does not; the head reads tokens, hidden and rnn state per row, so they are selected with the same ids
+    if (n_outputs < n_tokens) {
+        ggml_tensor * ids = build_inp_out_ids();
+        cur         = ggml_get_rows(ctx0, cur, ids);
+        res->t_embd = cur;
+        inp_tokens  = ggml_reshape_1d(ctx0, ggml_get_rows(ctx0, ggml_reshape_2d(ctx0, inp_tokens, 1, n_tokens), ids), n_outputs);
+        if (rnn_state) {
+            rnn_state = ggml_get_rows(ctx0, rnn_state, ids);
+        }
+    }
+
     build_logits(cur);
 
     // bias the draft logits with the Markov head
