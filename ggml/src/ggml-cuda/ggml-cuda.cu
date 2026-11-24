@@ -10247,7 +10247,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                         if (!ggml_is_quantized(a->type)) {
                             return false;
                         }
-                    } else if (!(ggml_cuda_should_use_mmvf(a->type, cc, ws, a->ne, a->nb, b->ne[1]) ||
+                    } else if (!(ggml_cuda_should_use_mmvf(a, cc, ws, b->ne[1]) ||
                                  ggml_cuda_mul_mat_vec_f_chunked_ok(a, b, op, cc, ws) ||
                                  ggml_cuda_should_use_mmf(a->type, cc, ws, a->ne, a->nb, b->ne[1], false) ||
                                  ggml_cuda_should_use_mmvq(a->type, cc, b->ne[1]) ||
