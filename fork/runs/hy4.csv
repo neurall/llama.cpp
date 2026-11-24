@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+hy4-tet,hy4,2,tetrisc,1024,,
+hy4-12k,hy4,2,pf12k1k,1024,,
