@@ -342,7 +342,10 @@ struct server_batch {
 // refines by 1 between the known-slower bounds. Each comparison alternates the two depths in blocks
 // of 8 steps (text and cache warm-up affect both alike) for `probe` tokens each. Re-checks every
 // `recheck` tokens. LLAMA_SPEC_DEPTH=N pins the depth (0 = never draft).
+std::pair<std::string, std::string> common_spec_state_key(const common_params & params);   // common/common.cpp (no shared header)
+
 struct spec_depth_tuner {
+    static inline std::pair<std::string, std::string> key;   // fork: where the settled depth is stored (common_spec_state_key), read back at the next start
     static constexpr int probe   = 128;
     static constexpr int recheck = 4096;
     static inline int start = 1;  // set from common_params_speculative_draft::n_start
@@ -397,6 +400,9 @@ struct spec_depth_tuner {
             phase = DONE;
             since = 0;
             LOG_INF("spec depth tuner: draft depth %d\n", cur);
+            if (!key.first.empty()) {
+                llama_state_set(key.first.c_str(), key.second.c_str(), std::to_string(cur).c_str());
+            }
         }
     }
 
@@ -1597,6 +1603,7 @@ private:
 
         llama_init = common_init_from_params(params_base);
         spec_depth_tuner::start = params_base.speculative.draft.n_start;
+        spec_depth_tuner::key   = common_spec_state_key(params_base);
 
         model_tgt = llama_init->model();
         ctx_tgt   = llama_init->context();

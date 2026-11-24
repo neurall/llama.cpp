@@ -1465,6 +1465,22 @@ static size_t common_swap_out_bytes() {
 
 // speculative defaults from model size vs free VRAM: the tuner's starting depth and, unless set,
 // the max draft depth (recurrent-state rollback buffers are sized by it, so it costs VRAM)
+// fork: where the draft depth the server's tuner settled on is stored: [spec <target file> + <draft file>] depth.<GPU names> = <depth>
+// (one key per GPU set: the best depth depends on what runs on the CPU). Empty section: nothing to store (no draft model file).
+std::pair<std::string, std::string> common_spec_state_key(const common_params & params) {
+    auto base = [](const std::string & p) { const size_t sl = p.find_last_of("/\\"); return sl == std::string::npos ? p : p.substr(sl + 1); };
+    const std::string dft = params.speculative.has_dft() ? base(params.speculative.draft.mparams.path) : std::string("mtp");
+    std::string gpus;
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        if (ggml_backend_dev_type(d) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+        if (!params.devices.empty() && std::find(params.devices.begin(), params.devices.end(), d) == params.devices.end()) { continue; }
+        gpus += (gpus.empty() ? "" : "+") + std::string(ggml_backend_dev_description(d));
+    }
+    for (char & c : gpus) { if (c == ' ' || c == '=') { c = '_'; } }
+    return { "spec " + base(params.model.path) + " + " + dft, "depth." + (gpus.empty() ? std::string("cpu") : gpus) };
+}
+
 void common_spec_auto(common_params & params) {
     auto & dft = params.speculative.draft;
     if (std::none_of(params.speculative.types.begin(), params.speculative.types.end(),
@@ -1479,6 +1495,17 @@ void common_spec_auto(common_params & params) {
     dft.n_start = ratio <= 1 ? 3 : ratio <= 2 ? 2 : 0;
     if (!dft.n_max_user) {
         dft.n_max = ratio <= 1 ? 5 : 2; // bigger than VRAM: 2 measured best (Qwen); --spec-draft-n-max raises it
+    }
+    {   // fork: a depth the server's tuner measured on these GPUs before is the start (and a reason to load the draft), not the size guess
+        const auto key = common_spec_state_key(params);
+        char b[32];
+        if (llama_state_get(key.first.c_str(), key.second.c_str(), b, sizeof b) && atoi(b) >= 0) {
+            dft.n_start = atoi(b);
+            if (!dft.n_max_user) { dft.n_max = std::max(dft.n_max, dft.n_start + 1); }   // room for the tuner to look one step up
+            LOG_INF("%s: model %.1fx free VRAM: draft depth starts at %d (measured before, [%s] %s), max %d\n", __func__, ratio, dft.n_start,
+                    key.first.c_str(), key.second.c_str(), dft.n_max);
+            return;
+        }
     }
     if (dft.n_start == 0 && !dft.n_max_user && params.speculative.has_dft()) {
         // measured (GLM-5.3-Flash, 2.3x VRAM, separate -md draft with MoE experts): the draft's VRAM
