@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -552,6 +553,19 @@ static inline bool measured_ab_pick(bool have_a, double pa, double ga, bool have
     if (!have_a) { return true; }
     if (!have_b) { return false; }
     return n_p * pa + n_g * ga <= n_p * pb + n_g * gb;
+}
+
+// Prompt pass hill-climb (llama_moe_ubadapt_next_fork): tps = measured prompt tokens/s per pass size, base = the size the climb stands on (updated here).
+// A measured size replaces the base only when > 5% faster than it. An untried neighbour is tried only when this call can measure it: a call counts for a
+// size only at 2+ of its passes. Qwen3.6 split 2026-11-24: calls of 6912 tokens never measured 4096, so 4096 stayed "untried" and ran every call
+// (1458-1588 i/s against 2048's 1597-1617). Returns the size this call runs.
+static inline uint32_t ub_climb_step(const std::map<uint32_t, double> & tps, uint32_t & base, uint32_t n_tokens, uint32_t ceil, bool more) {
+    double bt = tps.count(base) ? tps.at(base) : 0.0;
+    if (bt <= 0.0) { return base; }   // the base is measured first
+    for (const auto & kv : tps) { if (kv.first <= ceil && kv.second > bt * 1.05) { base = kv.first; bt = kv.second; } }
+    if (base * 2 <= ceil && n_tokens >= 4 * base && !tps.count(base * 2)) { return base * 2; }
+    if (more && base / 2 >= 512 && !tps.count(base / 2)) { return base / 2; }
+    return base;
 }
 
 static inline bool place_one_card_pick(bool have_one, double p1, double g1, bool have_split, double p2, double g2, double n_p, double n_g) {

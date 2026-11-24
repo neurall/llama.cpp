@@ -1,5 +1,6 @@
 #include "llama-moestate-fork.h"
 #include "llama-moestate-route-fork.h"
+#include "llama-estimate-fork.h"
 
 #include "llama-impl.h"
 #include "llama-model.h"
@@ -528,7 +529,7 @@ static unsigned long long g_pp_calls = 0;
 static uint32_t g_pp_tokens = 0, g_pp_ub = 0, g_ub_ceil = 0;
 static double g_pp_ms = 0;
 static std::map<uint32_t, double> g_ub_tps;   // EMA of prompt tokens/s per pass size
-static uint32_t g_ub_cur = 0, g_ub_calls_since = 0;
+static uint32_t g_ub_cur = 0, g_ub_calls_since = 0, g_ub_base = 0;   // g_ub_base: the size the hill-climb stands on (ub_climb_step)
 
 static void tok_window_note(double ms);
 std::string llama_moe_cache_map_fork();   // src/llama-moecache-fork.cpp: the pools' live map (MAP records: every prompt pass, every 10 decoded tokens)
@@ -928,16 +929,10 @@ uint32_t llama_moe_ubadapt_next_fork(uint32_t n_tokens, uint32_t ceil) {
     std::lock_guard<std::mutex> lk(g_tok_mu);
     g_ub_ceil = ceil;
     if (!on || ceil <= 512 || n_tokens < 1024) { g_ub_cur = 0; return ceil; }   // a short prompt is one pass anyway; fewer than 2 passes of the start size measure nothing
-    if (g_ub_cur == 0 || g_ub_cur > ceil) { g_ub_cur = std::min<uint32_t>(2048, ceil); }
-    if (++g_ub_calls_since >= 16) { g_ub_calls_since = 0; const double keep = g_ub_tps.count(g_ub_cur) ? g_ub_tps[g_ub_cur] : 0; g_ub_tps.clear(); if (keep > 0) { g_ub_tps[g_ub_cur] = keep; } }
-    // best known size, a neighbour must beat the current one by 5%
-    uint32_t best = g_ub_cur; double bt = g_ub_tps.count(best) ? g_ub_tps[best] : 0;
-    for (auto & kv : g_ub_tps) { if (kv.second > bt * 1.05) { best = kv.first; bt = kv.second; } }
-    uint32_t next = best;
-    if (g_ub_tps.count(best)) {   // best measured: try an untried neighbour
-        if (best * 2 <= ceil && !g_ub_tps.count(best * 2)) { next = best * 2; }
-        else if (more && best / 2 >= 512 && !g_ub_tps.count(best / 2)) { next = best / 2; }
-    }
+    if (g_ub_base == 0 || g_ub_base > ceil) { g_ub_base = std::min<uint32_t>(2048, ceil); }
+    if (g_ub_cur == 0 || g_ub_cur > ceil) { g_ub_cur = g_ub_base; }
+    if (++g_ub_calls_since >= 16) { g_ub_calls_since = 0; const double keep = g_ub_tps.count(g_ub_base) ? g_ub_tps[g_ub_base] : 0; g_ub_tps.clear(); if (keep > 0) { g_ub_tps[g_ub_base] = keep; } }
+    const uint32_t next = ub_climb_step(g_ub_tps, g_ub_base, n_tokens, ceil, more);
     if (next != g_ub_cur) {
         char v[16], w[160];
         snprintf(v, sizeof v, "%u", next);

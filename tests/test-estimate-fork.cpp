@@ -528,6 +528,20 @@ int main() {
         if (!place_one_card_pick(true, 0.20, 10.0, true, 0.10, 12.0, 1000, 4096)) { printf("FAIL place: long answers should pick the faster decode\n"); g_fail++; }
         if (place_one_card_pick(true, 0.20, 10.0, true, 0.10, 12.0, 60000, 16)) { printf("FAIL place: long prompts should pick the faster prompt\n"); g_fail++; }
     }
+    {   // prompt pass hill-climb
+        uint32_t b = 2048;
+        if (ub_climb_step({}, b, 13744, 4096, false) != 2048) { printf("FAIL ub: the base is measured first\n"); g_fail++; }
+        b = 2048;
+        if (ub_climb_step({ { 2048, 1859.0 } }, b, 6912, 4096, false) != 2048) { printf("FAIL ub: 6912-token calls cannot measure 4096, must not try it\n"); g_fail++; }
+        b = 2048;
+        if (ub_climb_step({ { 2048, 1859.0 } }, b, 13744, 4096, false) != 4096) { printf("FAIL ub: a call of 2+ passes of 4096 tries it\n"); g_fail++; }
+        b = 2048;
+        if (ub_climb_step({ { 2048, 1859.0 }, { 4096, 1750.0 } }, b, 13744, 4096, false) != 2048 || b != 2048) { printf("FAIL ub: slower trial must not win\n"); g_fail++; }
+        b = 2048;
+        if (ub_climb_step({ { 2048, 1859.0 }, { 4096, 1900.0 } }, b, 13744, 4096, false) != 2048) { printf("FAIL ub: 2%% faster is noise, base stays\n"); g_fail++; }
+        b = 2048;
+        if (ub_climb_step({ { 2048, 1000.0 }, { 4096, 1200.0 } }, b, 20000, 8192, false) != 8192 || b != 4096) { printf("FAIL ub: faster trial becomes base, climb goes on\n"); g_fail++; }
+    }
     {   // decode fusions (EW_CHAIN, MM_MULTI, NORM_Q8) on or off, per placement: Qwen3.6 layer split two 3090s 100 W 12k/512 2026-11-24:
         // on 1555 i/s 33.3 o/s, off 1599 i/s 35.2 o/s (fewer kernels, no faster, and they lose the side-stream overlap)
         if (measured_ab_pick(true, 1000.0 / 1555, 1000.0 / 33.3, true, 1000.0 / 1599, 1000.0 / 35.2, 13744, 512)) { printf("FAIL fuse: Qwen3.6 split should turn the fusions off\n"); g_fail++; }
