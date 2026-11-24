@@ -1483,7 +1483,9 @@ std::pair<std::string, std::string> common_spec_state_key(const common_params & 
 
 // fork: one card or the layer split for a model that fits one card, measured (place_one_card_pick): [place <model file>] <GPU names>.one / .split =
 // "<prompt ms/token> <answer ms/token> <prompt tokens> <answer tokens>" of the last request long enough to count. Set at placement, written by the server.
-static std::string g_place_sec, g_place_key;
+// Each placement has two arms: the decode fusions on (key as above) and off (".nofuse": GGML_CUDA_EW_CHAIN, MM_MULTI, NORM_Q8 = 0). On Qwen3.6's layer split
+// they cost 5% decode (fewer kernels, none faster, the side-stream overlap lost); on one card they change nothing; set by hand, they are not tuned (".user").
+static std::string g_place_sec, g_place_key, g_place_arm;
 static bool g_place_one = false;
 
 static bool place_read(const std::string & key, double & p, double & g, double & np, double & ng) {
@@ -1494,7 +1496,7 @@ static bool place_read(const std::string & key, double & p, double & g, double &
 // called after each request: a prompt of 1024+ tokens updates the prompt time, an answer of 128+ tokens the answer time (short ones are noise)
 void common_place_record(double p_ms, int n_p, double g_ms, int n_g) {
     if (g_place_sec.empty()) { return; }
-    const std::string key = g_place_key + (g_place_one ? ".one" : ".split");
+    const std::string key = g_place_key + (g_place_one ? ".one" : ".split") + g_place_arm;
     double p = -1, g = -1, np = 0, ng = 0;
     place_read(key, p, g, np, ng);
     if (n_p >= 1024 && p_ms > 0) { p = p_ms; np = n_p; }
@@ -2282,8 +2284,15 @@ static void common_moe_cache_auto_impl(common_params & params) {
                     for (char & c : gpus) { if (c == ' ' || c == '=') { c = '_'; } }
                     g_place_sec = "place " + base(params.model.path);
                     g_place_key = gpus;
+                    auto best_arm = [&](const std::string & k, double & p, double & g, double & n_p, double & n_g) {   // the faster fusion arm of a placement
+                        double pa = 0, ga = 0, npa = 0, nga = 0, pb = 0, gb = 0, npb = 0, ngb = 0;
+                        const bool ha = place_read(k, pa, ga, npa, nga), hb = place_read(k + ".nofuse", pb, gb, npb, ngb);
+                        const bool a = !hb || (ha && npa * pa + nga * ga <= npa * pb + nga * gb);
+                        if (a) { p = pa; g = ga; n_p = npa; n_g = nga; return ha; }
+                        p = pb; g = gb; n_p = npb; n_g = ngb; return true;
+                    };
                     double p1 = 0, g1 = 0, n1p = 0, n1g = 0, p2 = 0, g2 = 0, n2p = 0, n2g = 0;
-                    const bool h1 = place_read(gpus + ".one", p1, g1, n1p, n1g), h2 = place_read(gpus + ".split", p2, g2, n2p, n2g);
+                    const bool h1 = best_arm(gpus + ".one", p1, g1, n1p, n1g), h2 = best_arm(gpus + ".split", p2, g2, n2p, n2g);
                     const double np = h1 && h2 ? (n1p + n2p) / 2 : 0, ng = h1 && h2 ? (n1g + n2g) / 2 : 0;
                     try_one = place_one_card_pick(h1, p1, g1, h2, p2, g2, np, ng);
                     g_place_one = try_one;
@@ -2307,6 +2316,26 @@ static void common_moe_cache_auto_impl(common_params & params) {
                         params.devices.clear();
                         g_place_one = false;
                     }
+                }
+            }
+            if (!g_place_sec.empty()) {   // the decode fusions on or off for the placement taken, measured (measured_ab_pick)
+                const char * fv[3] = { "GGML_CUDA_EW_CHAIN", "GGML_CUDA_MM_MULTI", "GGML_CUDA_NORM_Q8" };
+                bool user = false;
+                for (const char * v : fv) { user = user || getenv(v) != nullptr; }
+                if (user) {
+                    g_place_arm = ".user";
+                } else {
+                    const std::string k = g_place_key + (g_place_one ? ".one" : ".split");
+                    double pa = 0, ga = 0, npa = 0, nga = 0, pb = 0, gb = 0, npb = 0, ngb = 0;
+                    const bool ha = place_read(k, pa, ga, npa, nga), hb = place_read(k + ".nofuse", pb, gb, npb, ngb);
+                    const double np = ha && hb ? (npa + npb) / 2 : 0, ng = ha && hb ? (nga + ngb) / 2 : 0;
+                    const bool fuse = measured_ab_pick(ha, pa, ga, hb, pb, gb, np, ng);
+                    g_place_arm = fuse ? "" : ".nofuse";
+                    if (!fuse) { for (const char * v : fv) { common_set_env(v, "0"); } }
+                    decide_fork("fusions", fuse ? "on" : "off", !ha ? std::string("decode fusions on: not measured yet on this placement, tried first")
+                        : !hb ? string_format("fusions on measured (%.0f i/s, %.1f o/s), off not yet: tried once", 1000 / pa, 1000 / ga)
+                        : string_format("for %.0f prompt + %.0f answer tokens: on %.1f s (%.0f i/s, %.1f o/s), off %.1f s (%.0f i/s, %.1f o/s)", np, ng,
+                                        (np * pa + ng * ga) / 1000, 1000 / pa, 1000 / ga, (np * pb + ng * gb) / 1000, 1000 / pb, 1000 / gb));
                 }
             }
             if (!ub) { ub = common_fits_ubatch(params, in_ram); }

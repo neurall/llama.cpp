@@ -528,6 +528,11 @@ int main() {
         if (!place_one_card_pick(true, 0.20, 10.0, true, 0.10, 12.0, 1000, 4096)) { printf("FAIL place: long answers should pick the faster decode\n"); g_fail++; }
         if (place_one_card_pick(true, 0.20, 10.0, true, 0.10, 12.0, 60000, 16)) { printf("FAIL place: long prompts should pick the faster prompt\n"); g_fail++; }
     }
+    {   // decode fusions (EW_CHAIN, MM_MULTI, NORM_Q8) on or off, per placement: Qwen3.6 layer split two 3090s 100 W 12k/512 2026-11-24:
+        // on 1555 i/s 33.3 o/s, off 1599 i/s 35.2 o/s (fewer kernels, no faster, and they lose the side-stream overlap)
+        if (measured_ab_pick(true, 1000.0 / 1555, 1000.0 / 33.3, true, 1000.0 / 1599, 1000.0 / 35.2, 13744, 512)) { printf("FAIL fuse: Qwen3.6 split should turn the fusions off\n"); g_fail++; }
+        if (!measured_ab_pick(true, 1000.0 / 1599, 1000.0 / 35.2, true, 1000.0 / 1555, 1000.0 / 33.3, 13744, 512)) { printf("FAIL fuse: the faster arm A should stay\n"); g_fail++; }
+    }
 
     printf(g_fail ? "%d failed\n" : "estimators: all passed\n", g_fail);
     return g_fail ? 1 : 0;
