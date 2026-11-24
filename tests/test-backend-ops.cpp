@@ -4210,12 +4210,13 @@ struct test_depth_mix : public test_case {
 // fork: one-token short conv step (concat of past and the new column, state store, ssm_conv), as Inkling 2 convolve builds it
 struct test_conv_step : public test_case {
     const int64_t K, C, S;   // conv width, channels, seqs
+    const int tail;          // 0: conv alone; 1: residual add + scale after it; 2: one-token dynamic taps, residual, scale (Inkling 2 frame)
 
     std::string op_desc(ggml_tensor * t) override { GGML_UNUSED(t); return "CONV_STEP"; }
     bool run_whole_graph() override { return true; }
-    std::string vars() override { return VARS_TO_STR3(K, C, S); }
+    std::string vars() override { return VARS_TO_STR4(K, C, S, tail); }
 
-    test_conv_step(int64_t K = 4, int64_t C = 256, int64_t S = 1) : K(K), C(C), S(S) {}
+    test_conv_step(int64_t K = 4, int64_t C = 256, int64_t S = 1, int tail = 0) : K(K), C(C), S(S), tail(tail) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         ggml_tensor * past = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, K - 1, C, S);
@@ -4226,7 +4227,22 @@ struct test_conv_step : public test_case {
         ggml_tensor * last = ggml_view_3d(ctx, x, K - 1, C, S, x->nb[1], x->nb[2], ggml_row_size(x->type, 1));
         ggml_tensor * st = ggml_cpy(ctx, last, cell);
         ggml_tensor * conv = ggml_ssm_conv(ctx, x, w);
-        ggml_tensor * out = ggml_concat(ctx, ggml_reshape_2d(ctx, st, (K - 1)*C, S), ggml_reshape_2d(ctx, conv, C, S), 0);
+        ggml_tensor * res = ggml_reshape_2d(ctx, conv, C, S);
+        if (tail == 1) {
+            res = ggml_scale(ctx, ggml_add(ctx, cur, res), 0.3f);
+        } else if (tail == 2) {
+            const int64_t H = 4, cph = C/H;
+            ggml_tensor * dyn = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, K, H, S);
+            auto frame = [&](ggml_tensor * t) { return ggml_reshape_4d(ctx, t, 1, cph, H, S); };
+            ggml_tensor * acc = frame(res);
+            for (int64_t lag = 0; lag < K; ++lag) {
+                ggml_tensor * tap    = ggml_view_4d(ctx, dyn, 1, 1, H, S, dyn->nb[1], dyn->nb[1], dyn->nb[2], lag*dyn->nb[0]);
+                ggml_tensor * window = ggml_view_4d(ctx, x, 1, cph, H, S, x->nb[1], cph*x->nb[1], x->nb[2], (K - 1 - lag)*x->nb[0]);
+                acc = ggml_add(ctx, acc, ggml_mul(ctx, window, tap));
+            }
+            res = ggml_reshape_2d(ctx, ggml_scale(ctx, ggml_add(ctx, frame(cur), acc), 0.3f), C, S);
+        }
+        ggml_tensor * out = ggml_concat(ctx, ggml_reshape_2d(ctx, st, (K - 1)*C, S), res, 0);
         ggml_set_name(out, "out");
         return out;
     }
@@ -12520,6 +12536,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_conv_step(4, 2048, S));
     }
     test_cases.emplace_back(new test_conv_step(3, 100, 2));
+    for (int tail : {1, 2}) {
+        for (int64_t S : {1, 3}) {
+            test_cases.emplace_back(new test_conv_step(4, 2048, S, tail));
+        }
+    }
     for (int64_t T : {1, 3}) {
         test_cases.emplace_back(new test_loop_ctrl(2304, 64, T));
     }

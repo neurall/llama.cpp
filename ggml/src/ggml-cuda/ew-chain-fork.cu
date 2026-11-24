@@ -20,44 +20,9 @@
 
 namespace {
 
-constexpr int EWC_MAX_OPD  = 8;
-constexpr int EWC_MAX_STEP = 16;
-
-
-struct ewc_opd  { const char * p; int ne[4]; int64_t nb[4]; };
-struct ewc_step { uint8_t op; int8_t a, b; float p0, p1; };   // a, b: >= 0 the value of step a, < 0 operand -1 - a
-struct ewc_prog {
-    ewc_opd  opd[EWC_MAX_OPD];
-    ewc_step st[EWC_MAX_STEP];
-    int      n_st;
-    int      ne[4];
-    int64_t  nb[4];
-    char *   dst;
-};
-
-static __device__ __forceinline__ float ewc_get(const ewc_prog & P, const float * r, int ref, const int i[4]) {
-    if (ref >= 0) { return r[ref]; }
-    const ewc_opd & o = P.opd[-1 - ref];
-    return *(const float *) (o.p + (i[0] % o.ne[0]) * o.nb[0] + (i[1] % o.ne[1]) * o.nb[1] + (i[2] % o.ne[2]) * o.nb[2] + (i[3] % o.ne[3]) * o.nb[3]);
-}
-
 static __global__ void ewc_kernel(const __grid_constant__ ewc_prog P, const int64_t n) {
     for (int64_t e = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; e < n; e += (int64_t) gridDim.x * blockDim.x) {
-        int i[4];
-        int64_t t = e;
-        i[0] = (int) (t % P.ne[0]); t /= P.ne[0];
-        i[1] = (int) (t % P.ne[1]); t /= P.ne[1];
-        i[2] = (int) (t % P.ne[2]); t /= P.ne[2];
-        i[3] = (int) t;
-        float r[EWC_MAX_STEP];
-#pragma unroll 1
-        for (int s = 0; s < P.n_st; ++s) {
-            const ewc_step & S = P.st[s];
-            const float a = S.op == EWC_FILL ? 0.0f : ewc_get(P, r, S.a, i);
-            const float b = ewc_binary(S.op) ? ewc_get(P, r, S.b, i) : 0.0f;
-            r[s] = ewc_eval(S.op, a, b, S.p0, S.p1);
-        }
-        *(float *) (P.dst + i[0] * P.nb[0] + i[1] * P.nb[1] + i[2] * P.nb[2] + i[3] * P.nb[3]) = r[P.n_st - 1];
+        ewc_run_at(P, e, 0.0f);
     }
 }
 
@@ -237,63 +202,104 @@ int ggml_cuda_try_fuse_ew_chain_fork(ggml_backend_cuda_context & ctx, const ggml
     return 0;
 }
 
-// fork: the chain after matvec node i as its epilogue (ggml_cuda_ew_epi, run by mmvq as it writes each row). The run that starts at the next non-view
-// node must read the matvec only as an operand of its own nodes, walk the matvec's rows one to one (last node [rows,1,1,1], contiguous), and fit the
-// epilogue's step and operand counts. A run of one node counts here (the matvec launch is the kernel saved). end: the run's last node index.
-bool ggml_cuda_ew_epi_build_fork(const ggml_cgraph * cgraph, int i, ggml_cuda_ew_epi & E, int & end) {
-    const ggml_tensor * mm = cgraph->nodes[i];
-    const int64_t R = mm->ne[0];
-    if (mm->type != GGML_TYPE_F32 || mm->ne[1] != 1 || mm->ne[2] != 1 || mm->ne[3] != 1 || mm->nb[0] != sizeof(float) || (mm->flags & GGML_TENSOR_FLAG_OUTPUT) || R > INT32_MAX) {
+bool ggml_cuda_ew_after_fork(const ggml_cgraph * cgraph, int i_src, int i_from, ewc_prog & P, int & end) {
+    static const bool log = getenv("GGML_CUDA_EW_CHAIN_LOG") && atoi(getenv("GGML_CUDA_EW_CHAIN_LOG")) != 0;
+    const ggml_tensor * src = cgraph->nodes[i_src];
+    if (src->type != GGML_TYPE_F32 || !ggml_is_contiguous(src) || (src->flags & GGML_TENSOR_FLAG_OUTPUT) || ggml_nelements(src) > INT32_MAX) {
         return false;
     }
-    int j = i + 1;
+    int j = i_from + 1;
     while (j < cgraph->n_nodes && ewc_is_view(cgraph->nodes[j])) { ++j; }
-    if (j >= cgraph->n_nodes) {
-        return false;
-    }
-    ewc_prog P;
     int ix[EWC_MAX_STEP];
     int m = 0;
-    if (!ewc_build(cgraph, j, P, ix, m, end, 1) || m > ggml_cuda_ew_epi::MAX_ST) {
+    if (j >= cgraph->n_nodes || !ewc_build(cgraph, j, P, ix, m, end, 1)) {
         return false;
     }
     const ggml_tensor * last = cgraph->nodes[end];
-    if (last->ne[0] != R || ggml_nelements(last) != R || last->nb[0] != sizeof(float)) {
+    if (ggml_nelements(last) != ggml_nelements(src) || !ggml_is_contiguous(last)) {
         return false;
     }
-    // every read of the matvec is an operand of a run node (it is never written)
-    int uses = 0;
-    for (int k = 0; k < m; ++k) {
-        for (int s = 0; s < GGML_MAX_SRC; ++s) { uses += cgraph->nodes[ix[k]]->src[s] == mm; }
+    // src and the view nodes of it up to the run's end: every read of them is by one another or by run nodes
+    constexpr int MAX_V = 16;
+    int vs[MAX_V];
+    int n_v = 0;
+    vs[n_v++] = i_src;
+    for (int k = i_src + 1; k <= end && n_v < MAX_V; ++k) {
+        const ggml_tensor * t = cgraph->nodes[k];
+        if (!ewc_is_view(t)) { continue; }
+        for (int q = 0; q < n_v; ++q) {
+            if (t->view_src == cgraph->nodes[vs[q]] || t->src[0] == cgraph->nodes[vs[q]]) { vs[n_v++] = k; break; }
+        }
     }
-    if (uses == 0 || uses != ggml_node_get_use_count(cgraph, i)) {
+    for (int q = 0; q < n_v; ++q) {
+        const ggml_tensor * t = cgraph->nodes[vs[q]];
+        int uses = 0;
+        for (int k = 0; k < m; ++k) {
+            for (int s = 0; s < GGML_MAX_SRC; ++s) { uses += cgraph->nodes[ix[k]]->src[s] == t; }
+        }
+        for (int r = 0; r < n_v; ++r) {
+            for (int s = 0; s < GGML_MAX_SRC; ++s) { uses += cgraph->nodes[vs[r]]->src[s] == t; }
+        }
+        if (uses != ggml_node_get_use_count(cgraph, vs[q]) || (t->flags & GGML_TENSOR_FLAG_OUTPUT)) {
+            return false;
+        }
+    }
+    // operands over src's memory: only src's elements in the last node's own order (contiguous, same shape as the last node)
+    const char * s0 = (const char *) src->data, * s1 = s0 + ggml_nbytes(src);
+    int n_src_opd = 0;
+    for (int o = 0; o < EWC_MAX_OPD && P.opd[o].p; ++o) {
+        ewc_opd & d = P.opd[o];
+        int64_t span = sizeof(float);
+        for (int k = 0; k < 4; ++k) { span += (int64_t) (d.ne[k] - 1) * d.nb[k]; }
+        if (!(d.p < s1 && s0 < d.p + span)) { continue; }
+        bool same = d.p == s0 && d.nb[0] == (int64_t) sizeof(float);
+        for (int k = 0; k < 4 && same; ++k) {
+            same = d.ne[k] == last->ne[k] && (k == 0 || d.nb[k] == d.nb[k - 1] * d.ne[k - 1]);
+        }
+        if (!same) {
+            return false;
+        }
+        d.p = nullptr;
+        ++n_src_opd;
+    }
+    if (n_src_opd == 0) {
+        return false;
+    }
+    if (log) {
+        static std::set<std::string> said;
+        std::string l = std::string(ggml_op_desc(src)) + " +";
+        for (int k = 0; k < m; ++k) { l += std::string(" ") + ggml_op_desc(cgraph->nodes[ix[k]]); }
+        l += " [" + std::to_string(last->ne[0]) + "," + std::to_string(last->ne[1]) + "," + std::to_string(last->ne[2]) + "," + std::to_string(last->ne[3]) + "]";
+        if (said.insert(l).second) { GGML_LOG_WARN("ew after: %s\n", l.c_str()); }
+    }
+    return true;
+}
+
+// fork: the chain after matvec node i as its epilogue (ggml_cuda_ew_epi, run by mmvq as it writes each row): ggml_cuda_ew_after_fork's run whose last
+// node is the matvec's rows [rows,1,1,1] and fits the epilogue's step and operand counts. A run of one node counts here (the launch is the kernel saved).
+bool ggml_cuda_ew_epi_build_fork(const ggml_cgraph * cgraph, int i, ggml_cuda_ew_epi & E, int & end) {
+    const ggml_tensor * mm = cgraph->nodes[i];
+    const int64_t R = mm->ne[0];
+    if (ggml_nelements(mm) != R) {
+        return false;
+    }
+    ewc_prog P;
+    if (!ggml_cuda_ew_after_fork(cgraph, i, i, P, end) || P.n_st > ggml_cuda_ew_epi::MAX_ST || P.ne[0] != R) {
         return false;
     }
     E = ggml_cuda_ew_epi{};
-    int mm_o = -1;
-    for (int o = 0; o < EWC_MAX_OPD && P.opd[o].p; ++o) {
-        const ewc_opd & d = P.opd[o];
-        const bool is_mm = d.p == (const char *) mm->data && d.ne[0] == R && d.nb[0] == (int64_t) sizeof(float);
-        const char * m0 = (const char *) mm->data;
-        if (!is_mm && d.p < m0 + ggml_nbytes(mm) && m0 < d.p + (int64_t) (d.ne[0] - 1) * d.nb[0] + sizeof(float)) {
-            return false;   // a view of the matvec's memory, which the epilogue never writes
-        }
-        if (o >= ggml_cuda_ew_epi::MAX_OPD || d.nb[0] > INT32_MAX) {
-            return false;
-        }
-        E.o[o].p = is_mm ? nullptr : d.p;
-        E.o[o].ne0 = d.ne[0];
-        E.o[o].nb0 = (int) d.nb[0];
-        mm_o = is_mm ? o : mm_o;
+    for (int o = 0; o < EWC_MAX_OPD; ++o) {
+        if (o >= 1 && !P.opd[o].p && !P.opd[o].nb[0]) { break; }   // past the used operands (a src operand has p == nullptr but its strides set)
+        if (o >= ggml_cuda_ew_epi::MAX_OPD || P.opd[o].nb[0] > INT32_MAX) { return false; }
+        E.o[o].p = P.opd[o].p;
+        E.o[o].ne0 = P.opd[o].ne[0];
+        E.o[o].nb0 = (int) P.opd[o].nb[0];
     }
-    if (mm_o < 0) {
-        return false;
-    }
-    for (int s = 0; s < m; ++s) {
+    for (int s = 0; s < P.n_st; ++s) {
         E.st[s].op = P.st[s].op; E.st[s].a = P.st[s].a; E.st[s].b = P.st[s].b; E.st[s].p0 = P.st[s].p0; E.st[s].p1 = P.st[s].p1;
     }
-    E.n_st = m;
-    E.dst = (char *) last->data;
-    E.dst_nb0 = (int) last->nb[0];
+    E.n_st = P.n_st;
+    E.dst = P.dst;
+    E.dst_nb0 = (int) P.nb[0];
     return true;
 }

@@ -6,6 +6,7 @@
 // x (dynamic taps) read it as before. The cpy and ssm_conv are found as the next non-view nodes after the concat.
 // GGML_CUDA_CONV_STEP=0 turns it off.
 #include "common.cuh"
+#include "ew-epi-fork.cuh"
 #include "ggml-impl.h"
 
 #include <cstdlib>
@@ -24,7 +25,8 @@ struct cs_args {
     int n_conv, C, S, cell_off;                         // cell_off: first x column the store copies
 };
 
-static __global__ void cs_kernel(const __grid_constant__ cs_args A) {
+template <bool epi>
+static __device__ __forceinline__ void cs_body(const cs_args & A, const ewc_prog * P) {
     const int c = blockIdx.x*blockDim.x + threadIdx.x;
     const int s = blockIdx.y;
     if (c >= A.C) { return; }
@@ -46,8 +48,15 @@ static __global__ void cs_kernel(const __grid_constant__ cs_args A) {
             if (j >= A.cell_off) { cr[j - A.cell_off] = v[j]; }
         }
     }
-    *(float *) (A.out + c*A.o_nb0 + s*A.o_nb2) = sum;
+    if constexpr (epi) {
+        ewc_run_at(*P, (int64_t) s*A.C + c, sum);   // the elementwise run after the conv, its value as operand (out is [C, 1, S] contiguous)
+    } else {
+        *(float *) (A.out + c*A.o_nb0 + s*A.o_nb2) = sum;
+    }
 }
+
+static __global__ void cs_kernel(const __grid_constant__ cs_args A) { cs_body<false>(A, nullptr); }
+static __global__ void cs_kernel_epi(const __grid_constant__ cs_args A, const __grid_constant__ ewc_prog P) { cs_body<true>(A, &P); }
 
 static bool cs_is_view(const ggml_tensor * t) {
     return t->op == GGML_OP_NONE || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE;
@@ -70,12 +79,12 @@ int ggml_cuda_try_fuse_conv_step_fork(ggml_backend_cuda_context & ctx, const ggm
     }
     // the next two non-view nodes: the state store cpy and the ssm_conv, in either order
     const ggml_tensor * cpy = nullptr, * conv = nullptr;
-    int last = -1;
+    int last = -1, i_conv = -1;
     for (int j = i + 1; j < cgraph->n_nodes && (!cpy || !conv); ++j) {
         const ggml_tensor * t = cgraph->nodes[j];
         if (cs_is_view(t)) { continue; }
         if (t->op == GGML_OP_CPY && !cpy && t->src[0]->view_src == x) { cpy = t; last = j; continue; }
-        if (t->op == GGML_OP_SSM_CONV && !conv && t->src[0] == x) { conv = t; last = j; continue; }
+        if (t->op == GGML_OP_SSM_CONV && !conv && t->src[0] == x) { conv = t; last = j; i_conv = j; continue; }
         return 0;
     }
     if (!cpy || !conv) {
@@ -109,6 +118,22 @@ int ggml_cuda_try_fuse_conv_step_fork(ggml_backend_cuda_context & ctx, const ggm
     A.cell = (char *) cell->data; A.c_nb1 = cell->nb[1];
     A.n_conv = n_conv; A.C = (int) C; A.S = (int) S; A.cell_off = (int) off;
     const dim3 grid((unsigned) ((C + 127)/128), (unsigned) S);
+    // the elementwise run after the conv (residual add, scale, dynamic taps) in the same kernel, element (c, s) by the thread that has the conv value
+    static const bool epi_on = !getenv("GGML_CUDA_MM_EPI") || atoi(getenv("GGML_CUDA_MM_EPI")) != 0;
+    ewc_prog P;
+    int end = 0;
+    if (epi_on && conv->nb[0] == sizeof(float) && conv->nb[2] == C*sizeof(float) && ggml_cuda_ew_after_fork(cgraph, i_conv, last, P, end)) {
+        const ggml_tensor * out = cgraph->nodes[end];
+        auto apart = [&](const ggml_tensor * t) {
+            const char * a0 = (const char *) out->data, * b0 = (const char *) t->data;
+            return a0 + ggml_nbytes(out) <= b0 || b0 + ggml_nbytes(t) <= a0;
+        };
+        // other threads read and write these while one thread writes its element of the run's output
+        if (apart(x) && apart(cell) && apart(past) && apart(nw)) {
+            cs_kernel_epi<<<grid, 128, 0, ctx.stream()>>>(A, P);
+            return end - i;
+        }
+    }
     cs_kernel<<<grid, 128, 0, ctx.stream()>>>(A);
     return last - i;
 }
