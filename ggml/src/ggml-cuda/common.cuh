@@ -1536,7 +1536,11 @@ struct ggml_cuda_mm_fusion_args_device {
     const void * shared_gate = nullptr;
     float * shared_dst = nullptr;
     uint32_t shared_stride_col_dst = 0;
-    ggml_cuda_ew_epi epi;   // fork: n_st 0 = none
+};
+// fork: the args with the matvec epilogue; only the epilogue's mmvq instance takes them as its kernel parameter (a bigger parameter struct in
+// every matmul kernel changed their code: Inkling 2 gate-fused matvec 31.0 -> 33 us)
+struct ggml_cuda_mm_fusion_args_epi : ggml_cuda_mm_fusion_args_device {
+    ggml_cuda_ew_epi epi;   // n_st 0 = none
 };
 
 struct ggml_cuda_kernel_launch_params {
