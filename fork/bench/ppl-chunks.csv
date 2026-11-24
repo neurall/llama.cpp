@@ -5466,3 +5466,27 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-24 08:12:36,stock-b12670-official -np 1,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,2,1.5918
 2026-11-24 15:04:36,ds_slice_no_hadamard_flag -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3739
 2026-11-24 15:04:36,ds_slice_no_hadamard_flag -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4341
+2026-11-24 15:06:18,ds_slice_no_hadamard_flag -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3631
+2026-11-24 15:06:18,ds_slice_no_hadamard_flag -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4182
+2026-11-24 15:08:39,ds_slice_no_hadamard_flag -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4519
+2026-11-24 15:08:39,ds_slice_no_hadamard_flag -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5756
+2026-11-24 15:09:57,ds_slice_no_hadamard_flag -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4503
+2026-11-24 15:09:57,ds_slice_no_hadamard_flag -np 1 --cpu-moe,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.572
+2026-11-24 15:11:55,ds_slice_no_hadamard_flag -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1377
+2026-11-24 15:11:55,ds_slice_no_hadamard_flag -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1344
+2026-11-24 15:12:51,ds_slice_no_hadamard_flag -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1353
+2026-11-24 15:12:51,ds_slice_no_hadamard_flag -np 1 --cpu-moe,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.131
+2026-11-24 15:14:27,ds_slice_no_hadamard_flag -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1286
+2026-11-24 15:14:27,ds_slice_no_hadamard_flag -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1135
+2026-11-24 15:15:20,ds_slice_no_hadamard_flag -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.127
+2026-11-24 15:15:20,ds_slice_no_hadamard_flag -np 1 --cpu-moe,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1123
+2026-11-24 15:16:51,ds_slice_no_hadamard_flag -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5656
+2026-11-24 15:16:51,ds_slice_no_hadamard_flag -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.4235
+2026-11-24 15:17:49,ds_slice_no_hadamard_flag -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5656
+2026-11-24 15:17:49,ds_slice_no_hadamard_flag -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.4235
+2026-11-24 15:19:26,ds_slice_no_hadamard_flag -np 1 -ub 512 -b 512,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,1,1.3922
+2026-11-24 15:19:26,ds_slice_no_hadamard_flag -np 1 -ub 512 -b 512,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,2,1.5815
+2026-11-24 15:20:43,ds_slice_no_hadamard_flag -np 1 -ub 512 -b 512,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,1,1.3922
+2026-11-24 15:20:43,ds_slice_no_hadamard_flag -np 1 -ub 512 -b 512,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,2,1.5815
+2026-11-24 15:22:32,ds_slice_no_hadamard_flag -np 1,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,1,1.3922
+2026-11-24 15:22:32,ds_slice_no_hadamard_flag -np 1,Inkling-2-Mini-UD-IQ4_XS.gguf,ppl,2,1.5815
