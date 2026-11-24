@@ -701,7 +701,8 @@ static constexpr __host__ __device__ int calc_rows_per_block(ggml_type type, int
 // has_shared: a launch that fuses a shared expert (fusion.shared_up) is a separate instantiation, so the launches of models without one keep the code
 // they had before the shared-expert fusion (its runtime branch and the stores it makes possible cost the main MoE kernel 5-7% on an RTX 3090)
 // c_nwarps: block height chosen at run time by the HIP tuner (0 = the table's value)
-template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false, bool halve_iters = false, bool has_shared = false, int c_nwarps = 0>
+// has_epi: the elementwise chain write-out (fork) is its own instantiation too: inlined into the gate-fused launches it cost them 8% (Inkling 2)
+template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false, bool halve_iters = false, bool has_shared = false, int c_nwarps = 0, bool has_epi = false>
 __launch_bounds__((c_nwarps ? c_nwarps : calc_nwarps(type, ncols_dst, get_device_table_id(), small_k, halve_iters))*ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void mul_mat_vec_q(
         const void * vx_ptr, const void * vy_ptr, const int32_t * ids_ptr, const ggml_cuda_mm_fusion_args_device fusion, float * dst_ptr,
@@ -952,11 +953,9 @@ static __global__ void mul_mat_vec_q(
                         }
                     }
                 }
-                if constexpr (has_fusion) {
-                    if (fusion.epi.n_st) {   // fork: the chain after this matvec, written in its place (one column, one channel)
-                        ewc_epi_write(fusion.epi, result, row0 + i);
-                        continue;
-                    }
+                if constexpr (has_epi) {   // fork: the chain after this matvec, written in its place (one column, one channel)
+                    ewc_epi_write(fusion.epi, result, row0 + i);
+                    continue;
                 }
                 dst[j*stride_col_dst + i] = result;
             }
@@ -1245,7 +1244,12 @@ static void mul_mat_vec_q_switch_fusion(
     if constexpr (c_ncols_dst == 1) {
         if (has_fusion) {
             const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, nbytes_shared, stream);
-            if (fusion.shared_up) {
+            if (fusion.epi.n_st) {
+                ggml_cuda_kernel_launch(mul_mat_vec_q<type, c_ncols_dst, true, small_k, halve_iters, false, c_nwarps, true>, launch_params,
+                     vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
+                     channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
+                     sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
+            } else if (fusion.shared_up) {
                 ggml_cuda_kernel_launch(mul_mat_vec_q<type, c_ncols_dst, true, small_k, halve_iters, true, c_nwarps>, launch_params,
                      vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
                      channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
