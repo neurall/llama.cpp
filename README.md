@@ -1,7 +1,5 @@
 # Rocket LLama 
 
-<iframe src="https://github.com/sponsors/neurall/card" title="Sponsor neurall" height="225" width="600" style="border: 0;"></iframe>
-
 # up to 46x faster input tokens\s and 17x output t\s especially on best big models 
 
 <img width="1894" height="621" alt="image" src="https://github.com/user-attachments/assets/a6be5bb1-7bb7-4b63-b25b-5c4112d7dc64" />
