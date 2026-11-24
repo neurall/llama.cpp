@@ -122,6 +122,7 @@ struct server_routes {
     server_http_context::handler_t get_live_params;   // fork: GET /moe/params
     server_http_context::handler_t post_live_params;  // fork: POST /moe/params {"name": value, ...}
     server_http_context::handler_t get_moe_stats;      // fork: GET /moe/stats (time per token: last, last 64, all)
+    server_http_context::handler_t get_evlog;          // fork: GET /evlog?since=N (dev event log records from index N, text; 404 when GGML_EVLOG is off)
     server_http_context::handler_t get_status;         // fork: GET /status (phase and live speeds from g_live_status; also while loading)
     server_http_context::handler_t post_infill;
     server_http_context::handler_t post_completions;

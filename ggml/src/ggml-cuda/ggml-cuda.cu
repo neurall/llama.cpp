@@ -1,4 +1,5 @@
 #if defined(__linux__)
+#include "../ggml-evlog-fork.h"
 #include <sys/mman.h>
 #endif
 #if defined(__linux__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
@@ -9255,7 +9256,7 @@ static void ggml_cuda_kernel_load_guard_fork(int device) {
     throw ggml_cuda_oom{device, 0, "room for a kernel loaded on its first use", -2.0};   // -2: nothing of this graph ran (llama_context::decode takes the call back as never run)
 }
 
-static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
+static enum ggml_status ggml_backend_cuda_graph_compute_body(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
 
     ggml_cuda_set_device(cuda_ctx->device);
@@ -9345,6 +9346,65 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     }
 
     return GGML_STATUS_SUCCESS;
+}
+
+// fork: dev event log 'gpu' spans (ggml-evlog-fork.h): an event pair around each graph on its stream, read back later without waiting (cudaEventQuery), so the
+// card's own start/end land on the host clock beside the host spans. Clock: a reference event synchronized while nothing is pending, re-taken every 2 s
+// (cudaEventElapsedTime is float ms). a0 = nodes, a1 = device.
+struct ev_gpu_pair { cudaEvent_t e0, e1; int nodes; int ref; };
+struct ev_gpu_dev {
+    std::vector<ev_gpu_pair> pending;
+    std::vector<cudaEvent_t> free_ev;
+    cudaEvent_t ref[2] = {nullptr, nullptr};
+    uint64_t    ref_ns[2] = {0, 0};
+    int         cur = -1;
+};
+static ev_gpu_dev g_ev_gpu[GGML_CUDA_MAX_DEVICES];
+static std::mutex g_ev_gpu_mu;
+
+static cudaEvent_t ev_gpu_take(ev_gpu_dev & D) {
+    if (!D.free_ev.empty()) { cudaEvent_t e = D.free_ev.back(); D.free_ev.pop_back(); return e; }
+    cudaEvent_t e; CUDA_CHECK(cudaEventCreate(&e)); return e;
+}
+
+static void ev_gpu_drain(ev_gpu_dev & D, int device) {
+    size_t k = 0;
+    for (; k < D.pending.size(); ++k) {
+        ev_gpu_pair & P = D.pending[k];
+        if (cudaEventQuery(P.e1) != cudaSuccess) { break; }   // in order on one stream: the first unfinished ends the scan
+        float m0 = 0, m1 = 0;
+        cudaEventElapsedTime(&m0, D.ref[P.ref], P.e0);
+        cudaEventElapsedTime(&m1, D.ref[P.ref], P.e1);
+        ggml_evlog_rec(GGML_EV_GPU, "gpu graph", D.ref_ns[P.ref] + (uint64_t) (m0 * 1e6), D.ref_ns[P.ref] + (uint64_t) (m1 * 1e6), P.nodes, device);
+        D.free_ev.push_back(P.e0); D.free_ev.push_back(P.e1);
+    }
+    D.pending.erase(D.pending.begin(), D.pending.begin() + k);
+    (void) cudaGetLastError();   // a query of an unfinished event leaves cudaErrorNotReady
+}
+
+static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
+    if (!GGML_EV_ON(GGML_EV_GPU)) { return ggml_backend_cuda_graph_compute_body(backend, cgraph); }
+    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_set_device(cuda_ctx->device);
+    std::lock_guard<std::mutex> lk(g_ev_gpu_mu);
+    ev_gpu_dev & D = g_ev_gpu[cuda_ctx->device];
+    ev_gpu_drain(D, cuda_ctx->device);
+    const uint64_t now = ggml_evlog_now();
+    if (D.cur < 0 || (D.pending.empty() && now - D.ref_ns[D.cur] > 2000000000ull)) {
+        const int r = D.cur < 0 ? 0 : 1 - D.cur;
+        if (!D.ref[r]) { CUDA_CHECK(cudaEventCreate(&D.ref[r])); }
+        CUDA_CHECK(cudaEventRecord(D.ref[r], cuda_ctx->stream()));
+        CUDA_CHECK(cudaEventSynchronize(D.ref[r]));   // nothing pending: the stream is (nearly) idle, this wait is short
+        D.ref_ns[r] = ggml_evlog_now();
+        D.cur = r;
+    }
+    ev_gpu_pair P = { ev_gpu_take(D), ev_gpu_take(D), cgraph->n_nodes, D.cur };
+    CUDA_CHECK(cudaEventRecord(P.e0, cuda_ctx->stream()));
+    const enum ggml_status st = ggml_backend_cuda_graph_compute_body(backend, cgraph);
+    ggml_cuda_set_device(cuda_ctx->device);
+    CUDA_CHECK(cudaEventRecord(P.e1, cuda_ctx->stream()));
+    D.pending.push_back(P);
+    return st;
 }
 
 static void ggml_backend_cuda_event_record(ggml_backend_t backend, ggml_backend_event_t event) {

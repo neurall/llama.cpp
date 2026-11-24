@@ -8,6 +8,7 @@
 #include <windows.h>
 #endif
 
+#include "ggml-evlog-fork.h"
 #include "ggml-backend.h"
 #include "ggml-backend-impl.h"
 #include "ggml-alloc.h"
@@ -572,6 +573,7 @@ extern "C" GGML_API bool ggml_backend_buffer_same_memory_fork(ggml_backend_buffe
 }
 
 void ggml_backend_tensor_set_async(ggml_backend_t backend, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    GGML_EV_SCOPE(GGML_EV_COPY, "set_async", (int64_t) size);
     GGML_ASSERT(backend);
     GGML_ASSERT(tensor);
     GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
@@ -587,6 +589,7 @@ void ggml_backend_tensor_set_async(ggml_backend_t backend, struct ggml_tensor * 
 }
 
 void ggml_backend_tensor_get_async(ggml_backend_t backend, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+    GGML_EV_SCOPE(GGML_EV_COPY, "get_async", (int64_t) size);
     GGML_ASSERT(backend);
     GGML_ASSERT(tensor);
     GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
@@ -674,6 +677,7 @@ void ggml_backend_tensor_set_batch_end_fork(void) {
 }
 
 void ggml_backend_tensor_set(struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    GGML_EV_SCOPE(GGML_EV_COPY, "set", (int64_t) size);
     GGML_ASSERT(tensor);
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
     GGML_ASSERT(buf != NULL && "tensor buffer not set");
@@ -698,6 +702,7 @@ void ggml_backend_tensor_set(struct ggml_tensor * tensor, const void * data, siz
 }
 
 void ggml_backend_tensor_get(const struct ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+    GGML_EV_SCOPE(GGML_EV_COPY, "get", (int64_t) size);
     GGML_ASSERT(tensor);
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
     GGML_ASSERT(buf != NULL && "tensor buffer not set");
@@ -926,6 +931,7 @@ void ggml_backend_tensor_memset(struct ggml_tensor * tensor, uint8_t value, size
 }
 
 void ggml_backend_synchronize(ggml_backend_t backend) {
+    GGML_EV_SCOPE(GGML_EV_SYNC, "synchronize");
     GGML_ASSERT(backend);
     if (backend->iface.synchronize == NULL) {
         return;
@@ -962,6 +968,7 @@ enum ggml_status ggml_backend_graph_compute(ggml_backend_t backend, struct ggml_
 }
 
 enum ggml_status ggml_backend_graph_compute_async(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
+    GGML_EV_SCOPE(GGML_EV_GRAPH, "graph_compute_async", cgraph->n_nodes);
     GGML_ASSERT(backend);
     return backend->iface.graph_compute(backend, cgraph);
 }
@@ -1017,6 +1024,7 @@ static bool ggml_backend_tensor_copy_rows(const struct ggml_tensor * src, struct
 }
 
 void ggml_backend_tensor_copy(const struct ggml_tensor * src, struct ggml_tensor * dst) {
+    GGML_EV_SCOPE(GGML_EV_COPY, "tensor_copy", (int64_t) ggml_nbytes(src));
     if (!ggml_are_same_layout(src, dst) && ggml_backend_tensor_copy_rows(src, dst)) {
         return;
     }
@@ -1563,6 +1571,7 @@ void ggml_backend_tensor_copy_n(const struct ggml_tensor * const * srcs, struct 
 }
 
 void ggml_backend_tensor_copy_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const struct ggml_tensor * src, struct ggml_tensor * dst) {
+    GGML_EV_SCOPE(GGML_EV_COPY, "tensor_copy_async", (int64_t) ggml_nbytes(src));
     GGML_ASSERT(ggml_are_same_layout(src, dst) && "cannot copy tensors with different layouts");
 
     if (src == dst) {
@@ -3188,8 +3197,22 @@ GGML_API void ggml_backend_nvtx_set_fork(void (*push)(const char *), void (*pop)
     g_nvtx_on   = push && pop;
 }
 static void ggml_backend_nvtx_init() {}
-#define NVTX_PUSH(...) do { if (g_nvtx_on) { char _b[200]; snprintf(_b, sizeof _b, __VA_ARGS__); g_nvtx_push(_b); } } while (0)
-#define NVTX_POP() do { if (g_nvtx_on) { g_nvtx_pop(); } } while (0)
+// fork: each NVTX range is also a span of the dev event log (ggml-evlog-fork.h), named by its format string (the WAIT ranges go in as 'sync' spans by SYNC_TIMED)
+struct ev_nvtx_frame { const char * name; uint64_t t0; };
+static thread_local ev_nvtx_frame g_ev_nvtx[16];
+static thread_local int g_ev_nvtx_n = 0;
+#define EV_NVTX_FIRST(a, ...) a
+static inline void ev_nvtx_push(const char * fmt) {
+    if (g_ev_nvtx_n < 16) { g_ev_nvtx[g_ev_nvtx_n] = { strncmp(fmt, "WAIT", 4) == 0 ? nullptr : fmt, ggml_evlog_now() }; }
+    g_ev_nvtx_n++;
+}
+static inline void ev_nvtx_pop() {
+    if (g_ev_nvtx_n <= 0) { return; }
+    g_ev_nvtx_n--;
+    if (g_ev_nvtx_n < 16 && g_ev_nvtx[g_ev_nvtx_n].name) { ggml_evlog_rec(GGML_EV_SCHED, g_ev_nvtx[g_ev_nvtx_n].name, g_ev_nvtx[g_ev_nvtx_n].t0, ggml_evlog_now(), 0, 0); }
+}
+#define NVTX_PUSH(...) do { if (g_nvtx_on) { char _b[200]; snprintf(_b, sizeof _b, __VA_ARGS__); g_nvtx_push(_b); } if (GGML_EV_ON(GGML_EV_SCHED)) { ev_nvtx_push(EV_NVTX_FIRST(__VA_ARGS__, 0)); } } while (0)
+#define NVTX_POP() do { if (g_nvtx_on) { g_nvtx_pop(); } if (GGML_EV_ON(GGML_EV_SCHED)) { ev_nvtx_pop(); } } while (0)
 struct nvtx_scope { bool on; explicit nvtx_scope(const char * n) : on(g_nvtx_on) { if (on) { g_nvtx_push(n); } } ~nvtx_scope() { if (on) { g_nvtx_pop(); } } };   // a range that ends with the scope (also on early returns)
 
 // Time the host thread spends in the blocking calls of the split loop, by call site (GGML_PF_STATS=1 prints them per big graph). Sites: 1 copy_input waits for the split's own
@@ -3199,9 +3222,10 @@ static std::atomic<long long> g_sync_us[10], g_sync_n[10];
 void ggml_backend_sched_sync_stat_add(int site, long long us) {
     if (site >= 0 && site < 10) { g_sync_us[site].fetch_add(us); g_sync_n[site].fetch_add(1); }
 }
-#define SYNC_TIMED(site, call) do { NVTX_PUSH("WAIT site%d", site); const int64_t _t = ggml_time_us(); call; NVTX_POP(); ggml_backend_sched_sync_stat_add(site, ggml_time_us() - _t); } while (0)
+#define SYNC_TIMED(site, call) do { NVTX_PUSH("WAIT site%d", site); const uint64_t _e0 = GGML_EV_ON(GGML_EV_SYNC) ? ggml_evlog_now() : 0; const int64_t _t = ggml_time_us(); call; NVTX_POP(); ggml_backend_sched_sync_stat_add(site, ggml_time_us() - _t); if (_e0) { ggml_evlog_rec(GGML_EV_SYNC, "sched wait", _e0, ggml_evlog_now(), site, 0); } } while (0)
 // same, and with GGML_PF_STATS=2 the tensor and the backends of every wait over 1 ms are logged (which input makes the scheduler thread wait, and for whom)
-#define SYNC_TIMED_NAMED(site, call, tname, sb, db) do { NVTX_PUSH("WAIT site%d %s %s->%s", site, tname, sb, db); const int64_t _t = ggml_time_us(); call; NVTX_POP(); const int64_t _d = ggml_time_us() - _t; ggml_backend_sched_sync_stat_add(site, _d); \
+#define SYNC_TIMED_NAMED(site, call, tname, sb, db) do { NVTX_PUSH("WAIT site%d %s %s->%s", site, tname, sb, db); const uint64_t _e0 = GGML_EV_ON(GGML_EV_SYNC) ? ggml_evlog_now() : 0; const int64_t _t = ggml_time_us(); call; NVTX_POP(); const int64_t _d = ggml_time_us() - _t; ggml_backend_sched_sync_stat_add(site, _d); \
+    if (_e0) { ggml_evlog_rec(GGML_EV_SYNC, "sched wait named", _e0, ggml_evlog_now(), site, 0); } \
     static const bool _v = getenv("GGML_PF_STATS") && atoi(getenv("GGML_PF_STATS")) >= 2; \
     if (_v && _d > 1000) { GGML_LOG_WARN("sync-wait %lld us at site %d: input %s, from %s to %s abs %lld\n", (long long) _d, site, tname, sb, db, (long long) _t); } } while (0)
 

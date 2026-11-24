@@ -200,6 +200,8 @@ add_library(ggml-base
             ggml-threading.h
             ggml-quants.c
             ggml-quants.h
+            ggml-evlog-fork.cpp
+            ggml-evlog-fork.h
             ggml-rampool-fork.cpp
             ggml-rampool-fork.h
             gguf.cpp)

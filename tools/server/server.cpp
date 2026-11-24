@@ -180,6 +180,7 @@ static void server_register_routes(server_http_context & ctx_http, server_routes
     ctx_http.get ("/moe/params",               ex_wrapper(routes.get_live_params));
     ctx_http.post("/moe/params",               ex_wrapper(routes.post_live_params));
     ctx_http.get ("/moe/stats",                ex_wrapper(routes.get_moe_stats));
+    ctx_http.get ("/evlog",                    ex_wrapper(routes.get_evlog)); // fork, dev: event log records (GGML_EVLOG on)
     ctx_http.get ("/status",                   ex_wrapper(routes.get_status)); // fork, public: phase (loading/idle/prefill/gen) and live speeds, answers while loading
     ctx_http.get ("/models",                   ex_wrapper(routes.get_models));
     ctx_http.get ("/v1/models",                ex_wrapper(routes.get_models));

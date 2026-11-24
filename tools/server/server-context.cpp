@@ -1,3 +1,4 @@
+#include "../../ggml/src/ggml-evlog-fork.h"
 #include "server-context.h"
 #include <atomic>
 #include <thread>
@@ -6181,6 +6182,18 @@ void server_routes::init_routes() {
     // IMPORTANT: all lambda functions must start with create_response()
     // this is to ensure that the server_res_generator can handle sleeping case correctly
 
+    this->get_evlog = [](const server_http_req & req) {
+        // the dev event log's ring, read in place (nothing is taken from the file): records from ?since=N on; the response header X-Evlog-Next is the N for the next call
+        auto res = std::make_unique<server_http_res>();
+        uint64_t next = 0;
+        char * t = ggml_evlog_snapshot(std::strtoull(req.get_param("since", "0").c_str(), nullptr, 10), &next);
+        if (!t) { res->status = 404; res->content_type = "text/plain"; res->data = "event log off (start the server with GGML_EVLOG=all)\n"; return res; }
+        res->content_type = "text/tab-separated-values";
+        res->data = t;
+        ggml_evlog_free(t);
+        res->headers["X-Evlog-Next"] = std::to_string(next);
+        return res;
+    };
     this->get_status = [this](const server_http_req &) {
         // reads only g_live_status (no task queue, no server context): it answers during the load and in the middle of a long prompt pass
         auto res = create_response(true);

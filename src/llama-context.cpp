@@ -1,3 +1,4 @@
+#include "../ggml/src/ggml-evlog-fork.h"
 #include "llama-context.h"
 #include "llama-backend-fork.h"
 #include "llama-kvtier-fork.h"
@@ -4510,6 +4511,7 @@ static int fork_cuda_last_oom(int * device, size_t * bytes, double * fit) {   //
 static int64_t g_st_entry = 0, g_st_submit = 0, g_st_back = 0, g_st_ret = 0;
 static int64_t g_st_s_gap = 0, g_st_s_prep = 0, g_st_s_sub = 0, g_st_n = 0;
 int llama_context::decode(const llama_batch_ext & batch_inp) {
+    GGML_EV_SCOPE(GGML_EV_DECODE, "llama_decode", (int64_t) batch_inp.n_tokens);   // dev event log: one span a decode call, tokens in a0
     static const bool st_on_d = getenv("LLAMA_STEP_TIME") != nullptr;
     if (st_on_d) { g_st_entry = ggml_time_us(); g_st_submit = 0; }
     moe_decoded = true;
