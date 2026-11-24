@@ -4011,7 +4011,10 @@ static bool ggml_cuda_mul_mat_q_fusion_matches(const ggml_tensor * up, const ggm
 static bool ggml_cuda_should_fuse_mul_mat_q(const ggml_tensor * up, const ggml_tensor * gate, const ggml_tensor * glu,
         const ggml_tensor * up_scale = nullptr, const ggml_tensor * gate_scale = nullptr) {
     // A hinted matmul can be fused, but its unfused path may be faster (e.g. FWHT for GGML_HINT_SRC0_IS_HADAMARD).
-    if (ggml_get_op_params_i32(up, 1) != GGML_HINT_NONE || ggml_get_op_params_i32(gate, 1) != GGML_HINT_NONE) {
+    // fork: slot 1 is a hint only on a MUL_MAT; on a MUL_MAT_ID it is our "ids may be -1" flag (the GLU rows of skipped experts stay unwritten, and only down
+    // reads them, with the same -1 ids, then zeroes its own output in ggml_cuda_mul_mat_id_begin)
+    const auto hinted = [](const ggml_tensor * t) { return t->op == GGML_OP_MUL_MAT && ggml_get_op_params_i32(t, 1) != GGML_HINT_NONE; };
+    if (hinted(up) || hinted(gate)) {
         return false;
     }
 
