@@ -24,7 +24,7 @@ enum ggml_evlog_cat {
     GGML_EV_POOL, GGML_EV_DECODE, GGML_EV_SERVER, GGML_EV_SYS, GGML_EV_N_CAT
 };
 
-GGML_API extern volatile uint32_t ggml_evlog_mask;   // bit per category; 0 = off
+GGML_API volatile uint32_t ggml_evlog_mask;   // bit per category; 0 = off
 
 GGML_API uint64_t ggml_evlog_now(void);              // CLOCK_MONOTONIC ns
 GGML_API void     ggml_evlog_rec(int cat, const char * name, uint64_t t0, uint64_t t1, int64_t a0, int64_t a1);
