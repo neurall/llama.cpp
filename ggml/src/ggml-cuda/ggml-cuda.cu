@@ -7403,7 +7403,8 @@ static bool ggml_cuda_can_fuse(const struct ggml_cgraph *                cgraph,
 static int ggml_cuda_try_fuse_norm_q8_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i);
 
 // fork: how far ahead the matvec grouping looks, and the nodes it marked, for the stream note (sp_after) of the launch that ran them
-static constexpr int MM_MULTI_WIN = 120;
+// GGML_CUDA_MM_MULTI_WIN: the window (default 120 nodes)
+static const int MM_MULTI_WIN = [] { const char * e = getenv("GGML_CUDA_MM_MULTI_WIN"); return e ? std::min(atoi(e), 120) : 120; }();
 static std::vector<int> g_mm_multi_far;
 
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i, std::vector<bool> & nodes_fused) {
