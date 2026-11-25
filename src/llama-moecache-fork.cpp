@@ -2988,11 +2988,13 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
         picks.clear();
         for (int32_t id : pv2_boot_order(v2heat)) { picks.push_back({ (double) v2heat[id], (size_t) id / v2E, (int32_t) (id % v2E) }); }
     }
+    size_t no_block = 0;
     for (const auto & pk : picks) {
         auto & ls = mc->layers[pk.il];
         double best;
         const int32_t s = pick_slot(mc, pk.il, [](layer_state &, size_t, int32_t) { return -1.0; }, best).slot;   // free blocks only
         if (s < 0) {
+            no_block++;
             continue;   // this layer's class is full
         }
         pool_take(mc, pk.il, s);
@@ -3003,6 +3005,9 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
         mc->todo.push_back(pj);
         queued++;
     }
+    size_t n_all = 0;
+    for (const auto & ls : mc->layers) { n_all += ls.glob_count.size(); }
+    LLAMA_LOG_WARN("moe-cache: boot fill: %zu experts in the model's cached layers, %zu picked, %zu queued, %zu found no free block\n", n_all, picks.size(), queued, no_block);
     mc->wcv.notify_all();
     return queued;
 }
@@ -6330,7 +6335,8 @@ static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache:
     if (hot.empty()) {
         return;
     }
-    for (int32_t b = to, nb = ps.n_active(); b < nb; ++b) {
+    for (int32_t b = 0, nb = ps.n_active(); b < nb; ++b) {   // every block outside the range: behind it for a lend from the front, below it for CUDA's room at the top
+        if (b >= from && b < to) { continue; }
         const int32_t o = ps.owner[b];
         if (o < -1) { continue; }   // lent, under the KV rows, another class's bytes (-4)
         if (o < 0) { cold.push_back({ -1.0, b }); continue; }
@@ -6342,7 +6348,7 @@ static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache:
     std::sort(hot.begin(),  hot.end(),  [](const ent & a, const ent & b) { return a.sc > b.sc; });
     std::sort(cold.begin(), cold.end(), [](const ent & a, const ent & b) { return a.sc < b.sc; });
     // a decode graph may still read the blocks that are overwritten (their experts are evicted now)
-    { const int64_t s0 = ggml_time_us(); ggml_backend_sched_synchronize(sched); g_ac.sync_us += ggml_time_us() - s0; g_ac.sync_n++; }
+    if (sched) { const int64_t s0 = ggml_time_us(); ggml_backend_sched_synchronize(sched); g_ac.sync_us += ggml_time_us() - s0; g_ac.sync_n++; }   // no sched: the caller synchronized every card
     const int64_t t0 = ggml_time_us();
     uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + sg.base;
     auto view = [&](int32_t b) {
@@ -8144,6 +8150,17 @@ static void room_apply(moe_cache * mc, ggml_backend_sched_t sched, bool synced) 
         if (!synced && sched) { ggml_backend_sched_synchronize(sched); synced = true; }
         const size_t was = ap.room_lo;
         size_t nt = 0, ng = 0, ne = 0;
+        // the tail area holds the hottest experts: the blocks CUDA takes move theirs into free (else colder) blocks first, so the room evicts only when the pool is full
+        // (Qwen3.6 on one card, 2026-11-25: every new call shape took 220 MiB and evicted 241 of its hottest experts with 15214 of 25698 blocks free)
+        for (const auto & sg : ap.segs) {
+            if (mc->v2.on) { break; }   // pool-v2: the heap places its own experts (pv2_sync)
+            const size_t s0 = sg.base, s1 = sg.base + (size_t) sg.n * sg.B;
+            if (ap.room_lo_want >= s1 || was <= s0) { continue; }
+            const int32_t from = (int32_t) ((std::max(ap.room_lo_want, s0) - s0) / sg.B);
+            const int32_t to   = (int32_t) std::min<size_t>((size_t) sg.n, (std::min(was, s1) - s0 + sg.B - 1) / sg.B);
+            std::lock_guard<std::mutex> lk(mc->mtx);
+            keep_hot_move(mc, sched, ap, sg, from, to);
+        }
         pool_move_begin(ap, ap.room_lo_want, ap.tail_real);   // no upload runs there and none starts until the blocks are CUDA's
         kv_blocks_apply(mc, ap, ap.room_lo_want, ap.tail_real, true, false, nt, ng, ne, POOLX_ROOM);
         pool_move_end(ap);
