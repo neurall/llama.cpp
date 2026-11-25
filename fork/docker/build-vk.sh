@@ -11,5 +11,5 @@ cmake -S $W -B $B -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CX
   -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_CUDA=OFF -DGGML_VULKAN=ON -DVulkan_GLSLC_EXECUTABLE=/s/glslc-host.sh \
   -DVulkan_LIBRARY=/opt/vulkan/lib/VulkanLoader/lib/libvulkan.so -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_UI=OFF \
   -DCMAKE_EXE_LINKER_FLAGS="$SLD" -DCMAKE_SHARED_LINKER_FLAGS="$SLD" -DCMAKE_MODULE_LINKER_FLAGS="$SLD" > $B.cfg.log 2>&1 || { tail -20 $B.cfg.log; exit 1; }
-cmake --build $B -j $(nproc) --target ggml-vulkan
+cmake --build $B -j ${JOBS:-$(nproc)} --target ggml-vulkan
 ls -la $B/bin/libggml-vulkan.so && echo VKMOD_OK

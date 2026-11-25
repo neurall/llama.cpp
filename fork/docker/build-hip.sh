@@ -13,5 +13,5 @@ cmake -S $W -B $B -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPI
   -DGGML_HIP=ON "-DGPU_TARGETS=$T" "-DAMDGPU_TARGETS=$T" -DGGML_CUDA_FORCE_MMQ=ON -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON \
   -DBUILD_SHARED_LIBS=ON -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
   -DCMAKE_SHARED_LINKER_FLAGS="$SLD" -DCMAKE_MODULE_LINKER_FLAGS="$SLD" > $B.cfg.log 2>&1 || { tail -20 $B.cfg.log; exit 1; }
-cmake --build $B -j $(nproc) --target ggml-hip
+cmake --build $B -j ${JOBS:-$(nproc)} --target ggml-hip
 ls -la $B/bin/libggml-hip.so && objdump -T $B/bin/libggml-hip.so | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 && echo HIPMOD_OK
