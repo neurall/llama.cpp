@@ -6270,6 +6270,9 @@ ggml_tensor * llm_graph_context::build_attn(
     const int64_t n_head   = table->ne[0];
     const int64_t n_stream = raw->ne[3];
     ggml_tensor * kv_pos   = is_swa ? inp->self_kv_pos_swa : inp->self_kv_pos;   // one stream
+    if (kv_pos && kv_pos->ne[0] > n_kv) {   // fork: a mask trimmed to start at cell k0 (kq_mask_k0) covers the last n_kv cells only; the positions follow it
+        kv_pos = ggml_view_1d(ctx0, kv_pos, n_kv, (kv_pos->ne[0] - n_kv)*kv_pos->nb[0]);
+    }
 
     // the mask of queries [t0, t0 + nt): their bias gathered by distance, plus the causal / window mask, one head per plane
     auto mask_of = [&](int64_t t0, int64_t nt, ggml_tensor * after) {
@@ -6287,7 +6290,7 @@ ggml_tensor * llm_graph_context::build_attn(
             cb(m, "kq_mask_rel_pos", il);
             return m;
         }
-        ggml_tensor * rp = ggml_view_2d(ctx0, rel_pos, n_kv, nt, rel_pos->nb[1], t0*rel_pos->nb[1]);
+        ggml_tensor * rp = ggml_view_2d(ctx0, rel_pos, n_kv, nt, rel_pos->nb[1], t0*rel_pos->nb[1] + (rel_pos->ne[0] - n_kv)*rel_pos->nb[0]);   // fork: from cell k0, as the trimmed mask
         ggml_tensor * kq_b = ggml_get_rows(ctx0, tb, rp);                                   // [n_head, n_kv, nt]
         kq_b = ggml_reshape_4d(ctx0, kq_b, n_head, n_kv, nt/n_stream, n_stream);
         kq_b = ggml_cont(ctx0, ggml_permute(ctx0, kq_b, 2, 0, 1, 3));                       // [n_kv, nt/n_stream, n_head, n_stream]
