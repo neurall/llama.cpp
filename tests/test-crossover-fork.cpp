@@ -278,7 +278,8 @@ static void x23_sims() {
 // request ended before the pair's reference pass: no verdict, X5 unverified. The grid's experts at 16k: 10% faster (planner-crossovers.md, SE +10%).
 // A pass's time over the helper's share f: linear to the even share, past it the helper is the long pole (GLM 3.0 12k: 16.9 s at 100% against 12.6 s
 // at 50%, x1.34); its idle falls to 0 at the even share. 1% noise a pass. The other side, no slower pair measured on this model: the same plan with
-// the experts passes slower.
+// the experts passes slower. Only the start and the verdict are the engine's code: the phase and wait steps below copy dsplit_expert_trial_impl's, so a
+// bug in the engine's own steps would not fail here (shortcut: extract its per-pass step, state in and out, when those steps change).
 struct x5_case { const char * name; double v0, gain; };   // the dense split alone (us/token); the experts pass at the even share: v0 x (1 - gain)
 
 static void x5_sims() {
