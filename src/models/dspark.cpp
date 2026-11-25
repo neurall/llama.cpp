@@ -488,8 +488,9 @@ llama_model_dflash::graph_dspark::graph_dspark(const llm_graph_params & params) 
 
     // fork: only the output rows reach the lm head and the Markov head (build_logits): a draft block outputs every row, the worst-case reserve
     // (n_ubatch tokens) does not; the head reads tokens, hidden and rnn state per row, so they are selected with the same ids
+    ggml_tensor * ids = nullptr;
     if (n_outputs < n_tokens) {
-        ggml_tensor * ids = build_inp_out_ids();
+        ids         = build_inp_out_ids();
         cur         = ggml_get_rows(ctx0, cur, ids);
         res->t_embd = cur;
         inp_tokens  = ggml_reshape_1d(ctx0, ggml_get_rows(ctx0, ggml_reshape_2d(ctx0, inp_tokens, 1, n_tokens), ids), n_outputs);
@@ -505,6 +506,14 @@ llama_model_dflash::graph_dspark::graph_dspark(const llm_graph_params & params) 
         build_dspark_markov_head(*this, model, inp_tokens);
     } else if (rnn_state) {
         build_dspark_markov_head(*this, model, inp_tokens, cur, rnn_state, true);
+    }
+
+    // fork: an unmasked nextn (the rnn head's context state) is read per token, so the head's output rows go back to their token rows
+    // (the server's 2-token probe decode has 1 output: decode read 2 rows from the 1-row result, Inkling 2 + DSpark aborted at load)
+    if (res->t_h_nextn && crop_after_nextn(ids)) {
+        ggml_tensor * rows = ggml_fill(ctx0, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, res->t_h_nextn->ne[0], n_tokens), 0.0f);
+        res->t_h_nextn = ggml_set_rows(ctx0, rows, res->t_h_nextn, ids);
+        ggml_build_forward_expand(gf, res->t_h_nextn);
     }
 }
 
