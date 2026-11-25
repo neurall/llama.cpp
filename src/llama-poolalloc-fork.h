@@ -19,6 +19,7 @@
 #include <mutex>
 #include <numeric>
 #include <thread>
+#include <utility>
 #include <vector>
 
 static inline size_t poolx_up(size_t x, size_t a) { return (x + a - 1) / a * a; }
@@ -575,6 +576,33 @@ static poolx_pick poolx_pick_slot(const PS & ps, int32_t n_active, Busy busy, Ex
         if (r >= 0 && r < best) { best = r; p.slot = b; p.owner = o; }
     }
     return p;
+}
+
+// Moves that keep the experts of blocks [from, to) in VRAM when that range leaves the cache (a prompt's lend from the front, CUDA's room from the top).
+// owner[b]: >= 0 a layer, -1 free, < -1 not the cache's (lent, KV zone, CUDA's room, another class's bytes). score[b] for an owned block: >= 0 the expert's score
+// (movable), -1 empty, NaN busy (upload in flight, streamed). Sources: owned, movable blocks in the range, hottest first. Destinations: blocks of [0, n_active)
+// outside the range, free or empty first, then the coldest; a move is made only while the source scores above the block it overwrites, so the range keeps
+// only experts colder than everything else and none is lost while a free block exists. Returns (source, destination) pairs.
+// (Until 2026-11-25 the destinations were only the blocks behind the range: CUDA's room at the pool's top had none, and evicted the 241 hottest experts
+// of Qwen3.6 with 15214 of 25698 blocks free.)
+static std::vector<std::pair<int32_t, int32_t>> poolx_move_plan(const std::vector<int32_t> & owner, const std::vector<double> & score, int32_t n_active, int32_t from, int32_t to) {
+    struct ent { double sc; int32_t b; };
+    std::vector<ent> hot, cold;
+    const int32_t nb = std::min<int32_t>(n_active, (int32_t) owner.size());
+    for (int32_t b = std::max(0, from); b < std::min<int32_t>(to, (int32_t) owner.size()); ++b) {
+        if (owner[b] >= 0 && score[b] >= 0) { hot.push_back({ score[b], b }); }   // NaN and -1 fail the test
+    }
+    for (int32_t b = 0; b < nb; ++b) {
+        if (b >= from && b < to) { continue; }
+        if (owner[b] == -1) { cold.push_back({ -1.0, b }); continue; }
+        if (owner[b] < -1 || score[b] != score[b]) { continue; }   // not the cache's, or busy
+        cold.push_back({ score[b] < 0 ? -1.0 : score[b], b });
+    }
+    std::stable_sort(hot.begin(),  hot.end(),  [](const ent & a, const ent & b) { return a.sc > b.sc; });
+    std::stable_sort(cold.begin(), cold.end(), [](const ent & a, const ent & b) { return a.sc < b.sc; });
+    std::vector<std::pair<int32_t, int32_t>> mv;
+    for (size_t i = 0; i < hot.size() && i < cold.size() && hot[i].sc > cold[i].sc; ++i) { mv.push_back({ hot[i].b, cold[i].b }); }
+    return mv;
 }
 
 // The picks of one step from one scan. poolx_pick_slot scans every block of the class for each pick: a decode step of Qwen3.8 made 9 to 21 picks of about 40 us

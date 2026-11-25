@@ -1304,6 +1304,56 @@ static void test_regress_room_give_back_chunks() {
     }
     report("random rooms: the largest block edge whose chunks fit, never more", bad == 0, fmt("%d bad of 20000", bad));
 }
+// [2026-11-25] CUDA's room at the pool's top evicted the hottest experts (the tail area holds them) while most blocks were free: Qwen3.6 one card, 241 of 261
+// evicted with 15214 of 25698 blocks free, 281 misses on request 1. Rule: every expert leaving the cache lands in a free block while one exists, so all VRAM
+// stays filled with experts; with no free block left, an expert overwrites only a colder one.
+static void test_regress_room_moves_not_evicts() {
+    printf("room moves the tail area's experts instead of evicting them:\n");
+    // Qwen3.6 shape: 25698 blocks, 10240 experts placed hottest at the top, room takes the top 261
+    const int32_t nb = 25698, n_exp = 10240, room = 261, lo = nb - room;
+    std::vector<int32_t> owner(nb, -1);
+    std::vector<double>  score(nb, -1.0);
+    for (int32_t i = 0; i < n_exp; ++i) { const int32_t b = nb - n_exp + i; owner[b] = i % 40; score[b] = 1.0 + i; }   // hottest at the top
+    auto plan = poolx_move_plan(owner, score, nb, lo, nb);
+    std::set<int32_t> dst;
+    bool all_free = true, all_out = true;
+    for (auto & [s, d] : plan) { dst.insert(d); all_free &= owner[d] == -1; all_out &= (d < lo || d >= nb) && s >= lo; }
+    report("every expert of the room's blocks gets a destination", (int32_t) plan.size() == room, fmt("%zu of %d", plan.size(), room));
+    report("destinations are free blocks, outside the room, distinct", all_free && all_out && (int32_t) dst.size() == (int32_t) plan.size());
+
+    // the same from the front (a prompt's lend): destinations behind the range
+    plan = poolx_move_plan(owner, score, nb, 0, room);
+    report("a range holding no expert moves nothing", plan.empty());
+
+    // pool full: no free block; the range holds the hottest, the rest colder; only colder ones are overwritten, hottest first
+    const int32_t n = 100, r0 = 90;
+    std::vector<int32_t> o2(n, 3);
+    std::vector<double>  s2(n);
+    for (int32_t b = 0; b < n; ++b) { s2[b] = b; }   // block b scores b: the range [90,100) is the hottest ten
+    s2[5] = std::nan("");                             // busy: never a destination
+    plan = poolx_move_plan(o2, s2, n, r0, n);
+    bool colder = true, hottest_first = true, no_busy = true;
+    for (size_t i = 0; i < plan.size(); ++i) {
+        colder        &= s2[plan[i].second] < s2[plan[i].first];
+        no_busy       &= plan[i].second != 5;
+        hottest_first &= i == 0 || s2[plan[i - 1].first] > s2[plan[i].first];
+    }
+    report("full pool: all ten move, each over a colder expert", plan.size() == 10 && colder && no_busy && hottest_first, fmt("%zu moves", plan.size()));
+
+    // range experts colder than everything else: nothing moves (eviction of the coldest is right)
+    for (int32_t b = 0; b < n; ++b) { s2[b] = b < r0 ? 1000.0 + b : b; }
+    plan = poolx_move_plan(o2, s2, n, r0, n);
+    report("full pool, range holds the coldest: nothing moves", plan.empty());
+
+    // free blocks fewer than range experts: free ones filled first, then colder ones; empty-owned (-1 score) counts as free
+    for (int32_t b = 0; b < n; ++b) { o2[b] = 1; s2[b] = b < r0 ? 10.0 : 500.0 + b; }
+    o2[0] = -1; o2[1] = -1; s2[2] = -1.0;   // two free, one empty-owned
+    plan = poolx_move_plan(o2, s2, n, r0, n);
+    int32_t n_free = 0;
+    for (size_t i = 0; i < 3 && i < plan.size(); ++i) { n_free += plan[i].second <= 2; }
+    report("free and empty blocks are filled before any expert is overwritten", plan.size() == 10 && n_free == 3, fmt("%zu moves, %d to free", plan.size(), n_free));
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -1338,6 +1388,7 @@ int main(int argc, char ** argv) {
     test_regress_ring_cold_order();
     test_regress_room_give_back_chunks();
     test_regress_pool_buffer_limits();
+    test_regress_room_moves_not_evicts();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

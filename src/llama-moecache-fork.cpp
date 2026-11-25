@@ -6322,31 +6322,19 @@ static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache:
     const int64_t kh_t0 = ggml_time_us();
     struct kh_done { int64_t t0; ~kh_done() { g_ac.keephot_us += ggml_time_us() - t0; g_ac.keephot_n++; } } kh_guard{kh_t0};
     auto & ps = mc->pool[sg.pcls];
-    struct ent { double sc; int32_t b; };
-    std::vector<ent> hot, cold;   // experts in the range (hottest first), blocks behind it (free, then coldest first)
-    for (int32_t b = from; b < to; ++b) {
+    const int32_t nb = ps.n_active();
+    std::vector<double> sc(ps.owner.size(), -1.0);   // poolx_move_plan's view: expert score, -1 empty, NaN busy
+    for (int32_t b = 0; b < (int32_t) ps.owner.size() && b < std::max(nb, to); ++b) {
         const int32_t o = ps.owner[b];
         if (o < 0) { continue; }
         layer_state & lo = mc->layers[o];
         const int32_t e = lo.slot_expert[b];
-        if (e < 0 || lo.slot_in_flight[b] || lo.is_stream[b]) { continue; }
-        hot.push_back({ xscore(mc, lo, e), b });
+        sc[b] = lo.slot_in_flight[b] || lo.is_stream[b] ? std::nan("") : e < 0 ? -1.0 : xscore(mc, lo, e);
     }
-    if (hot.empty()) {
+    const auto plan = poolx_move_plan(ps.owner, sc, nb, from, to);
+    if (plan.empty()) {
         return;
     }
-    for (int32_t b = 0, nb = ps.n_active(); b < nb; ++b) {   // every block outside the range: behind it for a lend from the front, below it for CUDA's room at the top
-        if (b >= from && b < to) { continue; }
-        const int32_t o = ps.owner[b];
-        if (o < -1) { continue; }   // lent, under the KV rows, another class's bytes (-4)
-        if (o < 0) { cold.push_back({ -1.0, b }); continue; }
-        layer_state & lo = mc->layers[o];
-        if (lo.slot_in_flight[b] || lo.is_stream[b]) { continue; }
-        const int32_t e = lo.slot_expert[b];
-        cold.push_back({ e < 0 ? -1.0 : xscore(mc, lo, e), b });
-    }
-    std::sort(hot.begin(),  hot.end(),  [](const ent & a, const ent & b) { return a.sc > b.sc; });
-    std::sort(cold.begin(), cold.end(), [](const ent & a, const ent & b) { return a.sc < b.sc; });
     // a decode graph may still read the blocks that are overwritten (their experts are evicted now)
     if (sched) { const int64_t s0 = ggml_time_us(); ggml_backend_sched_synchronize(sched); g_ac.sync_us += ggml_time_us() - s0; g_ac.sync_n++; }   // no sched: the caller synchronized every card
     const int64_t t0 = ggml_time_us();
@@ -6361,8 +6349,7 @@ static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache:
         return t;
     };
     size_t n_moved = 0;
-    for (size_t i = 0; i < hot.size() && i < cold.size() && hot[i].sc > cold[i].sc; ++i) {
-        const int32_t src = hot[i].b, dst = cold[i].b;
+    for (const auto & [src, dst] : plan) {
         const size_t  li  = (size_t) ps.owner[src];
         layer_state & ls  = mc->layers[li];
         const int32_t e   = ls.slot_expert[src];
@@ -6390,8 +6377,8 @@ static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache:
     }
     static int logged = 0;
     if (n_moved > 0 && logged++ < 16) {
-        LLAMA_LOG_WARN("moe-cache: keep-hot %s: %zu of %zu experts in the %d blocks a prompt borrows moved to colder blocks in %.1f ms (%.2f GB)\n",
-                ggml_backend_dev_name(ap.dev), n_moved, hot.size(), to - from, (ggml_time_us() - t0) / 1e3, (double) n_moved * (double) sg.B / 1e9);
+        LLAMA_LOG_WARN("moe-cache: keep-hot %s: %zu of %zu planned experts in the %d blocks leaving the cache moved to free or colder blocks in %.1f ms (%.2f GB)\n",
+                ggml_backend_dev_name(ap.dev), n_moved, plan.size(), to - from, (ggml_time_us() - t0) / 1e3, (double) n_moved * (double) sg.B / 1e9);
     }
 }
 

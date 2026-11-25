@@ -202,6 +202,42 @@ int main() {
         check("INV phi: no pass taught it, the end would teach 43 tokens off its features", rls_report_phi_off(1536.0, 9472.0 / 6.0, 0, true), 9472.0 / 6.0);
         check("INV phi: passes of the planned size", !rls_report_phi_off(1536.0, 3072.0 / 2.0, 0, true), 1536.0);
     }
+    {   // closed-loop pick simulator (user 2026-11-25: "use simulator to see how our curr code would behave without need for real run"): a fake machine with the
+        // measured one-card and split times of a logged miss (fork/docs/bug-log.md), a cold start, six requests of the same size; dsf_pick decides each, the arm
+        // that ran feeds its model (one card: the measured mean, known from 2 samples; the split: its RLS, the fill paid once). Pass: at most one losing request
+        // (the trial) and the last three on the faster arm. Only cases a real OLMoE run (restricted VRAM, power limit) cannot make: an arch without token ranges, Vulkan
+        // hand-offs that block; the rest are real rows (user 2026-11-25: "real thing is always better").
+        struct sim_case { const char * name; double T, U, one, split, prior1, sd1, ratio, fill; bool blocks, ranges, old = false; };   // old: the inputs before the fix, must lose
+        const sim_case cases[] = {
+            { "DeepSeek 4.1 13571, no token ranges (bug-log 2026-11-25)", 13571, 4.18, 86.6,  90.6, 97.18, 34.99, 0.56, 0.0,  false, false },
+            { "old: DeepSeek priced as if it had token ranges (the miss)", 13571, 4.18, 86.6,  90.6, 97.18, 34.99, 0.56, 0.0,  false, true, true },
+            { "GLM 12k two Vulkan cards, hand-offs block (2026-11-17)",   12434, 3.95, 26.5,  29.7, 11.68, 4.20,  1.40, 1.94, true,  true  },
+            { "MiMo 11k two Vulkan cards, hand-offs block (#375)",        11011, 3.40, 11.0,  15.5, 11.0,  3.00,  1.24, 0.0,  true,  true  },
+        };
+        const double s = 1e6;
+        for (const auto & k : cases) {
+            dsf_rls split; const double c = k.prior1 * s / k.T * k.ratio, th0[4] = { 0, c, 1, 1 }, fl[4] = { 64 * c, 0, 0, 0 }; rls_init(split, 4, th0, fl);
+            std::vector<double> one_runs; bool fill_owed = k.fill > 0;
+            int lost = 0, last_bad = 0, n_split = 0; std::string seq;
+            for (int r = 0; r < 6; ++r) {
+                dsf_arm_pass q; q.T = k.T; q.U = k.U * s;
+                if (one_runs.empty()) { q.mu1 = k.prior1 * s; q.v1 = k.sd1 * k.sd1 * s * s; }
+                else { double m = 0; for (double x : one_runs) { m += x; } m /= one_runs.size(); q.mu1 = m; q.v1 = 0.03 * 0.03 * m * m; q.kn1 = one_runs.size() >= 2; q.n1 = (int) one_runs.size(); }
+                const double sphi[4] = { 1, k.T, 0, k.U * s };
+                q.mu2 = rls_pred(split, sphi, &q.v2);
+                if (!one_runs.empty()) { q.m1 = k.one * s; q.nm1 = (int) one_runs.size(); }   // the passes measured at this size (dsf_plan's B.us_tok)
+                if (n_split > 0)       { q.m2 = k.split * s; q.nm2 = n_split; }
+                dsf_call dc; dc.ratio = dsf_prior_ratio(k.ratio, 1.0, k.blocks, k.ranges); dc.blocks = k.blocks; dc.ranges = k.ranges; dc.split_prior = split.n == 0; dc.split = &split; dc.seen_before = r;   // the ratio as dsf_plan forms it
+                if (fill_owed) { dc.f_mu = k.fill * s; dc.f_v = 0.4 * 0.4 * k.fill * k.fill * s * s; }
+                const int ch = dsf_pick({ q }, dc).choice;
+                const bool bad = ch == 1 ? k.split > k.one : k.one > k.split;
+                lost += bad; last_bad += bad && r >= 3; seq += ch ? 'S' : '1';
+                if (ch == 1) { rls_update(split, sphi, k.split * s); fill_owed = false; n_split++; } else { one_runs.push_back(k.one * s); }
+            }
+            char what[200]; snprintf(what, sizeof what, "sim %s: %s", k.name, seq.c_str());
+            check(what, (lost <= 1 && last_bad == 0) != k.old, lost);
+        }
+    }
     printf("%s\n", n_failed ? "FAILED" : "all passed");
     return n_failed ? 1 : 0;
 }
