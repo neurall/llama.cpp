@@ -2559,7 +2559,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 const size_t eq = kv.find('=');
                 // --moe on: the expert cache path even when the model fits VRAM (experts in RAM, pool sized by free VRAM, every expert that fits preloaded); --moe off: no cache, stock
                 if (kv == "on")  { llama_moe_set_opt("mode", "cache"); params.n_moe_cache_slots = -2; continue; }
-                if (kv == "off") { params.n_moe_cache_slots = 0; params.autotune = false; continue; }
+                if (kv == "off") { llama_moe_set_opt("mode", "stock"); continue; }   // cache off only, tuning stays (everything off: --fork off)
                 if (eq == std::string::npos) {
                     throw std::invalid_argument("--moe: expected on, off or KEY=VAL, got '" + kv + "'");
                 }
