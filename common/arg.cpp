@@ -2531,9 +2531,12 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
-        {"--moe-expert-cache"}, "N",
-        string_format("GPU cache slots per host-resident MoE expert layer, 0 = disabled (default: %d)", params.n_moe_cache_slots),
-        [](common_params & params, int value) {
+        {"--moe-expert-cache"}, "on|off|N",
+        string_format("expert cache: on = on, sized by free VRAM (every expert that fits, also when the model fits VRAM), off = disabled, N = GPU cache slots per expert layer (default: %d, on when a MoE model does not fit VRAM)", params.n_moe_cache_slots),
+        [](common_params & params, const std::string & arg) {
+            // on / 100%: the auto setup's cache path even when the model fits VRAM (same as --moe mode=cache: experts in RAM, pool sized by free VRAM, every expert that fits preloaded); off = 0
+            if (arg == "on" || arg == "100%") { llama_moe_set_opt("mode", "cache"); params.n_moe_cache_slots = -2; return; }
+            const int value = arg == "off" ? 0 : std::stoi(arg);
             params.n_moe_cache_slots = value;
             if (value == 0) { params.autotune = false; } // cache 0 = stock behaviour: nothing is tuned or measured either
         }
