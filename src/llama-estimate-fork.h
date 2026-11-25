@@ -709,6 +709,11 @@ static inline pp_pick_out pp_pick(const double * mu, const double * var, const b
         const int v = split_variant_pick(split_took, vok, 3);
         if (v >= 0 && vp[v] != o.pick) { o.drawn = o.pick; o.pick = vp[v]; o.trial = false; }
     }
-    o.why = o.trial ? "trial: its expected gain over the calls of this size beats its expected loss" : o.pick == o.best_mu ? "lowest mean" : "lowest mean among the paths known here";
+    // with no path known here the pick is the lowest mean outside the trial-only paths (rls_voi_pick), and the lower mean a trial-only one's: the
+    // reason said "among the paths known here" (Qwen3.8 IQ4_XS 13782 cold, 2026-11-25: layer parallel 22640 ms, the mix 22639, nothing ran)
+    bool any_known = false;
+    for (int p = 0; p < PP_PATHS; ++p) { any_known = any_known || (ok[p] && known[p]); }
+    o.why = o.trial ? "trial: its expected gain over the calls of this size beats its expected loss" : o.pick == o.best_mu ? "lowest mean"
+          : any_known ? "lowest mean among the paths known here" : "lowest mean outside the trial-only paths: no path is known at this size yet";
     return o;
 }
