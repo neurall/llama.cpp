@@ -1,6 +1,7 @@
 // Self-check of the planner's estimator (src/llama-rls-fork.h): one RLS per path, Thompson draws, residual-driven drift.
 // Synthetic two-path cost series, no GPU, no model.  build: cmake --build <dir> --target test-rls-fork;  run: ctest -R test-rls-fork
 #include "../src/llama-rls-fork.h"
+#include "../src/llama-estimate-fork.h"   // the placement pick, for the second simulator
 
 #include <cstdio>
 #include <random>
@@ -236,6 +237,48 @@ int main() {
             }
             char what[200]; snprintf(what, sizeof what, "sim %s: %s", k.name, seq.c_str());
             check(what, (lost <= 1 && last_bad == 0) != k.old, lost);
+        }
+    }
+    {   // the same closed loop for the other one-vs-two pick: one card or the layer split for a model that fits one card (place_one_card_pick). The loop
+        // above missed its bad pick (relgate1k 2026-11-25: Qwen3.6 ran one card cold, -31% prompt) because it never calls it: dsf_pick splits a prompt pass
+        // inside a loaded server, where both arms run in one process and each case starts from priors. The placement is fixed before the load, one start
+        // runs one arm, and a -cs cell is a cold first start, which none of those cases is. Here: a cold state (as -cs gives), then six server starts that
+        // each read the records the starts before them wrote and run one request; chat prompts under 1024 tokens leave the prompt untimed. The rates are the
+        // request totals the records keep, from the server logs of 2026-11-25 (Qwen3.6 two 3090s: one card passes of 1718 tokens at 5.7-7.1k i/s, request
+        // 5810.5 i/s 152.5 o/s; layer split passes of 1728 at 9.9-11.9k i/s, request 8207.5 i/s 162.0 o/s) and 2026-11-23 (Inkling 2 Mini 12k chat: one card
+        // 1372 i/s 56.9 o/s, split 1074 i/s 33.9 o/s). Pass: start 1 runs the split and at most one start runs the slower arm, so the split wins from start 3
+        // and a faster one card from start 2; no decision line says "measured" before both arms have a record.
+        struct req { double n_p, n_g; };
+        const req chat = { 700, 400 }, gate = { 13744, 1024 }, decode_bound = { 300, 4096 };
+        struct place_sim { const char * name; double one_i, one_o, spl_i, spl_o; req odd, even; };   // odd, even: the request of starts 1, 3, 5 and 2, 4, 6
+        const place_sim cases[] = {
+            { "Qwen3.6 cold, chat and 12k starts",                  5810.5, 152.5, 8207.5, 162.0, chat, gate },
+            { "Qwen3.6 cold, 12k gate starts (relgate1k)",          5810.5, 152.5, 8207.5, 162.0, gate, gate },
+            { "Inkling 2 Mini cold, chat and 12k starts (one card)", 1372,  56.9,  1074,   33.9,  chat, gate },
+            { "Inkling 2 Mini cold, decode-bound starts (one card)", 1372,  56.9,  1074,   33.9,  decode_bound, decode_bound },
+        };
+        for (const auto & k : cases) {
+            double rec[2][4] = { { -1, -1, 0, 0 }, { -1, -1, 0, 0 } };   // [one card, split]: p, g (ms a token, -1: not timed), n_p, n_g as the state keeps them
+            std::string seq, bad_line;
+            int lost = 0;
+            for (int st = 0; st < 6; ++st) {
+                const req q = st % 2 ? k.even : k.odd;
+                const bool h1 = place_record_counts(rec[0][0], rec[0][1]), h2 = place_record_counts(rec[1][0], rec[1][1]);
+                const double np = h1 && h2 ? (rec[0][2] + rec[1][2]) / 2 : 0, ng = h1 && h2 ? (rec[0][3] + rec[1][3]) / 2 : 0;   // as common.cpp weighs them
+                const bool one = place_one_card_pick(h1, rec[0][0], rec[0][1], h2, rec[1][0], rec[1][1], np, ng);
+                const place_line pl = place_pick_line(one, h1, rec[0][0], rec[0][1], h2, rec[1][0], rec[1][1], np, ng);
+                if (!(h1 && h2) && (pl.label + pl.why).find("measured") != std::string::npos && bad_line.empty()) { bad_line = pl.label + " (" + pl.why + ")"; }
+                const double t1 = q.n_p / k.one_i + q.n_g / k.one_o, t2 = q.n_p / k.spl_i + q.n_g / k.spl_o;
+                lost += one ? t1 > t2 : t2 > t1;
+                seq += one ? '1' : 'S';
+                double * r = rec[one ? 0 : 1];
+                place_record_update(r[0], r[1], r[2], r[3], 1000.0 / (one ? k.one_i : k.spl_i), (int) q.n_p, 1000.0 / (one ? k.one_o : k.spl_o), (int) q.n_g);
+            }
+            char what[512];
+            snprintf(what, sizeof what, "place sim %s: %s (1 = one card, S = split)", k.name, seq.c_str());
+            check(what, seq[0] == 'S' && lost <= 1, lost);
+            snprintf(what, sizeof what, "place sim %s: no line says measured before both are timed%s%s", k.name, bad_line.empty() ? "" : ": ", bad_line.c_str());
+            check(what, bad_line.empty(), 0);
         }
     }
     printf("%s\n", n_failed ? "FAILED" : "all passed");

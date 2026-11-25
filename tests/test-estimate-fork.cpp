@@ -531,34 +531,6 @@ int main() {
         // a phase only one arm timed is not weighed (-1: the record never timed it, prompts under 1024 tokens): the split's untimed prompt counted as -1 ms a token
         if (!place_one_card_pick(true, 0.20, 10.0, true, -1, 12.0, 60000, 16)) { printf("FAIL place: a prompt only one card timed must not decide\n"); g_fail++; }
     }
-    {   // closed loop over server starts: a cold state, then each start reads what the starts before it recorded (the last long request per arm), six starts of
-        // one request shape. A -cs gate cell is start 1 only: relgate1k 2026-11-25 Qwen3.6 13744/1024 ran one card cold (5810 i/s 152.5 o/s) against the
-        // release's layer split (8133 i/s 159.7 o/s), -31% prompt. Pass: start 1 on the split, at most one losing start (the trial), the last three on the faster arm.
-        struct place_case { const char * name; double n_p, n_g, one_i, one_o, spl_i, spl_o; };
-        const place_case cases[] = {
-            { "Qwen3.6 relgate1k 13744/1024", 13744, 1024, 5810, 152.5, 8133, 159.7 },
-            { "Inkling 2 Mini 12k chat", 12000, 1024, 1372, 56.9, 1074, 33.9 },
-            { "Inkling 2 Mini decode-bound (300-token prompts, 4096-token answers)", 300, 4096, 1372, 56.9, 1074, 33.9 },
-        };
-        for (const auto & k : cases) {
-            double rec[2][4] = { { -1, -1, 0, 0 }, { -1, -1, 0, 0 } };   // [one card, split]: p, g, n_p, n_g as the state ini keeps them (-1: not timed)
-            const double t1 = k.n_p / k.one_i + k.n_g / k.one_o, t2 = k.n_p / k.spl_i + k.n_g / k.spl_o;
-            std::string seq;
-            int lost = 0, last_bad = 0;
-            for (int s = 0; s < 6; ++s) {
-                const bool h1 = rec[0][0] > 0 || rec[0][1] > 0, h2 = rec[1][0] > 0 || rec[1][1] > 0;
-                const double np = h1 && h2 ? (rec[0][2] + rec[1][2]) / 2 : 0, ng = h1 && h2 ? (rec[0][3] + rec[1][3]) / 2 : 0;   // as common.cpp weighs them
-                const bool one = place_one_card_pick(h1, rec[0][0], rec[0][1], h2, rec[1][0], rec[1][1], np, ng);
-                const bool bad = one ? t1 > t2 : t2 > t1;
-                lost += bad;
-                last_bad += bad && s >= 3;
-                seq += one ? '1' : 'S';
-                double * r = rec[one ? 0 : 1];
-                place_record_update(r[0], r[1], r[2], r[3], 1000.0 / (one ? k.one_i : k.spl_i), (int) k.n_p, 1000.0 / (one ? k.one_o : k.spl_o), (int) k.n_g);
-            }
-            if (seq[0] != 'S' || lost > 1 || last_bad) { printf("FAIL place sim %s: starts %s (1 = one card, S = split), %d lost\n", k.name, seq.c_str(), lost); g_fail++; }
-        }
-    }
     {   // prompt pass hill-climb
         uint32_t b = 2048;
         if (ub_climb_step({}, b, 13744, 4096, false) != 2048) { printf("FAIL ub: the base is measured first\n"); g_fail++; }

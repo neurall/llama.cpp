@@ -565,12 +565,15 @@ static inline uint32_t ub_climb_step(const std::map<uint32_t, double> & tps, uin
 }
 
 // One request updates its placement's record (common_place_record): the prompt time from 1024 prompt tokens, the answer time from 128 answer tokens
-// (short ones are noise). An untimed phase stays -1, and a record with either phase timed counts as measured: a chat server's prompts stay under 1024
-// tokens, so required both, its arm never counted and every start ran the first pick.
+// (short ones are noise). An untimed phase stays -1.
 static inline void place_record_update(double & p, double & g, double & np, double & ng, double p_ms, int n_p, double g_ms, int n_g) {
     if (n_p >= 1024 && p_ms > 0) { p = p_ms; np = n_p; }
     if (n_g >= 128 && g_ms > 0)  { g = g_ms; ng = n_g; }
 }
+
+// A stored record (place_read) counts as that arm's measurement when either phase was timed. Until 2026-11-25 both had to be: a chat server's prompts
+// stay under 1024 tokens, so its arm never counted and every start ran the same first pick again.
+static inline bool place_record_counts(double p, double g) { return p > 0 || g > 0; }
 
 // The totals (ms) one card (t1) and the layer split (t2) are compared on for n_p prompt plus n_g answer tokens (p, g: ms per prompt / answer token,
 // 0 or less = not timed): a phase counts only when both arms timed it.
@@ -592,6 +595,38 @@ static inline bool place_one_card_pick(bool have_one, double p1, double g1, bool
     double t1 = 0, t2 = 0;
     place_totals(p1, g1, p2, g2, n_p, n_g, t1, t2);
     return t1 < t2;
+}
+
+// The placement decision line (decide_fork "placement") for pick `one` on these records. It says "measured" only when both arms have a record; one arm's
+// record is "timed", and a phase it lacks is "not timed". The cold start's line in the relgate1k miss (2026-11-25) said "one card vs layer split is
+// measured" with nothing timed. common.cpp puts the card and the model's fit in front of a one-card reason.
+struct place_line { std::string label, why; };
+static inline place_line place_pick_line(bool one, bool have_one, double p1, double g1, bool have_split, double p2, double g2, double n_p, double n_g) {
+    auto rates = [](double p, double g) {
+        char b[48];
+        std::string s = "prompt not timed";
+        if (p > 0) { snprintf(b, sizeof b, "%.0f i/s", 1000 / p); s = b; }
+        if (g > 0) { snprintf(b, sizeof b, ", %.1f o/s", 1000 / g); s += b; } else { s += ", answer not timed"; }
+        return s;
+    };
+    place_line r;
+    r.label = std::string(one ? "one card" : "layer split") + (have_one && have_split ? " (measured)" : have_one || have_split ? " (tried once)" : " (first try)");
+    if (!have_one && !have_split) {
+        r.why = "nothing timed yet: one start runs one placement, so the stock layer split runs first and one card is tried on the next start";
+    } else if (!have_one) {
+        r.why = "layer split timed (" + rates(p2, g2) + "), one card not yet: tried once";
+    } else if (!have_split) {
+        r.why = "one card timed (" + rates(p1, g1) + "), the layer split not yet: tried once";
+    } else {
+        double t1 = 0, t2 = 0;
+        place_totals(p1, g1, p2, g2, n_p, n_g, t1, t2);
+        char b[160];
+        snprintf(b, sizeof b, "for %.0f prompt + %.0f answer tokens (a phase counts when both timed it): one card %.1f s", n_p, n_g, t1 / 1000);
+        r.why = b + (" (" + rates(p1, g1) + "), layer split ");
+        snprintf(b, sizeof b, "%.1f s", t2 / 1000);
+        r.why += b + (" (" + rates(p2, g2) + ")");
+    }
+    return r;
 }
 
 // The stream variant (ring, mix, layer parallel) a dense split pass runs inside: a split pass teaches only the split planner, so the one-card arms' draws

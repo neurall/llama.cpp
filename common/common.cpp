@@ -1490,7 +1490,7 @@ static bool g_place_one = false;
 
 static bool place_read(const std::string & key, double & p, double & g, double & np, double & ng) {
     char b[128];
-    return llama_state_get(g_place_sec.c_str(), key.c_str(), b, sizeof b) && sscanf(b, "%lf %lf %lf %lf", &p, &g, &np, &ng) == 4 && (p > 0 || g > 0);   // -1: phase not timed
+    return llama_state_get(g_place_sec.c_str(), key.c_str(), b, sizeof b) && sscanf(b, "%lf %lf %lf %lf", &p, &g, &np, &ng) == 4 && place_record_counts(p, g);   // -1: phase not timed
 }
 
 // called after each request (place_record_update: which phases the request times)
@@ -2292,7 +2292,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
                 for (ggml_backend_dev_t d : g_gpu_used) { size_t f = 0, t = 0; ggml_backend_dev_memory(d, &f, &t); card_free.push_back(f); }
                 const int pick = fits_one_card_pick(model_size, (size_t) 1 << 30, card_free.data(), (int) card_free.size());
                 bool try_one = pick >= 0;
-                std::string why;
+                place_line line;
                 if (pick >= 0) {   // measured pick between one card and the layer split (place_one_card_pick)
                     auto base = [](const std::string & p) { const size_t sl = p.find_last_of("/\\"); return sl == std::string::npos ? p : p.substr(sl + 1); };
                     std::string gpus;
@@ -2303,7 +2303,9 @@ static void common_moe_cache_auto_impl(common_params & params) {
                     auto best_arm = [&](const std::string & k, double & p, double & g, double & n_p, double & n_g) {   // the faster fusion arm of a placement
                         double pa = 0, ga = 0, npa = 0, nga = 0, pb = 0, gb = 0, npb = 0, ngb = 0;
                         const bool ha = place_read(k, pa, ga, npa, nga), hb = place_read(k + ".nofuse", pb, gb, npb, ngb);
-                        const bool a = !hb || (ha && npa * pa + nga * ga <= npa * pb + nga * gb);
+                        double ta = 0, tb = 0;
+                        place_totals(pa, ga, pb, gb, npa, nga, ta, tb);   // a phase one record never timed (-1) is not weighed
+                        const bool a = !hb || (ha && ta <= tb);
                         if (a) { p = pa; g = ga; n_p = npa; n_g = nga; return ha; }
                         p = pb; g = gb; n_p = npb; n_g = ngb; return true;
                     };
@@ -2312,18 +2314,8 @@ static void common_moe_cache_auto_impl(common_params & params) {
                     const double np = h1 && h2 ? (n1p + n2p) / 2 : 0, ng = h1 && h2 ? (n1g + n2g) / 2 : 0;
                     try_one = place_one_card_pick(h1, p1, g1, h2, p2, g2, np, ng);
                     g_place_one = try_one;
-                    auto rates = [](double p, double g) {   // -1: a phase the record never timed (prompts under 1024 tokens, answers under 128)
-                        return (p > 0 ? string_format("%.0f i/s", 1000 / p) : std::string("prompt not timed")) + ", " +
-                               (g > 0 ? string_format("%.1f o/s", 1000 / g) : std::string("answer not timed"));
-                    };
-                    double t1 = 0, t2 = 0;
-                    place_totals(p1, g1, p2, g2, np, ng, t1, t2);
-                    why = !h1 && !h2 ? std::string("no placement measured yet: one start runs one placement, so the stock layer split runs first and one card is tried on the next start")
-                        : !h1 ? "layer split measured (" + rates(p2, g2) + "), one card not yet: tried once"
-                        : !h2 ? "one card measured (" + rates(p1, g1) + "), the layer split not yet: tried once"
-                        : string_format("for %.0f prompt + %.0f answer tokens (a phase counts when both timed it): one card %.1f s (%s), layer split %.1f s (%s)", np, ng,
-                                        t1 / 1000, rates(p1, g1).c_str(), t2 / 1000, rates(p2, g2).c_str());
-                    if (!try_one) { decide_fork("placement", h1 && h2 ? "layer split (measured)" : h1 ? "layer split (tried once)" : "layer split (first try)", why); }
+                    line = place_pick_line(try_one, h1, p1, g1, h2, p2, g2, np, ng);
+                    if (!try_one) { decide_fork("placement", line.label, line.why); }
                 }
                 if (try_one) {
                     params.devices = { g_gpu_used[pick], nullptr };   // that card alone, as -dev: other visible cards would still join the dense/expert split
@@ -2331,11 +2323,10 @@ static void common_moe_cache_auto_impl(common_params & params) {
                     if (ub1 > 512) {
                         ub = ub1;
                         one_card = true;
-                        decide_fork("placement", string_format("one card (%s)", ggml_backend_dev_name(g_gpu_used[pick])),
-                            string_format("model %.1f GiB fits the card's %.1f GiB free (pass %u there); %s",
-                                          model_size / 1073741824.0, card_free[pick] / 1073741824.0, ub1, why.c_str()));
+                        decide_fork("placement", line.label, string_format("%s: model %.1f GiB fits the card's %.1f GiB free (pass %u there); %s",
+                            ggml_backend_dev_name(g_gpu_used[pick]), model_size / 1073741824.0, card_free[pick] / 1073741824.0, ub1, line.why.c_str()));
                     } else {
-                        LOG_INF("%s: placement one card dropped: the card's pass probe found no pass above 512 tokens, the layer split runs (%s)\n", __func__, why.c_str());
+                        LOG_INF("%s: placement one card dropped: the card's pass probe found no pass above 512 tokens, the layer split runs (%s)\n", __func__, line.why.c_str());
                         params.devices.clear();
                         g_place_one = false;
                     }
