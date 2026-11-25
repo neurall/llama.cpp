@@ -2915,9 +2915,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
         LLAMA_LOG_WARN("moe-cache: fill=layers %s\n", mc->fill_layers ? "on: whole layers from layer 0 on, the VRAM caches first, then the RAM pool"
                                                                          : "ignored: no expert tensor reads from the SSD (a mode for SSD streaming only)");
     }
-    if (!ok && !mc->fill_layers) {
-        return 0;
-    }
+    // fit all that fit: without a profile the cache still fills (every expert at count 0, in id order), never left empty for the prompts to miss into
     if (ok) {
         LLAMA_LOG_WARN("moe-cache: usage profile from %s\n", from);   // a warning: the server's log keeps no library INFO lines, and whether the cache starts filled is worth seeing
     }
@@ -2944,7 +2942,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
             for (int32_t e = 0; e < (int32_t) ls.glob_count.size(); ++e) { picks.push_back({ 0.5 * (double) ls.glob_count[e] / tot - (double) ls.pub.il, il, e }); }
             continue;
         }
-        // every expert, unseen ones last: a cache that holds the whole layer starts with all of it (Qwen3.6, 2026-11-25: 9543 of 10240 preloaded, prompts missed the rest)
+        // fit all that fit: every expert, hottest first, unseen ones last, until the layer's blocks are full (Qwen3.6, 2026-11-25: only seen experts, 9543 of 10240 preloaded, prompts missed the rest)
         std::vector<int32_t> ids((size_t) ls.glob_count.size());
         std::iota(ids.begin(), ids.end(), 0);
         std::stable_sort(ids.begin(), ids.end(), [&](int32_t a, int32_t b) { return ls.glob_count[a] > ls.glob_count[b]; });
@@ -12741,9 +12739,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         resource_probe(mc, model);
         numa_probe(mc);
         if (const size_t n = profile_preload(mc, model)) {
-            LLAMA_LOG_WARN("moe-cache: preloading %zu experts (usage profile)\n", n);
+            LLAMA_LOG_WARN("moe-cache: preloading %zu experts (%s)\n", n, mc->profile_ready.load() ? "usage profile, then the unseen ones" : "no usage profile: every expert that fits, in id order");
         } else {
-            LLAMA_LOG_WARN("moe-cache: nothing preloaded: no usage profile of this model and layout in the state file, the cache fills from the first prompt\n");
+            LLAMA_LOG_WARN("moe-cache: nothing preloaded: the cache has no blocks to fill\n");
         }
         rp_setup(mc, model);
         {
