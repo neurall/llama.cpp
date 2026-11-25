@@ -2323,7 +2323,17 @@ static void common_moe_cache_auto_impl(common_params & params) {
             bool user_ts = false;
             for (size_t i = 0; i < llama_max_devices(); ++i) { user_ts = user_ts || params.tensor_split[i] != 0.0f; }
             size_t n_gpu_dev = 0;
-            for (size_t i = 0; i < ggml_backend_dev_count(); ++i) { n_gpu_dev += ggml_backend_dev_is_gpu(ggml_backend_dev_get(i)) ? 1 : 0; }
+            std::vector<std::string> gpu_ids;   // a card two backends see (CUDA0 and Vulkan0, same PCI id) counts once, as the loader and g_gpu_used count it: counted twice,
+                                                // a CUDA+Vulkan release never took the one-card pick (Inkling 2 ran split over 2 cards where the CUDA build ran one, 2026-11-26)
+            for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+                ggml_backend_dev_t d = ggml_backend_dev_get(i);
+                if (!ggml_backend_dev_is_gpu(d)) { continue; }
+                ggml_backend_dev_props pr;
+                ggml_backend_dev_get_props(d, &pr);
+                if (pr.device_id && std::find(gpu_ids.begin(), gpu_ids.end(), std::string(pr.device_id)) != gpu_ids.end()) { continue; }
+                if (pr.device_id) { gpu_ids.push_back(pr.device_id); }
+                n_gpu_dev++;
+            }
             if (n_gpu > 1 && !in_ram && !user_ts && params.split_mode != LLAMA_SPLIT_MODE_TENSOR && params.devices.empty() && n_gpu_dev == g_gpu_used.size() && g_gpu_used.size() <= llama_max_devices()) {
                 std::vector<size_t> card_free;
                 for (ggml_backend_dev_t d : g_gpu_used) { size_t f = 0, t = 0; ggml_backend_dev_memory(d, &f, &t); card_free.push_back(f); }
