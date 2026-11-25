@@ -651,6 +651,9 @@ void llm_graph_input_embd_h::set_input(const llama_ubatch * ubatch) {
     GGML_ASSERT(ubatch->embd_state && "this graph requires a state embedding, see llama_batch_ext_set_embd_state()");
     GGML_ASSERT(n_embd_state == h->ne[0]);
 
+    if (h->buffer == nullptr) {   // fork: the graph never reads the state, so it got no memory: a DSpark rnn head whose output rows hold no draft row
+        return;                   // (the server's 2-token probe decode, 1 output: the head's draft loop runs 0 times; Inkling 2 + DSpark aborted at load)
+    }
     ggml_backend_tensor_set(h, ubatch->embd_state, 0, n_tokens*n_embd_state*ggml_element_size(h));
 }
 
