@@ -2531,12 +2531,9 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
-        {"--moe-expert-cache"}, "on|off|N",
-        string_format("expert cache: on = on, sized by free VRAM (every expert that fits, also when the model fits VRAM), off = disabled, N = GPU cache slots per expert layer (default: %d, on when a MoE model does not fit VRAM)", params.n_moe_cache_slots),
-        [](common_params & params, const std::string & arg) {
-            // on / 100%: the auto setup's cache path even when the model fits VRAM (same as --moe mode=cache: experts in RAM, pool sized by free VRAM, every expert that fits preloaded); off = 0
-            if (arg == "on" || arg == "100%") { llama_moe_set_opt("mode", "cache"); params.n_moe_cache_slots = -2; return; }
-            const int value = arg == "off" ? 0 : std::stoi(arg);
+        {"--moe-expert-cache"}, "N",
+        string_format("GPU cache slots per host-resident MoE expert layer, 0 = disabled (default: %d)", params.n_moe_cache_slots),
+        [](common_params & params, int value) {
             params.n_moe_cache_slots = value;
             if (value == 0) { params.autotune = false; } // cache 0 = stock behaviour: nothing is tuned or measured either
         }
@@ -2551,8 +2548,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_MULTISSD"));
     add_opt(common_arg(
-        {"--moe"}, "KEY=VAL,...",
-        "MoE expert cache options, comma separated. slots=N (slots per expert layer, same as --moe-expert-cache: 0 = no cache, -1 = size from free VRAM, unset = automatic), pf-slots=N (H2D prefetch staging slots, same as --prefetch-experts-slots), up-max=N (max expert uploads per layer and decode step), recent=N (tokens of recent usage "
+        {"--moe"}, "on|off|KEY=VAL,...",
+        "MoE expert cache options, comma separated. on (expert cache even when the model fits VRAM), off (no expert cache), slots=N (slots per expert layer, same as --moe-expert-cache: 0 = no cache, -1 = size from free VRAM, unset = automatic), pf-slots=N (H2D prefetch staging slots, same as --prefetch-experts-slots), up-max=N (max expert uploads per layer and decode step), recent=N (tokens of recent usage "
         "the cache scores by, default 64), pred-top=M (prefetch confident experts among the top M predicted for the next layers, 0 = off), "
         "train-every=N (train the learned predictor every N decoded tokens; implies pred-top=8), state=PATH|0 (the tuner state file), or any tuner knob: swap-lead, upload-wait, wait-swaps, ev-cld, "
         "upload-share, ... (and any other LLAMA_MOE_CACHE_<NAME> setting: POLICY, PREDICT_AHEAD, ...: --moe policy=lru). A knob given here is never self-tuned. autotune=0: no self-tuning (same as -at off).",
@@ -2560,8 +2557,11 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             // a word without '=' continues the value before it: --moe kv-fallback=k8v8,k4v4,ram is one key with a list (the KV tier list), not a key 'k4v4'
             for (const std::string & kv : llama_moe_opt_items_fork(value)) {
                 const size_t eq = kv.find('=');
+                // --moe on: the expert cache path even when the model fits VRAM (experts in RAM, pool sized by free VRAM, every expert that fits preloaded); --moe off: no cache, stock
+                if (kv == "on")  { llama_moe_set_opt("mode", "cache"); params.n_moe_cache_slots = -2; continue; }
+                if (kv == "off") { params.n_moe_cache_slots = 0; params.autotune = false; continue; }
                 if (eq == std::string::npos) {
-                    throw std::invalid_argument("--moe: expected KEY=VAL, got '" + kv + "'");
+                    throw std::invalid_argument("--moe: expected on, off or KEY=VAL, got '" + kv + "'");
                 }
                 std::string key = kv.substr(0, eq);
                 for (char & c : key) { c = c == '_' ? '-' : (char) tolower((unsigned char) c); }
