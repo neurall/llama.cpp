@@ -193,7 +193,8 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
     const int trunk_flags = nf.trunk;
     const int mtp_flags   = nf.mtp;
 
-    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, 0);
+    // a draft head may ship without the embeddings and the LM head and borrow the target's at graph build (ctx_other)
+    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, trunk_flags);
 
     // there is no output_norm: the final hyper-connection mixer carries it
     // the gammas load as [n_embd, hc] so the grouped norm multiplies them without a graph reshape
@@ -202,7 +203,7 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
     hc_head_up   = create_tensor(tn(LLM_TENSOR_HC_HEAD_UP,   "weight"), { hc_lr, hc_dim }, trunk_flags);
 
     output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED);
-    if (output == NULL) {
+    if (output == NULL && tok_embd != NULL) {   // a borrowing draft has neither, do not tie its head to a missing token_embd
         output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, TENSOR_DUPLICATED);
     }
 
@@ -1113,9 +1114,18 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llm_graph_params & params) :
 
     inp->h = build_inp_embd_state(inp.get(), hparams.n_embd_out());
 
+    // a shared draft has no embeddings or LM head of its own: it borrows the target's (the context it drafts for)
+    const llama_model * shared = &model;
+    if (model.tok_embd == nullptr || model.output == nullptr) {
+        GGML_ASSERT(cparams.ctx_other != nullptr && "qwen4exp MTP draft without token_embd/output: load it with -md beside its target");
+        shared = llama_get_model(cparams.ctx_other);
+        GGML_ASSERT(shared->tok_embd && shared->output && shared->hparams.n_embd == model.hparams.n_embd &&
+                "qwen4exp MTP: draft and target disagree on the embedding shape");
+    }
+
     ggml_tensor * tok_embd;
     if (ubatch.token) {
-        tok_embd = ggml_get_rows(ctx0, model.tok_embd, inp->tokens);
+        tok_embd = ggml_get_rows(ctx0, model.tok_embd ? model.tok_embd : shared->tok_embd, inp->tokens);
     } else {
         tok_embd = inp->embd;
     }
@@ -1175,7 +1185,7 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llm_graph_params & params) :
     cb(cur, "result_norm", -1);
     res->t_embd = cur;
 
-    cur = build_lora_mm(model.output, cur, model.output_s);
+    cur = model.output ? build_lora_mm(model.output, cur, model.output_s) : build_lora_mm(shared->output, cur, shared->output_s);
     cb(cur, "result_output", -1);
     res->t_logits = cur;
 }
