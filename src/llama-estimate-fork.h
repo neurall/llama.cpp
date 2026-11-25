@@ -543,10 +543,6 @@ static inline int fits_one_card_pick(size_t model, size_t reserve, const size_t 
     return model + reserve <= free[best] ? best : -1;
 }
 
-// One card or the layer split for a model that fits one card is measured, not guessed: the split runs prompt passes pipelined over both cards and on
-// power-capped cards each card decodes its half faster (Qwen3.6 two 3090s 12k/1k 2026-11-24: split 8400 i/s 160 o/s, one card 6200 i/s 151 o/s), while
-// Inkling 2 Mini loses on the split (above). A placement without a record is tried first (one card before the split); with both, the smaller total time
-// for n_p prompt tokens plus n_g answer tokens wins (p, g: ms per prompt / answer token). True: one card.
 // Arm A or arm B of a measured choice (p, g: ms per prompt / answer token of each arm's last long request): an arm without a record is tried
 // first (A before B); with both, the smaller total time for n_p prompt plus n_g answer tokens wins. True: A.
 static inline bool measured_ab_pick(bool have_a, double pa, double ga, bool have_b, double pb, double gb, double n_p, double n_g) {
@@ -568,8 +564,34 @@ static inline uint32_t ub_climb_step(const std::map<uint32_t, double> & tps, uin
     return base;
 }
 
+// One request updates its placement's record (common_place_record): the prompt time from 1024 prompt tokens, the answer time from 128 answer tokens
+// (short ones are noise). An untimed phase stays -1, and a record with either phase timed counts as measured: a chat server's prompts stay under 1024
+// tokens, so required both, its arm never counted and every start ran the first pick.
+static inline void place_record_update(double & p, double & g, double & np, double & ng, double p_ms, int n_p, double g_ms, int n_g) {
+    if (n_p >= 1024 && p_ms > 0) { p = p_ms; np = n_p; }
+    if (n_g >= 128 && g_ms > 0)  { g = g_ms; ng = n_g; }
+}
+
+// The totals (ms) one card (t1) and the layer split (t2) are compared on for n_p prompt plus n_g answer tokens (p, g: ms per prompt / answer token,
+// 0 or less = not timed): a phase counts only when both arms timed it.
+static inline void place_totals(double p1, double g1, double p2, double g2, double n_p, double n_g, double & t1, double & t2) {
+    const double wp = p1 > 0 && p2 > 0 ? n_p : 0, wg = g1 > 0 && g2 > 0 ? n_g : 0;
+    t1 = wp * p1 + wg * g1;
+    t2 = wp * p2 + wg * g2;
+}
+
+// One card or the layer split for a model that fits one card is measured, not guessed: the split runs prompt passes pipelined over both cards and on
+// power-capped cards each card decodes its half faster (Qwen3.6 two 3090s 12k/1k 2026-11-24: split 8400 i/s 160 o/s, one card 6200 i/s 151 o/s), while
+// Inkling 2 Mini loses on the split (above). One start runs one placement, so a cold state (every -cs gate cell, a new user's first start) cannot time
+// both: it runs the stock layer split, the release's default, and the next start tries one card once (one card first lost the gate: relgate1k 2026-11-25
+// Qwen3.6 13744/1024 cold on one card 5810 i/s 152.5 o/s against the release's split 8133 i/s 159.7 o/s). With both, the smaller total (place_totals)
+// wins and a tie keeps the split. True: one card.
 static inline bool place_one_card_pick(bool have_one, double p1, double g1, bool have_split, double p2, double g2, double n_p, double n_g) {
-    return measured_ab_pick(have_one, p1, g1, have_split, p2, g2, n_p, n_g);
+    if (!have_split) { return false; }   // nothing measured, or one card only: the split runs (first, or its one try)
+    if (!have_one) { return true; }      // the split measured, one card not: one card's one try
+    double t1 = 0, t2 = 0;
+    place_totals(p1, g1, p2, g2, n_p, n_g, t1, t2);
+    return t1 < t2;
 }
 
 // The stream variant (ring, mix, layer parallel) a dense split pass runs inside: a split pass teaches only the split planner, so the one-card arms' draws
