@@ -192,14 +192,14 @@ static void x23_sims() {
     };
     const int NR = 12;
     for (const auto & k : cases) {
-        int late_ok = 0, bad_why = 0, mix_ran = 0, k_ran = 0, chain_ran = 0, worst_lost = 0, one_lost = 0;
+        int late_ok = 0, bad_why = 0, mix_ran = 0, k_ran = 0, chain_ran = 0, worst_lost = 0, one_lost = 0, worst_k = 0;
         std::string seq1;
         for (int seed = 1; seed <= 200; ++seed) {
             std::mt19937 rng(seed); std::normal_distribution<double> g(0.0, 1.0);
             dsf_rls arm[PP_PATHS];
             double built[PP_PATHS] = {}, c = c_guess, cal = 0.0, cal_c = 0.0;
             bool c_measured = false, ran[PP_PATHS] = {};
-            int lost = 0, lost_late = 0;
+            int lost = 0, lost_late = 0, lost_k = 0;
             std::string seq;
             for (int r = 0; r < NR; ++r) {
                 double mu[PP_PATHS] = {}, var[PP_PATHS] = {}, cal_on[PP_PATHS] = {};
@@ -232,7 +232,7 @@ static void x23_sims() {
                 for (int p = 0; p < PP_PATHS; ++p) { if (cand[p] && p != PP_CHAIN) { best = std::min(best, t_of(p)); } }   // the prompt chain: not measured on this model
                 const int pk = o.pick;
                 const bool slow = pk < 0 || t_of(pk) > 1.05 * best;
-                lost += slow; lost_late += slow && r >= NR - 4;
+                lost += slow; lost_late += slow && r >= NR - 4; lost_k += slow && pk >= PP_K && pk < PP_K + PP_KN;
                 seq += pk == PP_RING ? 'S' : pk == PP_MIX ? 'M' : pk == PP_CHAIN ? 'C' : pk == PP_DEC ? 'D' : pk >= PP_K ? (char) ('0' + pk - PP_K) : '?';
                 if (pk < 0) { continue; }
                 ran[pk] = true;
@@ -246,7 +246,7 @@ static void x23_sims() {
             bool any_k = false;
             for (int i = 0; i < PP_KN; ++i) { any_k = any_k || ran[PP_K + i]; }
             k_ran += any_k;
-            worst_lost = std::max(worst_lost, lost); one_lost += lost <= 1;
+            worst_lost = std::max(worst_lost, lost); one_lost += lost <= 1; worst_k = std::max(worst_k, lost_k);
             if (seed == 1) { seq1 = seq; }
         }
         char what[300];
@@ -256,6 +256,10 @@ static void x23_sims() {
         // once the calls of this size so far make its stake pay, k x1 first. The doc's X2 target: at most one trial per size band per process.
         snprintf(what, sizeof what, "X2/X3 %s: at most one request lost (a slower path's trial) in 95%% of seeds; the most in a seed %d", k.name, worst_lost);
         check(what, one_lost >= 190, one_lost);
+        // the k arms are one ladder (the stream with 2^i x a token's picks staged): a rung that lost says the next is no better bet, so in no seed more
+        // than one request goes to a slower k arm (the doc's X2 target: at most one trial per size band per process)
+        snprintf(what, sizeof what, "X2 %s: in every seed at most one request lost to a k arm", k.name);
+        check(what, worst_k <= 1, worst_k);
         if (k.mix_tried) {
             snprintf(what, sizeof what, "X3 %s: (b) the never-run mix tried in every seed", k.name);
             check(what, mix_ran == 200, mix_ran);
