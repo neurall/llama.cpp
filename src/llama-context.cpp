@@ -4187,7 +4187,12 @@ g_st_m[7] = ggml_time_us();     const auto status = graph_compute(res->get_gf(),
         static double tok_us = 0.0, win_us = 0.0;
         static int    n_since = 1 << 30;   // passes since the last rebuild
         static bool   win_open = false, decided = false;
-        const double t_call = (double) (ggml_time_us() - g_st_m[0]);
+        // a token = the time between the ends of two passes: this call's own start-to-return is only its launches when the backend runs async (stock path, Qwen3.6 2026-11-25:
+        // "0.11 ms a token" against a real 29 ms, so 1024 kept and every token read up to 1000 empty cells; the cache path syncs per token and read 24.65 ms)
+        static int64_t prev_end = 0;
+        const int64_t now = ggml_time_us();
+        const double t_call = prev_end > 0 ? (double) (now - prev_end) : (double) (now - g_st_m[0]);
+        prev_end = now;
         if (graph_rebuilt) { n_since = 0; win_us = 0.0; win_open = !decided; }
         if (n_since < 4) {
             win_us += t_call;
