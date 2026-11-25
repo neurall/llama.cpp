@@ -707,7 +707,11 @@ static inline pp_pick_out pp_pick(const double * mu, const double * var, const b
         const int vp[3] = { PP_RING, PP_MIX, PP_LP };
         const bool vok[3] = { ok[PP_RING], ok[PP_MIX], ok[PP_LP] };
         const int v = split_variant_pick(split_took, vok, 3);
-        if (v >= 0 && vp[v] != o.pick) { o.drawn = o.pick; o.pick = vp[v]; o.trial = false; }
+        if (v >= 0 && vp[v] != o.pick) {   // the split's own passes decide, not the means: the reason said "lowest mean among the paths known here" (Qwen3.6 1280, 2026-11-25)
+            o.drawn = o.pick; o.pick = vp[v]; o.trial = false;
+            o.why = split_took[v] <= 0.0 ? "the dense split's stream variant not run at this size yet, tried first" : "the dense split's fastest stream variant at this size";
+            return o;
+        }
     }
     // with no path known here the pick is the lowest mean outside the trial-only paths (rls_voi_pick), and the lower mean a trial-only one's: the
     // reason said "among the paths known here" (Qwen3.8 IQ4_XS 13782 cold, 2026-11-25: layer parallel 22640 ms, the mix 22639, nothing ran)
