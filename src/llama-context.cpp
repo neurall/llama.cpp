@@ -2074,7 +2074,7 @@ void llama_context::sched_reserve() {
     }
 
     // fork: a draft's graphs go into its area of the target's pool
-    if (cparams.ctx_other && !cparams.moe_cache && !model.no_alloc()) {
+    if (cparams.ctx_other && !cparams.moe_cache && !model.no_alloc() && !llama_moe_cache_alias_buffers_fork().empty()) {   // only with a pool to lend from
         draft_area_fork(n_tokens, n_seqs, n_outputs_pp, mctx.get());
     }
 
