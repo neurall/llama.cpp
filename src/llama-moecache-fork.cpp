@@ -19869,7 +19869,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         // DeepSeek 200 53/13, 500 52/27, 1000 57/57. So up to the calculated crossover dec_max, at most 256 tokens: dec_max alone says thousands before a stream pass measured the compute, and a chain loses there; a chain that ran competes on its mean at any size)
         // shortcut: 256 is the sweep's crossover on MiMo and GLM, not computed (DeepSeek's is near 1000); use dec_max alone once it is built from a measured compute and link rate
         const double xo = std::max((double) g_mb_auto.load(std::memory_order_relaxed), std::min(dec_max, 256.0));
-        pp_path_rules(n, xo, sw_decides, busy, runs, kn, ok, known, tonly);   // llama-estimate-fork.h: the smallest batch, R1 and its mirror, the mix's, the k arms' order
+        pp_path_rules(n, xo, sw_decides, busy, g_pp_pmu, runs, kn, ok, known, tonly);   // llama-estimate-fork.h: the smallest batch, R1 and its mirror, the mix's, the k arms' order
         // --moe staging=0: the stream, the mix, layer parallel and the predictions' k arms all run into the cache's blocks (cstream, below). The mix was struck out here
         // while its fast card's share had no fetch ahead (1113 prompt t/s against the stream's 1507); with its shadow on the stream (mix_zero_first) it beat the stream
         // by 6-12% at 4k on five models, and the strike-out left it to forced rows only (user 2026-11-13: "there for sure will be situations where it wins").

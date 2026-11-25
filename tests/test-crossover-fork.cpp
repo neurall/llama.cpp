@@ -133,7 +133,7 @@ static void x23_replays() {
         arm(PP_RING, 23455, 22120); arm(PP_MIX, 22639, 22082); arm(PP_CHAIN, 22760, 22086); arm(PP_DEC, 44773, 31727);
         arm(PP_K, 23865, 22151); for (int i = 1; i <= 5; ++i) { arm(PP_K + i, 23876, 22152); }
         arm(PP_LP, 22640, 22082);
-        pp_path_rules(13782, 256, sw, false, runs, kn, ok, known, tonly);
+        pp_path_rules(13782, 256, sw, false, mu, runs, kn, ok, known, tonly);
         const pp_pick_out o = pp_pick(mu, var, ok, known, tonly, 1, nullptr);
         char what[300];
         snprintf(what, sizeof what, "X2/X3 replay Qwen3.8 IQ4_XS 13782 cold (router switch %s): layer parallel as logged, no trial", sw ? "on" : "off");
@@ -151,7 +151,7 @@ static void x23_replays() {
         arm(PP_LP, 3565, 3572);
         runs[PP_CHAIN] = 1;
         const double took[3] = { 0.0, 0.0, 0.0 };
-        pp_path_rules(1280, 58, false, false, runs, kn, ok, known, tonly);
+        pp_path_rules(1280, 58, false, false, mu, runs, kn, ok, known, tonly);
         const pp_pick_out o = pp_pick(mu, var, ok, known, tonly, 1, took);
         check("X3 replay Qwen3.6 1280 after a dense split: the stream variant, not the drawn mix, as logged", o.pick == PP_RING && o.drawn == PP_MIX && !o.trial, o.pick);
         char what[300];
@@ -223,7 +223,7 @@ static void x23_sims() {
                     cal_on[p] = ns[p] == 0 ? (cal > 0.0 && built[p] == cal_c ? cal : 1.0) : 0.0;
                     kn[p] = rls_known(arm[p], mu[p], var[p]); runs[p] = arm[p].n;
                 }
-                pp_path_rules(k.n, 256, false, false, runs, kn, ok, known, tonly);
+                pp_path_rules(k.n, 256, false, false, mu, runs, kn, ok, known, tonly);
                 const pp_pick_out o = pp_pick(mu, var, ok, known, tonly, r + 1, nullptr);
                 bad_why += claims_known(o.why) && !known[o.pick];
                 const double base = r == 0 ? k.cold : k.warm;

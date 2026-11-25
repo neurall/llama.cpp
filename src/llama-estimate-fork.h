@@ -653,10 +653,10 @@ static constexpr double PP_MIX_COLD = 4096.0;   // below it the prompt mix compe
 static constexpr double PP_MIN_BATCH = 32.0;   // GGML_OP_OFFLOAD_MIN_BATCH's default: under it a pass's experts run on the CPU, whichever path was planned
 
 // The planner's rules over the paths of a prompt call of n tokens, before the engine's own strike-outs (staging=0, the pool's refusals, the router switch).
-// ok: the candidates in, the paths left out. kn: rls_known per path; runs: the passes each path's model learned from; xo: R1's crossover (the measured
+// ok: the candidates in, the paths left out. mu: the means; kn: rls_known per path; runs: the passes each path's model learned from; xo: R1's crossover (the measured
 // max-batch, the calculated chain crossover up to 256 tokens above it); chain_sw: the router switch decides the prompt chain (pp_switch_pick); busy: uploads
 // under way. Out: known (ran at comparable features: the arms a trial is weighed against) and tonly (a trial only, never a mean pick), rls_voi_pick's inputs.
-static inline void pp_path_rules(double n, double xo, bool chain_sw, bool busy, const int * runs, const bool * kn, bool * ok, bool * known, bool * tonly) {
+static inline void pp_path_rules(double n, double xo, bool chain_sw, bool busy, const double * mu, const int * runs, const bool * kn, bool * ok, bool * known, bool * tonly) {
     // a call under the GPU's smallest expert batch (GGML_OP_OFFLOAD_MIN_BATCH, 32 tokens) streams nothing: its expert matmuls run on the CPU, each expert read from the pool or the SSD. The prompt's
     // 4-token tail (2026-11-08) took 1.1 s on GLM 3.5 and 1.7 s on DeepSeek that way, 0.5 and 0.3 s on the decode chain: about 10% of a 3k prompt. A chain whenever one can run.
     if (n < PP_MIN_BATCH && (ok[PP_CHAIN] || ok[PP_DEC])) {
@@ -689,7 +689,14 @@ static inline void pp_path_rules(double n, double xo, bool chain_sw, bool busy, 
     // way, and the fast card stays cold for the session (2026-11-08 forced mix cells, Qwen3.8: 24% of the asked experts found on it against 44%, every pass slower than the stream).
     // So no try of a mix not known here while uploads run; a known one keeps its mean.
     if (busy && ok[PP_MIX] && !known[PP_MIX]) { ok[PP_MIX] = false; }
-    for (int p = PP_K + 1; p < PP_K + PP_KN; ++p) { if (ok[p] && runs[p - 1] == 0) { ok[p] = false; } }
+    // a higher k only after the one below ran, and held up: a never-run rung above a rung whose mean is over the best known here is no better bet (its
+    // price is the stream's posterior with the stream's spread, so each rung stayed a wide unknown and paid its trial as the calls of the size grew: the
+    // Qwen3.8 IQ4_XS 13782 closed loop ran k x1, x2, x4, x8, x16 in five requests, each 14% slower than the stream). A rung that ran keeps its mean.
+    double best = -1.0;
+    for (int p = 0; p < PP_PATHS; ++p) { if (ok[p] && known[p] && (best < 0.0 || mu[p] < best)) { best = mu[p]; } }
+    for (int p = PP_K + 1; p < PP_K + PP_KN; ++p) {
+        if (ok[p] && (runs[p - 1] == 0 || (runs[p] == 0 && best >= 0.0 && mu[p - 1] > best))) { ok[p] = false; }
+    }
 }
 
 // The pick among the paths left: deterministic, the lowest mean among the paths known here, a trial only where its stake pays over the R calls of this
