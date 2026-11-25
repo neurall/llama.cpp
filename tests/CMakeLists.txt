@@ -193,6 +193,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-rowread-fork.cpp)   # lazy row tables: a pass's rows from the read-ahead (src/llama-rowread-fork.h), no GPU
     llama_build_and_test(test-hist-fork.cpp)      # three last-10 histories + admission, thrash sim (ggml/src/ggml-hist-fork.h), no GPU
     llama_build_and_test(test-rampool-fork.cpp)   # the RAM pool's resize between requests (ggml/src/ggml-rampool-fork.cpp), no GPU
+    llama_build_and_test(test-fit-retry-fork.cpp)   # fit's retry of a draft's memory measure against a dry target (common/fit-retry-fork.h), no GPU
     llama_build_and_test(test-moetopic-fork.cpp)
     llama_build_and_test(test-pass-fork.cpp)
     llama_build_and_test(test-layermajor-fork.cpp)   # the layer-major prompt plan: groups, chunks, time against the passes (src/llama-layermajor-fork.h), no GPU
