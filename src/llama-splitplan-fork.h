@@ -338,3 +338,44 @@ static inline std::vector<double> llama_dsplit_f_fresh_fork(size_t n_dev, const 
 inline std::string dsplit_card_key(const std::string & backend, const std::string & id, const std::string & slot, int gen, const std::string & wid, bool with_gen) {
     return backend + ":" + id + "@" + slot + "/" + (!with_gen ? std::string() : gen ? std::to_string(gen) : std::string("?")) + "x" + (wid.empty() ? std::string("?") : wid) + ";";
 }
+
+// The experts-on-the-helpers trial's two decisions (dsplit_expert_trial_impl, llama-dsplit-fork.cpp), pure so tests/test-crossover-fork.cpp runs them (X5).
+// The start of helper i's expert share: half its idle time xw over extra, what all the experts would add to its chain (the other half stays, the chain must
+// not become the long pole), at most its even share ev (0: none known; capped: it was). The try is made where one helper's start is 2% or more.
+static inline double dsplit_xtrial_start(double xw, double extra, double ev, bool * capped) {
+    double f = extra > 0.0 ? std::min(1.0, 0.5 * xw / extra) : 0.0;
+    *capped = ev > 0.0 && f > ev;
+    if (*capped) { f = ev; }
+    return f;
+}
+// A pair's verdict at its reference pass: exp_v the experts pass (us per token), ref_v the dense split alone right after it (taken to the experts pass's
+// context), fi the helpers' shares the experts pass ran with, exp_idle each helper's wait in it as a share of the pass, even_shares() the most a helper is
+// given (asked only when faster). Faster by 1% or more: x1.5 for each helper that still idled over 10% (phase 1), else settled (phase 3, a new pair in 8
+// passes); not faster: half (phase 1); under 2% together: abandoned (phase 2, a new try in 8 passes). wait -1: unchanged; tot: the shares before abandoning.
+struct dsplit_xverdict { std::vector<double> f; int phase = 1, wait = -1; bool better = false, more = false, abandoned = false; double tot = 0.0; };
+template <class EvenShares>
+static inline dsplit_xverdict dsplit_xtrial_verdict(double exp_v, double ref_v, std::vector<double> fi, const std::vector<double> & exp_idle, EvenShares even_shares) {
+    dsplit_xverdict o;
+    o.better = exp_v > 0.0 && exp_v < ref_v * 0.99;
+    if (o.better) {
+        // more while the helper idled in the EXPERTS pass (this pass is the dense split alone, where a helper always waits: read here, every faster pair
+        // grew the share to 100% and the trial never settled), up to its even share
+        const std::vector<double> ev = even_shares();
+        for (size_t i = 0; i < fi.size(); ++i) {
+            const double cap = ev[i] > 0.0 ? ev[i] : 1.0;
+            if (fi[i] > 0.0 && fi[i] < cap && i < exp_idle.size() && exp_idle[i] > 0.10) { fi[i] = std::min(cap, fi[i] * 1.5); o.more = true; }
+        }
+        o.phase = o.more ? 1 : 3;
+        if (!o.more) { o.wait = 8; }
+    } else {
+        for (double & v : fi) { v *= 0.5; }
+        o.phase = 1;
+    }
+    for (double v : fi) { o.tot += v; }
+    if (o.tot < 0.02) {
+        std::fill(fi.begin(), fi.end(), 0.0);
+        o.phase = 2; o.wait = 8; o.abandoned = true;
+    }
+    o.f = std::move(fi);
+    return o;
+}
