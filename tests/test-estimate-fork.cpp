@@ -548,6 +548,18 @@ int main() {
         if (!measured_ab_pick(true, 1000.0 / 1599, 1000.0 / 35.2, true, 1000.0 / 1555, 1000.0 / 33.3, 13744, 512)) { printf("FAIL fuse: the faster arm A should stay\n"); g_fail++; }
     }
 
+    {   // the stream variant inside a dense split pass: picked by split passes measured per variant, never a draw that no pass can answer
+        // (GLM 3.5 two 3090s 12k 2026-11-25: one-card arms mix and layer parallel both n=0, drawn every call; split passes: mix 59.9 s, layer parallel 61.6 s)
+        const bool ok3[3] = { true, true, true };
+        const double none[3] = { 0, 0, 0 }, mix_only[3] = { 0, 59.9, 0 }, both[3] = { 0, 59.9, 61.6 }, all3[3] = { 63.0, 59.9, 61.6 };
+        if (split_variant_pick(none, ok3, 3) != 0)     { printf("FAIL split variant: nothing measured should try the first allowed\n"); g_fail++; }
+        if (split_variant_pick(mix_only, ok3, 3) != 0) { printf("FAIL split variant: an untried variant goes first\n"); g_fail++; }
+        if (split_variant_pick(all3, ok3, 3) != 1)     { printf("FAIL split variant: all measured should keep the fastest (mix)\n"); g_fail++; }
+        const bool no_ring[3] = { false, true, true };
+        if (split_variant_pick(both, no_ring, 3) != 1) { printf("FAIL split variant: a struck variant is never picked\n"); g_fail++; }
+        const bool none_ok[3] = { false, false, false };
+        if (split_variant_pick(both, none_ok, 3) != -1) { printf("FAIL split variant: nothing allowed is -1\n"); g_fail++; }
+    }
     printf(g_fail ? "%d failed\n" : "estimators: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

@@ -18625,6 +18625,7 @@ static constexpr double PP_MIX_COLD = 4096.0;   // below it the prompt mix compe
 static constexpr double PP_MIN_BATCH = 32.0;   // GGML_OP_OFFLOAD_MIN_BATCH's default: under it a pass's experts run on the CPU, whichever path was planned
 static constexpr double PP_K_LATE = 1.3;   // predicted staging's real cost over the upload of the experts it calculates; the forced sweep's break-even at 77% of a layer's experts needed (2026-10-31, campaign predictor-upload-bw-reducer)
 static struct { double n = 0.0, us = 0.0; } g_pp_took[PP_PATHS][32];
+static double g_pp_took_split[3][32] = {};   // a dense split pass per pass of a size bucket, by the stream variant it ran with (0 ring, 1 mix, 2 layer parallel): split_variant_pick
 static bool g_pp_no_chain[32] = {};   // per size: the chain's graph refused such a pass
 // ---- the learned planner (fork/docs/rampool.md "Robust planner design"; --moe split-model=0 keeps the per-size rules above for one release) ----
 // One RLS per path over phi = (1, n, n x cells, the path's calculated upload) predicts a pass of any size: nothing keyed to a size (fault B), the path's own
@@ -19489,6 +19490,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         } else {
             auto & t = g_pp_took[path][pp_bucket((double) n_tokens / P)];
             t.n = (double) n_tokens / P; t.us = (double) us / P;
+            if (path == PP_DENSE) { g_pp_took_split[g_pp_mix_call.load() ? 1 : g_pp_lp_call.load() ? 2 : 0][pp_bucket((double) n_tokens / P)] = (double) us / P; }
             if (path == PP_DEC && g_pp_de0 > 0.0) {   // the first call of the path is not counted above (it pays the preload's uploads): neither here
                 // each part learns from the calls it dominates (see g_pp_dec_kc): a 15k-token call teaches the chunks, a 4-token call the misses
                 const double took = (double) us / P, d0 = g_pp_de0, ch = g_pp_dec_chunk;
@@ -19934,6 +19936,20 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         }
         g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial, known, tonly);
         best_mu   = rls_argmin(g_pp_pmu, ok, PP_PATHS);
+        // the dense split ran this size: its pass teaches no one-card arm, so a stream variant drawn here is never answered (GLM 3.5 2026-11-25: mix and layer
+        // parallel drawn at n=0 on every call, layer parallel 61.6 s against mix 59.9). The variant comes from the split passes measured per variant instead.
+        if (pp_took_us(PP_DENSE, n) > 0.0 && (g_pp_pick == PP_RING || g_pp_pick == PP_MIX || g_pp_pick == PP_LP)) {
+            const int vp[3] = { PP_RING, PP_MIX, PP_LP };
+            const bool vok[3] = { ok[PP_RING], ok[PP_MIX], ok[PP_LP] };
+            const double * vt = g_pp_took_split[pp_bucket(n)];
+            const int v = split_variant_pick(vt, vok, 3);
+            if (v >= 0 && vp[v] != g_pp_pick) {
+                LLAMA_LOG_WARN("moe-cache: prompt call of %.0f tokens runs the dense split: stream variant %s, not the drawn %s (split passes here: stream %.1f s, mix %.1f s, layer parallel %.1f s; 0 = not run yet, tried first)\n",
+                        n, pp_path_name(vp[v]).c_str(), pp_path_name(g_pp_pick).c_str(), vt[0] / 1e6, vt[1] / 1e6, vt[2] / 1e6);
+                g_pp_pick = vp[v];
+                g_pp_trial = false;
+            }
+        }
     }
     bool chain, dec, mix, lp;
     double m;

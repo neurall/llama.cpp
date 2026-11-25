@@ -571,3 +571,17 @@ static inline uint32_t ub_climb_step(const std::map<uint32_t, double> & tps, uin
 static inline bool place_one_card_pick(bool have_one, double p1, double g1, bool have_split, double p2, double g2, double n_p, double n_g) {
     return measured_ab_pick(have_one, p1, g1, have_split, p2, g2, n_p, n_g);
 }
+
+// The stream variant (ring, mix, layer parallel) a dense split pass runs inside: a split pass teaches only the split planner, so the one-card arms' draws
+// never learn which variant the split runs best with (GLM 3.5 2026-11-25: mix and layer parallel both n=0, drawn every call). took[i] = the split pass
+// time measured with variant i at this size (0 = never ran), ok[i] = allowed this call. An untried allowed variant first (in order), else the fastest; -1 none.
+// shortcut: one sample per variant decides (the last pass of the size); upgrade to the posterior per variant if split passes prove noisy.
+static inline int split_variant_pick(const double * took, const bool * ok, int n) {
+    int best = -1;
+    for (int i = 0; i < n; ++i) {
+        if (!ok[i]) { continue; }
+        if (took[i] <= 0.0) { return i; }
+        if (best < 0 || took[i] < took[best]) { best = i; }
+    }
+    return best;
+}
