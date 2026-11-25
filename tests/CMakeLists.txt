@@ -202,6 +202,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-rls-fork.cpp)   # the planner's estimator (src/llama-rls-fork.h)
     llama_build_and_test(test-planner-replay-fork.cpp)   # the planner's replay gate (built-in GLM 12k medians; fork/planner_events.py for the logs)
     llama_build_and_test(test-estimate-fork.cpp)         # the planner's strategy estimators, each alone (src/llama-estimate-fork.h)
+    llama_build_and_test(test-crossover-fork.cpp)        # the planner's crossover picks in closed loop on measured times (fork/docs/planner-crossovers.md X2-X5), no GPU
     if (NOT GGML_BACKEND_DL)   # it calls the CPU backend's ggml_graph_plan/compute directly: no such symbols to link when the CPU backends load at run time (release recipe)
         llama_build_and_test(test-cpuplan-fork.cpp)      # the CPU plan of a decode layer's host steps: no thread team when nothing is computed (ggml-cpu.c)
     endif()
