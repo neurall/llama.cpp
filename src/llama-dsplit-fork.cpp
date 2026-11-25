@@ -2919,7 +2919,7 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     static double ratio_bench = -1.0;   // the plan's split / one-card compute ratio (matmul bench, link probe): trusted for the ratio, never for the size (rule 41b)
     double c_one_bench = 0.0;   // the bench's one-card compute per token for this size: the cap of an unmeasured one-card prior (below)
     bool ranges = false;        // token-range copies exist (mirror archs): else the split runs no dense part off the expert card (dsf_prior_ratio)
-    { std::lock_guard<std::mutex> lk(g_mu); auto it = g_sets.find(&model); ranges = it != g_sets.end() && !it->second.copies.empty(); }
+    { auto it = g_sets.find(&model); ranges = it != g_sets.end() && !it->second.copies.empty(); }   // the caller holds g_mu (std::mutex: a second lock here deadlocks)
     {
         const llama_dsplit_plan_fork plan = llama_dsplit_plan_get_fork(model, n_tokens);
         c_one_bench = plan.valid && plan.t_one_ms > 0.0 ? plan.t_one_ms * 1e3 / (double) n_tokens : 0.0;
