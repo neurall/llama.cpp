@@ -680,7 +680,7 @@ void ggml_backend_tensor_set(struct ggml_tensor * tensor, const void * data, siz
     GGML_EV_SCOPE(GGML_EV_COPY, "set", (int64_t) size);
     GGML_ASSERT(tensor);
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
-    if (buf == NULL && size > 0) {   // fork: name the input the scheduler never placed (Inkling DSpark probe decode, 2026-11-25)
+    if (buf == NULL) {   // fork: name the input the scheduler never placed (Inkling DSpark probe decode, 2026-11-25)
         GGML_LOG_ERROR("%s: tensor '%s' (%s, ne %lld x %lld) has no buffer, %zu bytes to set\n", __func__, tensor->name, ggml_op_desc(tensor),
                        (long long) tensor->ne[0], (long long) tensor->ne[1], size);
     }
