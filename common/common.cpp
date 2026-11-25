@@ -1503,6 +1503,32 @@ void common_place_record(double p_ms, int n_p, double g_ms, int n_g) {
     if (p > 0 || g > 0) { llama_state_set(g_place_sec.c_str(), key.c_str(), string_format("%.5f %.5f %.0f %.0f", p, g, np, ng).c_str()); }
 }
 
+// fork: the weight bytes the fitter leaves in RAM for the stock layer split of this start (place_estimate's host_bytes). The fit runs on a copy of the
+// params as the load would run it, and the model tensors its host overrides match are summed (Inkling 2 Mini on two 3090s 2026-11-25: 6.2 GiB, which
+// cost the split 40% decode). 0 when the fit is off or keeps every weight on the cards.
+void common_fit_apply(common_params & params, llama_model_params & mparams, llama_context_params & cparams);
+static double place_split_host_bytes(const common_params & params) {
+    if (!params.fit_params) { return 0; }
+    common_params p = params;
+    auto mp = common_model_params_to_llama(p);
+    auto cp = common_context_params_to_llama(p);
+    common_fit_apply(p, mp, cp);
+    std::vector<std::regex> host;
+    for (const auto & o : p.tensor_buft_overrides) { if (o.pattern && o.buft && ggml_backend_buft_is_host(o.buft)) { host.emplace_back(o.pattern); } }
+    double bytes = 0;
+    for (const auto & path : host.empty() ? std::vector<std::string>() : p.model.get_paths()) {
+        gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
+        gguf_context * g = gguf_init_from_file(path.c_str(), gp);
+        if (!g) { continue; }
+        for (int64_t i = 0; i < gguf_get_n_tensors(g); ++i) {
+            const std::string n = gguf_get_tensor_name(g, i);
+            for (const auto & r : host) { if (std::regex_search(n, r)) { bytes += (double) gguf_get_tensor_size(g, i); break; } }
+        }
+        gguf_free(g);
+    }
+    return bytes;
+}
+
 void common_spec_auto(common_params & params) {
     auto & dft = params.speculative.draft;
     if (std::none_of(params.speculative.types.begin(), params.speculative.types.end(),
@@ -2007,6 +2033,7 @@ static uint32_t common_fits_ubatch(common_params & params, bool experts_in_ram =
 LLAMA_API void llama_moe_early_bench_fork(const char * model_path);   // llama-moecache-fork.cpp (no shared header)
 LLAMA_API double llama_moe_ram_read_gbs_fork(void);
 LLAMA_API double llama_moe_vram_gbs_fork(ggml_backend_dev_t d);
+LLAMA_API double llama_moe_link_gbs_fork(ggml_backend_dev_t d);
 static void decide_fork(const char * name, const std::string & value, const std::string & why) { llama_moe_decision_fork(name, value.c_str(), why.c_str()); }
 
 // the decode fusions for the placement taken: off unless GGML_CUDA_EW_CHAIN / MM_MULTI / NORM_Q8 is set (the record key names the arm)
@@ -2241,6 +2268,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
     const int64_t arch_id = gguf_find_key(gguf, "general.architecture");
     const std::string arch = arch_id < 0 ? "" : gguf_get_val_str(gguf, arch_id);
     const uint32_t n_expert = get_uint(arch + ".expert_count");
+    const uint32_t n_expert_used = get_uint(arch + ".expert_used_count");
     gguf_free(gguf);
     if (n_expert == 0) {
         COM_DBG("%s\n", "not a MoE model, no expert cache");
@@ -2279,7 +2307,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
             model_size / 1073741824.0, vram_free / 1073741824.0, n_gpu);
         if (n_gpu > 0 && common_autotune_on(params)) {
             const bool in_ram = model_size + reserve > vram_free;   // stock placement of a model past the free VRAM: its experts run from RAM
-            uint32_t ub = 0;
+            uint32_t ub = 0, ub_split = 0;   // ub_split: the split's micro-batch when the estimate already probed it
             bool one_card = false;
             // fork: a model that fits one card runs on it (fits_one_card_pick); kept only when that card's pass probe finds a pass above the smallest one.
             // Only without -ts/-dev and when the counted GPUs are the loader's device list (no card seen twice), so the split index is the loader's index.
@@ -2312,9 +2340,51 @@ static void common_moe_cache_auto_impl(common_params & params) {
                     double p1 = 0, g1 = 0, n1p = 0, n1g = 0, p2 = 0, g2 = 0, n2p = 0, n2g = 0;
                     const bool h1 = best_arm(gpus + ".one", p1, g1, n1p, n1g), h2 = best_arm(gpus + ".split", p2, g2, n2p, n2g);
                     const double np = h1 && h2 ? (n1p + n2p) / 2 : 0, ng = h1 && h2 ? (n1g + n2g) / 2 : 0;
-                    try_one = place_one_card_pick(h1, p1, g1, h2, p2, g2, np, ng);
+                    // the estimate (place_estimate): a cold start runs its pick; its inputs are kept (".est") until both arms are measured, then the
+                    // measured totals are checked against it once
+                    const std::string est_key = gpus + ".est";
+                    bool est_one = false;
+                    std::string est_why;
+                    if (!h1 && !h2) {
+                        common_params ps = params;   // the split as it would load: its micro-batch first, the fit sees it
+                        ub_split = common_fits_ubatch(ps, false);
+                        if (params.ubatch_user) { ub_split = std::min<uint32_t>(ub_split, params.n_ubatch); }
+                        ps.n_ubatch = ub_split;
+                        ps.n_batch  = std::max<uint32_t>(ps.n_batch, 2 * ub_split);
+                        if (ps.n_ctx > 0) { ps.n_batch = std::min<uint32_t>(ps.n_batch, std::max<uint32_t>(ps.n_ctx, ub_split)); }
+                        place_est_in in;
+                        in.host_bytes = place_split_host_bytes(ps);
+                        in.used_share = n_expert_used > 0 ? (double) n_expert_used / n_expert : 1.0;
+                        in.ram_gbs = ram_gbs;
+                        in.link_gbs = 0;
+                        for (ggml_backend_dev_t d : g_gpu_used) { const double l = llama_moe_link_gbs_fork(d); in.link_gbs = in.link_gbs > 0 ? std::min(in.link_gbs, l) : l; }
+                        in.pass_tokens = ub_split;
+                        in.passes_per_call = std::max(1.0, (double) ps.n_batch / ub_split);
+                        in.n_cards = (int) g_gpu_used.size();
+                        const double enp = moe_auto_est_prompt(params), eng = moe_auto_est_gen(params);
+                        const place_est e = place_estimate(in, enp);
+                        est_one = place_estimate_pick(e, enp, eng);
+                        est_why = place_estimate_why(e, enp, eng);
+                        llama_state_set(g_place_sec.c_str(), est_key.c_str(), string_format("%.0f %.6f %.3f %.3f %.0f %.0f %d", in.host_bytes, in.used_share,
+                            in.ram_gbs, in.link_gbs, in.pass_tokens, in.passes_per_call, in.n_cards).c_str());
+                    } else if (h1 && h2) {
+                        char b[256];
+                        place_est_in in;
+                        if (llama_state_get(g_place_sec.c_str(), est_key.c_str(), b, sizeof b) && sscanf(b, "%lf %lf %lf %lf %lf %lf %d", &in.host_bytes,
+                                &in.used_share, &in.ram_gbs, &in.link_gbs, &in.pass_tokens, &in.passes_per_call, &in.n_cards) == 7) {
+                            in.p1 = p1; in.g1 = g1;   // one card measured: the split's estimate is derived from it
+                            const place_est e = place_estimate(in, np);
+                            double t1 = 0, t2 = 0;
+                            place_totals(p1, g1, p2, g2, np, ng, t1, t2);
+                            const bool eo = place_estimate_pick(e, np, ng);
+                            if (place_estimate_wrong(eo, t1, t2)) { LOG_WRN("%s: %s\n", __func__, place_estimate_wrong_line(in, e, np, ng, t1, t2).c_str()); }
+                            else { LOG_INF("%s: placement estimate held: it picked %s, measured one card %.2f s, split %.2f s\n", __func__, eo ? "one card" : "the layer split", t1 / 1000, t2 / 1000); }
+                            llama_state_erase(g_place_sec.c_str(), est_key.c_str());   // checked once; the measured totals decide from here on
+                        }
+                    }
+                    try_one = place_one_card_pick(h1, p1, g1, h2, p2, g2, np, ng, est_one);
                     g_place_one = try_one;
-                    line = place_pick_line(try_one, h1, p1, g1, h2, p2, g2, np, ng);
+                    line = place_pick_line(try_one, h1, p1, g1, h2, p2, g2, np, ng, est_why);
                     if (!try_one) { decide_fork("placement", line.label, line.why); }
                 }
                 if (try_one) {
@@ -2333,6 +2403,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
                 }
             }
             place_fusions_pick();
+            if (!ub && ub_split && !one_card) { ub = ub_split; }   // the estimate probed the split's micro-batch already (same params)
             if (!ub) { ub = common_fits_ubatch(params, in_ram); }
             if (params.ubatch_user) { ub = std::min<uint32_t>(ub, params.n_ubatch); }   // -ub is a clamp on the largest micro-batch, not a fixed size (user 2026-10-25: dense ubatch sweep)
             params.n_batch  = std::max<uint32_t>(params.n_batch, 2 * ub);

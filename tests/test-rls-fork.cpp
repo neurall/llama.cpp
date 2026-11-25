@@ -247,26 +247,33 @@ int main() {
         // request totals the records keep, from the server logs of 2026-11-25 (Qwen3.6 two 3090s: one card passes of 1718 tokens at 5.7-7.1k i/s, request
         // 5810.5 i/s 152.5 o/s; layer split passes of 1728 at 9.9-11.9k i/s, request 8207.5 i/s 162.0 o/s) and 2026-11-23 (Inkling 2 Mini 12k chat: one card
         // 1372 i/s 56.9 o/s, split 1074 i/s 33.9 o/s). Pass: start 1 runs the split and at most one start runs the slower arm, so the split wins from start 3
-        // and a faster one card from start 2; no decision line says "measured" before both arms have a record.
+        // and a faster one card from start 2 (until 2026-11-25; now the first start is the estimate's pick); no decision line says "measured" before both arms have a record.
         struct req { double n_p, n_g; };
         const req chat = { 700, 400 }, gate = { 13744, 1024 }, decode_bound = { 300, 4096 };
-        struct place_sim { const char * name; double one_i, one_o, spl_i, spl_o; req odd, even; };   // odd, even: the request of starts 1, 3, 5 and 2, 4, 6
+        // Since 2026-11-25 the first start runs the estimate's pick (place_estimate) from the inputs the decision has: the split's weights left in RAM by
+        // the fitter (Inkling 6.2 GiB, Qwen3.6 none), the experts' used share, RAM read and upload rates, the split's passes. The second start tries the
+        // other arm once, then the measured totals decide.
+        const double GiB = 1073741824.0;
+        struct place_sim { const char * name; double one_i, one_o, spl_i, spl_o; req odd, even; double host, used, pass; };
         const place_sim cases[] = {
-            { "Qwen3.6 cold, chat and 12k starts",                  5810.5, 152.5, 8207.5, 162.0, chat, gate },
-            { "Qwen3.6 cold, 12k gate starts (relgate1k)",          5810.5, 152.5, 8207.5, 162.0, gate, gate },
-            { "Inkling 2 Mini cold, chat and 12k starts (one card)", 1372,  56.9,  1074,   33.9,  chat, gate },
-            { "Inkling 2 Mini cold, decode-bound starts (one card)", 1372,  56.9,  1074,   33.9,  decode_bound, decode_bound },
+            { "Qwen3.6 cold, chat and 12k starts",                  5810.5, 152.5, 8207.5, 162.0, chat, gate, 0, 8.0 / 256, 4096 },
+            { "Qwen3.6 cold, 12k gate starts (relgate1k)",          5810.5, 152.5, 8207.5, 162.0, gate, gate, 0, 8.0 / 256, 4096 },
+            { "Inkling 2 Mini cold, chat and 12k starts (one card)", 1372,  56.9,  1074,   33.9,  chat, gate, 6.2 * GiB, 8.0 / 128, 2048 },
+            { "Inkling 2 Mini cold, decode-bound starts (one card)", 1372,  56.9,  1074,   33.9,  decode_bound, decode_bound, 6.2 * GiB, 8.0 / 128, 2048 },
         };
         for (const auto & k : cases) {
             double rec[2][4] = { { -1, -1, 0, 0 }, { -1, -1, 0, 0 } };   // [one card, split]: p, g (ms a token, -1: not timed), n_p, n_g as the state keeps them
             std::string seq, bad_line;
             int lost = 0;
+            place_est_in ei; ei.host_bytes = k.host; ei.used_share = k.used; ei.ram_gbs = 111.92; ei.link_gbs = 26.61; ei.pass_tokens = k.pass; ei.passes_per_call = 2;
+            const bool est_one = place_estimate_pick(place_estimate(ei, k.odd.n_p), k.odd.n_p, k.odd.n_g);
+            const bool want_one = k.odd.n_p / k.one_i + k.odd.n_g / k.one_o < k.odd.n_p / k.spl_i + k.odd.n_g / k.spl_o;
             for (int st = 0; st < 6; ++st) {
                 const req q = st % 2 ? k.even : k.odd;
                 const bool h1 = place_record_counts(rec[0][0], rec[0][1]), h2 = place_record_counts(rec[1][0], rec[1][1]);
                 const double np = h1 && h2 ? (rec[0][2] + rec[1][2]) / 2 : 0, ng = h1 && h2 ? (rec[0][3] + rec[1][3]) / 2 : 0;   // as common.cpp weighs them
-                const bool one = place_one_card_pick(h1, rec[0][0], rec[0][1], h2, rec[1][0], rec[1][1], np, ng);
-                const place_line pl = place_pick_line(one, h1, rec[0][0], rec[0][1], h2, rec[1][0], rec[1][1], np, ng);
+                const bool one = place_one_card_pick(h1, rec[0][0], rec[0][1], h2, rec[1][0], rec[1][1], np, ng, est_one);
+                const place_line pl = place_pick_line(one, h1, rec[0][0], rec[0][1], h2, rec[1][0], rec[1][1], np, ng, "estimate");
                 if (!(h1 && h2) && (pl.label + pl.why).find("measured") != std::string::npos && bad_line.empty()) { bad_line = pl.label + " (" + pl.why + ")"; }
                 const double t1 = q.n_p / k.one_i + q.n_g / k.one_o, t2 = q.n_p / k.spl_i + q.n_g / k.spl_o;
                 lost += one ? t1 > t2 : t2 > t1;
@@ -276,7 +283,7 @@ int main() {
             }
             char what[512];
             snprintf(what, sizeof what, "place sim %s: %s (1 = one card, S = split)", k.name, seq.c_str());
-            check(what, seq[0] == 'S' && lost <= 1, lost);
+            check(what, (seq[0] == '1') == want_one && seq[1] != seq[0] && lost <= 1, lost);   // first the faster arm by the estimate, then the other once
             snprintf(what, sizeof what, "place sim %s: no line says measured before both are timed%s%s", k.name, bad_line.empty() ? "" : ": ", bad_line.c_str());
             check(what, bad_line.empty(), 0);
         }

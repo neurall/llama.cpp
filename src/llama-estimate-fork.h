@@ -591,19 +591,97 @@ static inline void place_totals(double p1, double g1, double p2, double g2, doub
 // both: it runs the stock layer split, the release's default, and the next start tries one card once (one card first lost the gate: relgate1k 2026-11-25
 // Qwen3.6 13744/1024 cold on one card 5810 i/s 152.5 o/s against the release's split 8133 i/s 159.7 o/s). With both, the smaller total (place_totals)
 // wins and a tie keeps the split. True: one card.
-static inline bool place_one_card_pick(bool have_one, double p1, double g1, bool have_split, double p2, double g2, double n_p, double n_g) {
-    if (!have_split) { return false; }   // nothing measured, or one card only: the split runs (first, or its one try)
+// est_one: the estimator's pick (place_estimate_pick), which a cold state runs first since 2026-11-25 (before: always the split, and Inkling 2 Mini lost
+// 40% decode on its first start).
+static inline bool place_one_card_pick(bool have_one, double p1, double g1, bool have_split, double p2, double g2, double n_p, double n_g, bool est_one) {
+    if (!have_one && !have_split) { return est_one; }   // nothing measured: the estimate's pick runs first
+    if (!have_split) { return false; }   // one card measured only: the split's one try
     if (!have_one) { return true; }      // the split measured, one card not: one card's one try
     double t1 = 0, t2 = 0;
     place_totals(p1, g1, p2, g2, n_p, n_g, t1, t2);
     return t1 < t2;
 }
 
+// The estimate behind a cold start's placement (place_one_card_pick's est_one), from what is known before the model loads. What the layer split costs or
+// saves against one card, found from the server logs of 2026-11-25 (two 3090s):
+//   - Inkling 2 Mini 12k/1k: the split's arm was not a clean split. The fitter left 6.2 GiB of expert weights in RAM (rule=ts 11/37, tensor overrides 1,
+//     host weights read 6.7 GiB against 0.5 on one card), so every prompt pass uploaded them (+0.15 ms a prompt token) and every answer token read the
+//     used experts of those layers on the CPU (+11.2 ms a token, 25.5 against 14.3). CUDA graphs ran in both arms (graphs reused 1021 each).
+//   - Qwen3.6 35B-A3B: nothing in RAM, so the stock pipeline runs the prompt passes of a call on both cards at once (8195 against 5810 i/s at 13744
+//     tokens); one hop of a token's activations between the cards is a few KB, not weighed; decode within 5% either way.
+// in.host_bytes: weight bytes the fitter leaves in RAM for the split (0: every weight on the cards; one card's arm fits by the fits_one_card_pick check).
+// in.used_share: share of those bytes one answer token reads (experts used / experts, 1 for a dense model). in.ram_gbs, in.link_gbs: the machine probes
+// (RAM read, slowest card's upload). in.pass_tokens, in.passes_per_call: the split's micro-batch and n_batch / n_ubatch. p1, g1, p2, g2: measured ms a
+// token of an arm, -1 when not measured; the other arm is derived from it.
+struct place_est_in {
+    double host_bytes = 0, used_share = 1, ram_gbs = 0, link_gbs = 0, pass_tokens = 512, passes_per_call = 1;
+    int    n_cards = 2;
+    double p1 = -1, g1 = -1, p2 = -1, g2 = -1;
+};
+// The estimate: split prompt = one card's * f + sp, split decode = one card's + sg (ms a token). f: the pipeline's share of the time, P passes of a call
+// over n cards take (P + n - 1) / n pass times against P; the stock pipeline is off when weights stay in RAM (tensor overrides), so f = 1 then.
+// sp: each pass uploads the RAM weights once. sg: each answer token reads its share of them at RAM speed (a floor: the CPU's own compute and the
+// per-layer hand-off are left out, Inkling measured 11.2 ms against 3.7 estimated). p1/g1 unknown (-1) when neither arm was measured.
+struct place_est { double f = 1, sp = 0, sg = 0, p1 = -1, g1 = -1, p2 = -1, g2 = -1; };
+static inline place_est place_estimate(const place_est_in & in, double n_p) {
+    place_est e;
+    const bool pipe = in.host_bytes <= 0 && in.n_cards > 1;
+    const double P = std::max(1.0, std::min(in.passes_per_call, std::ceil(std::max(1.0, n_p) / std::max(1.0, in.pass_tokens))));
+    e.f  = pipe ? (P + in.n_cards - 1) / (in.n_cards * P) : 1.0;
+    e.sp = in.host_bytes > 0 && in.link_gbs > 0 ? in.host_bytes / (in.link_gbs * 1e6) / std::max(1.0, in.pass_tokens) : 0.0;
+    e.sg = in.host_bytes > 0 && in.ram_gbs > 0 ? in.host_bytes * in.used_share / (in.ram_gbs * 1e6) : 0.0;
+    e.p1 = in.p1 > 0 ? in.p1 : in.p2 > 0 ? (in.p2 - e.sp) / e.f : -1;
+    e.g1 = in.g1 > 0 ? in.g1 : in.g2 > 0 ? in.g2 - e.sg : -1;
+    e.p2 = in.p2 > 0 ? in.p2 : e.p1 > 0 ? e.p1 * e.f + e.sp : -1;
+    e.g2 = in.g2 > 0 ? in.g2 : e.g1 > 0 ? e.g1 + e.sg : -1;
+    return e;
+}
+// The split's estimated total minus one card's (ms) for n_p prompt and n_g answer tokens. An unknown base prompt time counts only the RAM uploads: the
+// pipeline's saving is then left out, it only ever favours the split, which a tie keeps.
+static inline double place_estimate_gap(const place_est & e, double n_p, double n_g) {
+    return n_p * ((e.p1 > 0 ? e.p1 * (e.f - 1) : 0.0) + e.sp) + n_g * e.sg;
+}
+// True: the estimate picks one card (the split is slower); a tie keeps the stock layer split.
+static inline bool place_estimate_pick(const place_est & e, double n_p, double n_g) { return place_estimate_gap(e, n_p, n_g) > 0; }
+
+// The estimate's reason in plain words: both arms' estimated ms a token (one card's unknown before a run: then the split's as one card's plus the cost).
+static inline std::string place_estimate_why(const place_est & e, double n_p, double n_g) {
+    char b[400];
+    const double gap = place_estimate_gap(e, n_p, n_g);
+    if (e.p1 > 0 && e.g1 > 0) {
+        snprintf(b, sizeof b, "estimated for %.0f prompt + %.0f answer tokens: one card %.3f ms a prompt token, %.2f ms an answer token (%.1f s), layer split "
+            "%.3f / %.2f ms (%.1f s)", n_p, n_g, e.p1, e.g1, (n_p * e.p1 + n_g * e.g1) / 1000, e.p2, e.g2, (n_p * e.p2 + n_g * e.g2) / 1000);
+    } else {
+        snprintf(b, sizeof b, "estimated for %.0f prompt + %.0f answer tokens: layer split = one card's prompt x %.3f + %.4f ms a token (weights in RAM "
+            "uploaded per pass), decode + %.2f ms a token (their used share read from RAM): split %+.1f s against one card%s", n_p, n_g, e.f, e.sp, e.sg,
+            gap / 1000, gap > 0 ? "" : " (a tie keeps the stock split)");
+    }
+    return b;
+}
+
+// The estimate was wrong when the measured totals (t1 one card, t2 split, ms) pick the other arm by more than the noise: 5%, the floor the moe placement's
+// measured pick uses (moe_auto_pick), since one record per arm gives no spread.
+static inline bool place_estimate_wrong(bool est_one, double t1, double t2) {
+    const double bar = 0.05 * std::max(1e-9, std::min(t1, t2));
+    return est_one ? t2 + bar < t1 : t1 + bar < t2;
+}
+// The plain line for a wrong estimate, with every input, so the case becomes a unit test (tests/test-estimate-fork.cpp, "place estimate").
+static inline std::string place_estimate_wrong_line(const place_est_in & in, const place_est & e, double n_p, double n_g, double t1, double t2) {
+    char b[640];
+    snprintf(b, sizeof b, "placement estimate was wrong: it picked %s, predicted split minus one card %+.2f s for %.0f prompt + %.0f answer tokens "
+        "(split prompt = one card x %.3f + %.4f ms, decode + %.2f ms), measured one card %.2f s, split %.2f s; inputs: host_bytes %.0f used_share %.5f "
+        "ram_gbs %.2f link_gbs %.2f pass_tokens %.0f passes_per_call %.0f n_cards %d", place_estimate_pick(e, n_p, n_g) ? "one card" : "the layer split",
+        place_estimate_gap(e, n_p, n_g) / 1000, n_p, n_g, e.f, e.sp, e.sg, t1 / 1000, t2 / 1000, in.host_bytes, in.used_share, in.ram_gbs, in.link_gbs,
+        in.pass_tokens, in.passes_per_call, in.n_cards);
+    return b;
+}
+
 // The placement decision line (decide_fork "placement") for pick `one` on these records. It says "measured" only when both arms have a record; one arm's
 // record is "timed", and a phase it lacks is "not timed". The cold start's line in the relgate1k miss (2026-11-25) said "one card vs layer split is
 // measured" with nothing timed. common.cpp puts the card and the model's fit in front of a one-card reason.
 struct place_line { std::string label, why; };
-static inline place_line place_pick_line(bool one, bool have_one, double p1, double g1, bool have_split, double p2, double g2, double n_p, double n_g) {
+// est_why: the estimate's reason (place_estimate_why), the reason of a cold start.
+static inline place_line place_pick_line(bool one, bool have_one, double p1, double g1, bool have_split, double p2, double g2, double n_p, double n_g, const std::string & est_why) {
     auto rates = [](double p, double g) {
         char b[48];
         std::string s = "prompt not timed";
@@ -612,9 +690,9 @@ static inline place_line place_pick_line(bool one, bool have_one, double p1, dou
         return s;
     };
     place_line r;
-    r.label = std::string(one ? "one card" : "layer split") + (have_one && have_split ? " (measured)" : have_one || have_split ? " (tried once)" : " (first try)");
+    r.label = std::string(one ? "one card" : "layer split") + (have_one && have_split ? " (measured)" : have_one || have_split ? " (tried once)" : " (estimated)");
     if (!have_one && !have_split) {
-        r.why = "nothing timed yet: one start runs one placement, so the stock layer split runs first and one card is tried on the next start";
+        r.why = "nothing timed yet: " + est_why + "; the other placement is tried on the next start";
     } else if (!have_one) {
         r.why = "layer split timed (" + rates(p2, g2) + "), one card not yet: tried once";
     } else if (!have_split) {
