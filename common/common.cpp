@@ -17,6 +17,7 @@
 #include "llama.h"
 #include "sampling.h"
 #include "speculative.h"
+#include "draft-ubatch-fork.h"
 #include "unicode.h"
 
 #include <algorithm>
@@ -2761,6 +2762,17 @@ void common_fit_apply(common_params & params, llama_model_params & mparams, llam
         cparams_dft.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
     }
     cparams_dft.n_rs_seq = 0;
+    if (has_draft) {
+        // fork: the draft runs at its own ubatch (common_speculative_draft_ubatch), so fit measures it there: at the target's 4096 it counted
+        // 6.3 GiB of draft compute it never takes and left the context at its 4096 minimum (Inkling 2 + DSpark, 2026-11-25)
+        llama_model_params mp_dry = mparams_dft;
+        mp_dry.no_alloc  = true;
+        mp_dry.load_mode = LLAMA_LOAD_MODE_NONE;
+        llama_model_ptr model_dry(common_model_load(params_dft.model.get_paths(), mp_dry));
+        if (model_dry) {
+            cparams_dft.n_ubatch = common_speculative_draft_ubatch(model_dry.get(), cparams_dft.n_ubatch);
+        }
+    }
 
     const common_fit_extra_model extra = {
         /*.paths_model  =*/ params_dft.model.get_paths(),
