@@ -8542,10 +8542,10 @@ size_t llama_moe_cache_draft_area_fork(ggml_backend_dev_t dev, size_t need, ggml
     for (auto & a : mc->alias) { if (a.dev == dev) { ap = &a; } }
     if (!ap) { return 0; }
     if (need == 0) { if (buf && ap->draft_c) { *buf = ap->buf; } return ap->draft_c; }
-    const size_t c = poolx_draft_area(*ap, need, ap->span);
+    const size_t c = poolx_draft_area(*ap, need, ap->span_full);   // the lend's reach without the KV zone (the zone moves behind the area)
     if (c == 0) {
         LLAMA_LOG_WARN("moe-cache: draft: its graphs need %.1f MiB on %s, more than half of the %.1f MiB the pool lends: they keep a buffer of their own\n",
-                need / 1048576.0, ggml_backend_dev_name(dev), ap->span / 1048576.0);
+                need / 1048576.0, ggml_backend_dev_name(dev), ap->span_full / 1048576.0);
         return 0;
     }
     if (buf) { *buf = ap->buf; }
