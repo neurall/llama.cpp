@@ -493,6 +493,25 @@ void llama_dsplit_mirror_invalidate_fork(const llama_model & model, ggml_backend
     }
 }
 
+// the speculative draft's compute area took the first `front` bytes of dev's pool (llama_moe_cache_draft_area_fork): the copies there move behind it, filled again
+// before the next split
+void llama_dsplit_mirror_shift_fork(ggml_backend_dev_t dev, size_t front) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    for (auto & st : g_sets) {
+        auto ct = st.second.copies.find(dev);
+        if (ct == st.second.copies.end() || !ct->second.pooled) {
+            continue;
+        }
+        dsplit_copies & c = ct->second;
+        for (size_t i = 0; i < c.pairs.size(); ++i) {
+            ggml_tensor * t = c.pairs[i].second;
+            t->data = (uint8_t *) ggml_backend_buffer_get_base(t->buffer) + front + c.off[i];
+        }
+        c.valid = false;
+        dsplit_update_fill(st.second);
+    }
+}
+
 ggml_tensor * llama_dsplit_mirror_fork(const llama_model & model, ggml_tensor * t, ggml_backend_dev_t dev) {
     if (t == nullptr) { return nullptr; }
     std::lock_guard<std::mutex> lk(g_mu);

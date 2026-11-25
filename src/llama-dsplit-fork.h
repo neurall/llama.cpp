@@ -30,6 +30,8 @@ size_t llama_dsplit_mirror_offset_fork(const llama_model & model, ggml_backend_d
 std::vector<std::pair<ggml_tensor *, ggml_tensor *>> llama_dsplit_mirror_take_upload_fork(const llama_model & model, ggml_backend_dev_t dev);
 // a graph that does not split is placed over dev's copies: they have to be filled again before the next split
 void   llama_dsplit_mirror_invalidate_fork(const llama_model & model, ggml_backend_dev_t dev);
+// the speculative draft's compute area took the first `front` bytes of dev's pool: dev's copies move behind it (filled again before the next split)
+void   llama_dsplit_mirror_shift_fork(ggml_backend_dev_t dev, size_t front);
 
 // the copy of weight t on device dev; t itself when t lives on dev or has no copy (routed experts, tensors in host memory)
 ggml_tensor * llama_dsplit_mirror_fork(const llama_model & model, ggml_tensor * t, ggml_backend_dev_t dev);

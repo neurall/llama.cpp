@@ -131,6 +131,9 @@ bool llama_moe_cache_swap_layers_fork(int il_a, int il_b);
 // compute alias (--moe alias=1): the pool buffers whose first blocks the scheduler may use for its compute graphs, and the bytes it may use
 struct llama_moe_alias_buf_fork { ggml_backend_buffer_t buf; ggml_backend_dev_t dev; size_t capacity; };
 std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork();
+// the speculative draft's compute area at the start of dev's pool: need = what its worst-case graphs measure there (0: the area as it is);
+// returns the area's bytes (0: none) and the pool buffer in *buf
+size_t llama_moe_cache_draft_area_fork(ggml_backend_dev_t dev, size_t need, ggml_backend_buffer_t * buf);
 // --moe mirror-pool: the dense split's copies at the start of dev's pool (the pass planner keeps room), and per graph where its tensors start (behind them
 // when it splits, else 0); the lent range covers the copies too
 void llama_moe_cache_alias_mirror_fork(ggml_backend_dev_t dev, size_t bytes);
@@ -250,8 +253,10 @@ void llama_moe_cache_step_fork();
 // learned predictors: the next decode trains them (the graph holds the update nodes only then, so a
 // non-training step costs just the prediction); graph reuse must not cross a change of this
 bool llama_moe_cache_pred_train_now_fork();
-bool llama_moe_cache_graph_reusable_fork();
-void llama_moe_cache_graph_built_fork();
+// ctx: the context that builds the graph; other: a context without the expert cache (a draft): only the pool's moves (KV zone, lend places) count for it, kept
+// per context (a draft's build must not mark the target's old graph as built after a move, nor the other way round)
+bool llama_moe_cache_graph_reusable_fork(const void * ctx = nullptr, bool other = false);
+void llama_moe_cache_graph_built_fork(const void * ctx = nullptr, bool other = false);
 
 // --moe bell=1: the decode bell (ggml/src/ggml-bell-fork.h, fork/docs/decode-doorbell-plan-2026-11-18.md). A decode token's cache layers meet the host through
 // a block of mapped memory per layer instead of two host steps of the scheduler, so a card's layers are one graph.
