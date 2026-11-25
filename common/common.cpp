@@ -2741,6 +2741,8 @@ common_gguf_info common_get_gguf_info(const std::string & fname) {
     return info;
 }
 
+static bool g_fit_made_ts_fork = false;   // common_fit_made_ts_fork
+
 void common_fit_apply(common_params & params, llama_model_params & mparams, llama_context_params & cparams) {
     if (!params.fit_params) {
         return;
@@ -2786,6 +2788,7 @@ void common_fit_apply(common_params & params, llama_model_params & mparams, llam
     const char * kt_fit = llama_moe_get_opt("kv-tail");
     const char * kg_fit = llama_moe_get_opt("kv-ctx-given");
     const uint32_t n_ctx_before_fit = cparams.n_ctx;
+    const bool ts_before_fit = std::any_of(std::begin(params.tensor_split), std::end(params.tensor_split), [](float v) { return v != 0.0f; });
     if (kt_fit && atoi(kt_fit) != 0 && !(kg_fit && atoi(kg_fit) != 0)) { cparams.n_ctx = std::max<uint32_t>(params.fit_params_min_ctx, 4096); }
     common_fit_params(params.model.get_paths(), &mparams, &cparams,
         params.tensor_split,
@@ -2795,7 +2798,11 @@ void common_fit_apply(common_params & params, llama_model_params & mparams, llam
         has_draft || spec_mtp ? &extra : nullptr,
         params.verbosity >= LOG_LEVEL_DEBUG ? GGML_LOG_LEVEL_DEBUG : GGML_LOG_LEVEL_ERROR);
     if (kt_fit && atoi(kt_fit) != 0 && !(kg_fit && atoi(kg_fit) != 0)) { cparams.n_ctx = n_ctx_before_fit; }
+    g_fit_made_ts_fork = !ts_before_fit && std::any_of(std::begin(params.tensor_split), std::end(params.tensor_split), [](float v) { return v != 0.0f; });
 }
+
+// fork: the tensor split above is fit's own (not the user's -ts): a draft model must not take it, fit measured the draft at its own layout
+bool common_fit_made_ts_fork() { return g_fit_made_ts_fork; }
 
 #if defined(__linux__)
 #include <fcntl.h>

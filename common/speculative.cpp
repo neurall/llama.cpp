@@ -3347,6 +3347,8 @@ const std::vector<double> & common_speculative_get_synth_probs(const common_spec
     return spec->synth_probs;
 }
 
+bool common_fit_made_ts_fork();   // common/common.cpp
+
 common_params common_base_params_to_speculative(const common_params & params) {
     const bool has_draft = params.speculative.has_dft();
 
@@ -3364,6 +3366,11 @@ common_params common_base_params_to_speculative(const common_params & params) {
         result.model                 = params_spec.mparams;
         result.n_gpu_layers          = params_spec.n_gpu_layers;
         result.tensor_buft_overrides = params_spec.tensor_buft_overrides;
+        // fork: a tensor split that fit made for the target is not the draft's: fit measured the draft at its own layout (all on CUDA0 for Inkling 2's
+        // DSpark), the inherited 11/37 split put its 1.8 GiB KV on the card fit had filled (release build, 2 cards: cudaMalloc failed, 2026-11-26)
+        if (common_fit_made_ts_fork()) {
+            std::fill(std::begin(result.tensor_split), std::end(result.tensor_split), 0.0f);
+        }
 
         // a draft pinned to a single device doesn't need the meta wrapper an inherited -sm tensor would give it
         // (the device list is null-terminated, so a single device means size 2)
