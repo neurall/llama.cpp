@@ -2183,33 +2183,13 @@ static void dsplit_expert_trial_impl(dsplit_bal & B, int64_t T) {
         if (g_xt.exp_cm >= 0.0 && g_dsf_ps.pos0 >= 0) { g_xt.ref_v += g_dsf_ps.att * (g_xt.exp_cm - ((double) g_dsf_ps.pos0 + 0.5 * (double) g_dsf_ps.T)); }
         std::vector<double> fi = g_xt.exp_f;
         fi.resize(x, 0.0);
-        const bool better = g_xt.exp_v > 0.0 && g_xt.exp_v < g_xt.ref_v * 0.99;
-        double tot = 0.0;
-        if (better) {
-            // more while the helper idled in the EXPERTS pass (this pass is the dense split alone, where a helper always waits: read here, every faster pair
-            // grew the share to 100% and the trial never settled), up to its even share
-            const std::vector<double> ev = even_shares();
-            bool idle = false;
-            for (size_t i = 0; i < x; ++i) {
-                const double cap = ev[i] > 0.0 ? ev[i] : 1.0;
-                if (fi[i] > 0.0 && fi[i] < cap && i < g_xt.exp_idle.size() && g_xt.exp_idle[i] > 0.10) { fi[i] = std::min(cap, fi[i] * 1.5); idle = true; }
-            }
-            g_xt.phase = idle ? 1 : 3;
-            if (!idle) { g_xt.wait = 8; }
-            why = format("pair: experts %.1f against the dense split alone %.1f us/token, faster%s", g_xt.exp_v, g_xt.ref_v, idle ? ": more" : ": settled");
-        } else {
-            for (size_t i = 0; i < x; ++i) { fi[i] *= 0.5; }
-            g_xt.phase = 1;
-            why = format("pair: experts %.1f against the dense split alone %.1f us/token, not faster: half", g_xt.exp_v, g_xt.ref_v);
-        }
-        for (double v : fi) { tot += v; }
-        if (tot < 0.02) {
-            std::fill(fi.begin(), fi.end(), 0.0);
-            g_xt.phase = 2; g_xt.wait = 8;
-            why += ": abandoned, the dense split alone, a new try in 8 passes";
-        }
-        set_f(fi);
-        LLAMA_LOG_WARN("split experts: %s; helpers now %.0f%% of the experts\n", why.c_str(), 100.0 * tot);
+        const dsplit_xverdict vd = dsplit_xtrial_verdict(g_xt.exp_v, g_xt.ref_v, fi, g_xt.exp_idle, even_shares);   // llama-splitplan-fork.h
+        g_xt.phase = vd.phase;
+        if (vd.wait >= 0) { g_xt.wait = vd.wait; }
+        why = format("pair: experts %.1f against the dense split alone %.1f us/token, %s", g_xt.exp_v, g_xt.ref_v, vd.better ? vd.more ? "faster: more" : "faster: settled" : "not faster: half");
+        if (vd.abandoned) { why += ": abandoned, the dense split alone, a new try in 8 passes"; }
+        set_f(vd.f);
+        LLAMA_LOG_WARN("split experts: %s; helpers now %.0f%% of the experts\n", why.c_str(), 100.0 * vd.tot);
         return;
     }
     if (fh <= 0.0) {   // measured: the dense split alone
@@ -2238,9 +2218,8 @@ static void dsplit_expert_trial_impl(dsplit_bal & B, int64_t T) {
             const double upl  = B.gb_up[x] / link * 1e3;                     // ms: all of the expert card's expert uploads over card i's link
             const double hand = B.hop[i] * (double) (T - B.tok[i]) / 1e3;    // ms: the other cards' tokens crossing to card i
             const double extra = std::max(comp, upl) + hand;
-            fi[i] = extra > 0.0 ? std::min(1.0, 0.5 * B.xw[i] / extra) : 0.0;
-            const bool capped = ev[i] > 0.0 && fi[i] > ev[i];
-            if (capped) { fi[i] = ev[i]; }
+            bool capped = false;
+            fi[i] = dsplit_xtrial_start(B.xw[i], extra, ev[i], &capped);   // llama-splitplan-fork.h
             calc += format("%s%s idle %.0f ms, all experts would add %.0f ms (compute %.0f, upload %.0f, hand-offs %.0f): start %.0f%%%s", calc.empty() ? "" : "; ",
                     ggml_backend_dev_name(B.dev[i]), B.xw[i], extra, comp, upl, hand, 100.0 * fi[i], capped ? " (its even share: the cards' expert chains end together)" : "");
             any = any || fi[i] >= 0.02;
