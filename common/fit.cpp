@@ -329,7 +329,8 @@ static void common_params_fit_impl(
                 } catch (const std::runtime_error & e) {
                     // fork: a draft that borrows the target's embeddings/head (DSpark, DFlash, EAGLE3) needs a target context: measure it against a dry one.
                     // Without it the draft counted 0 and the auto context left no room: Inkling 2 + DSpark draft, cudaMalloc of its 394 MiB compute buffer failed at load
-                    if (!strstr(e.what(), "requires ctx_other")) { throw; }
+                    // llama_init_from_model logs "requires ctx_other" and returns null, so the measure throws "failed to create llama_context"
+                    if (!strstr(e.what(), "requires ctx_other") && !strstr(e.what(), "failed to create llama_context")) { throw; }
                     llama_model_params mp_dry = *mparams;
                     mp_dry.no_alloc  = true;
                     mp_dry.load_mode = LLAMA_LOAD_MODE_NONE;
