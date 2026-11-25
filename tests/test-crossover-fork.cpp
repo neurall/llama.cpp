@@ -6,6 +6,7 @@
 // build: cmake --build <dir> --target test-crossover-fork;  run: ctest -R test-crossover-fork
 // standalone: g++ -std=c++17 -O2 tests/test-crossover-fork.cpp -o /tmp/test-crossover-fork && /tmp/test-crossover-fork
 #include "../src/llama-estimate-fork.h"   // pp_path_rules, pp_pick (X2, X3); llama-rls-fork.h with it (dsf_pick: X4)
+#include "../src/llama-splitplan-fork.h" // dsplit_xtrial_start, dsplit_xtrial_verdict (X5)
 
 #include <cstdio>
 #include <cstring>
@@ -266,10 +267,89 @@ static void x23_sims() {
     }
 }
 
+// X5: the dense split alone against the dense split with experts on the helper, the paired trial of dsplit_expert_trial_impl (its phases as there: 2 the
+// dense split alone, 1 a share on trial, 5 the pair's reference pass, 3 settled) with its own start and verdict (dsplit_xtrial_start, dsplit_xtrial_verdict).
+// Qwen3.8 IQ4_XS on two 3090s, 13782 tokens (cold_split_first_tested-qni4.server.log, 2026-11-25): the dense split alone 353.1 us/token, the helper idle
+// 3065 ms of the 4866 ms pass, all experts would add 2563 ms, start 50% (its even share); the experts pass at 50% took 343.1 (2.8% faster), and the
+// request ended before the pair's reference pass: no verdict, X5 unverified. The grid's experts at 16k: 10% faster (planner-crossovers.md, SE +10%).
+// A pass's time over the helper's share f: linear to the even share, past it the helper is the long pole (GLM 3.0 12k: 16.9 s at 100% against 12.6 s
+// at 50%, x1.34); its idle falls to 0 at the even share. 1% noise a pass. The other side, no slower pair measured on this model: the same plan with
+// the experts passes slower.
+struct x5_case { const char * name; double v0, gain; };   // the dense split alone (us/token); the experts pass at the even share: v0 x (1 - gain)
+
+static void x5_sims() {
+    const double T = 13782, xw0 = 3065, extra = 2563, ev = 0.5;
+    {   // (c) on the verdict alone: an experts pass never timed (0) is never judged faster
+        const dsplit_xverdict vd = dsplit_xtrial_verdict(0.0, 353.1, { 0.5 }, { 0.3 }, [] { return std::vector<double>{ 0.5, 0.5 }; });
+        check("X5 (c) an experts pass that was never timed is not judged faster", !vd.better && !vd.more, vd.f[0]);
+    }
+    const x5_case cases[] = {
+        { "Qwen3.8 IQ4_XS 13782 as logged (the experts 2.8% faster)", 353.1, 1 - 343.1 / 353.1 },
+        { "Qwen3.8 IQ4_XS 16k (the experts 10% faster)",               353.1, 0.10 },
+        { "Qwen3.8 IQ4_XS 13782, the experts 10% slower (the other side)", 353.1, -0.10 },
+    };
+    const int NP = 40;
+    for (const auto & k : cases) {
+        auto v_of = [&](double f) { const double ve = k.v0 * (1 - k.gain); return f <= ev ? k.v0 + (ve - k.v0) * f / ev : ve * (1 + 0.68 * (f - ev) / (1 - ev)); };
+        const double best = std::min(k.v0, v_of(ev));
+        int late_ok = 0, early_verdict = 0, bad_pair = 0, started = 0;
+        std::string seq1;
+        for (int seed = 1; seed <= 200; ++seed) {
+            std::mt19937 rng(seed); std::normal_distribution<double> g(0.0, 1.0);
+            int phase = 2, wait = 1, first_verdict = -1;
+            double ref_v = 0.0, exp_v = 0.0, f = 0.0, late = 0.0, last_v = 0.0, last_fh = 0.0;
+            std::vector<double> exp_f, exp_idle;
+            bool tried = false;
+            std::string seq;
+            for (int p = 0; p < NP; ++p) {
+                const double fh = f, v = v_of(fh) * (1 + 0.01 * g(rng)), span = T * v / 1e3;
+                const double idle = fh > 0 ? 0.63 * std::max(0.0, 1 - fh / ev) : xw0 / (T * k.v0 / 1e3);
+                if (p >= NP - 16) { late += v_of(fh) / 16; }
+                seq += fh <= 0 ? '0' : fh >= ev - 1e-9 ? 'E' : 'e';
+                if (fh <= 0 && phase == 5) {   // the pair's reference pass: the verdict on the experts pass before it
+                    ref_v = v;
+                    bad_pair += !(last_fh > 0 && exp_v == last_v && exp_v > 0);   // (c): both passes of the pair timed, the experts pass right before
+                    const dsplit_xverdict vd = dsplit_xtrial_verdict(exp_v, ref_v, exp_f, exp_idle, [&] { return std::vector<double>{ ev, 1 - ev }; });
+                    phase = vd.phase; if (vd.wait >= 0) { wait = vd.wait; }
+                    f = vd.f[0];
+                    if (first_verdict < 0) { first_verdict = p; }
+                } else if (fh <= 0) {          // the dense split alone
+                    ref_v = ref_v > 0 && phase == 2 ? 0.5 * (ref_v + v) : v;
+                    phase = 2;
+                    if (--wait <= 0) {
+                        if (idle * span < 0.05 * span) { wait = 8; }
+                        else {
+                            bool capped = false;
+                            const double st = dsplit_xtrial_start(idle * span, extra, ev, &capped);
+                            if (st < 0.02) { wait = 8; } else { f = st; phase = 1; tried = true; }
+                        }
+                    }
+                } else if (!(phase == 3 && --wait > 0)) {   // an experts pass: judged at the reference pass after it (settled shares: every 8th)
+                    exp_v = v; exp_f = { fh }; exp_idle = { idle };
+                    f = 0.0; phase = 5;
+                }
+                last_v = v; last_fh = fh;
+            }
+            late_ok += late <= 1.05 * best;
+            started += tried;
+            early_verdict += first_verdict >= 0 && first_verdict <= 3;
+            if (seed == 1) { seq1 = seq; }
+        }
+        char what[300];
+        snprintf(what, sizeof what, "X5 %s: (a) the last 16 of %d passes within 5%% of the best share, in 95%% of seeds (seed 1: %s; 0 alone, e/E experts under/at the even share)", k.name, NP, seq1.c_str());
+        check(what, late_ok >= 190, late_ok);
+        snprintf(what, sizeof what, "X5 %s: (b) the helper idles 63%%: the experts tried and judged by the fourth pass in every seed", k.name);
+        check(what, started == 200 && early_verdict == 200, early_verdict);
+        snprintf(what, sizeof what, "X5 %s: (c) every verdict on a pair with both passes timed", k.name);
+        check(what, bad_pair == 0, bad_pair);
+    }
+}
+
 int main() {
     x23_replays();
     x23_sims();
     x4_sims();
+    x5_sims();
     printf("%s\n", n_failed ? "FAILED" : "all passed");
     return n_failed ? 1 : 0;
 }
