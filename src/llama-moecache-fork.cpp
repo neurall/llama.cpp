@@ -2944,13 +2944,10 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
             for (int32_t e = 0; e < (int32_t) ls.glob_count.size(); ++e) { picks.push_back({ 0.5 * (double) ls.glob_count[e] / tot - (double) ls.pub.il, il, e }); }
             continue;
         }
-        std::vector<int32_t> ids;
-        for (int32_t e = 0; e < (int32_t) ls.glob_count.size(); ++e) {
-            if (ls.glob_count[e] > 0) {
-                ids.push_back(e);
-            }
-        }
-        std::sort(ids.begin(), ids.end(), [&](int32_t a, int32_t b) { return ls.glob_count[a] > ls.glob_count[b]; });
+        // every expert, unseen ones last: a cache that holds the whole layer starts with all of it (Qwen3.6, 2026-11-25: 9543 of 10240 preloaded, prompts missed the rest)
+        std::vector<int32_t> ids((size_t) ls.glob_count.size());
+        std::iota(ids.begin(), ids.end(), 0);
+        std::stable_sort(ids.begin(), ids.end(), [&](int32_t a, int32_t b) { return ls.glob_count[a] > ls.glob_count[b]; });
         uint64_t total = 0;
         for (uint64_t c : ls.glob_count) { total += c; }
         for (int32_t i = 0; i < std::min<int32_t>(ls.n_cache, (int32_t) ids.size()); ++i) {
