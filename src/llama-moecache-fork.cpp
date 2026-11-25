@@ -18621,12 +18621,8 @@ static double pp_pass_floor(double n) {
 }
 // The time of a whole prompt pass, per path and size: the last measurement per power of two of the tokens (in memory, never stored: what the cards hold changes it, and a try costs one
 // pass). This is what auto decides by (user 2026-11-01: per size, from measured values). The paths are told apart by the graph that ran, a forced path measures as well.
-// PP_RING: the stream, every expert staged on the fastest link's card. PP_MIX: the stream with the prompt mix. PP_DEC: the decode chain. PP_K + i: the stream with predicted staging, q2 up to 2^i x a token's picks.
-// PP_LP: the stream layer parallel, each card its own layers' experts (staging=0 only).
-enum { PP_RING = 0, PP_MIX = 1, PP_CHAIN = 2, PP_DENSE = 3, PP_DEC = 4, PP_K = 5, PP_KN = 8, PP_LP = PP_K + PP_KN, PP_PATHS = PP_LP + 1 };
+// The paths (PP_RING ... PP_LP), PP_MIX_COLD and PP_MIN_BATCH: llama-estimate-fork.h, beside the planner's rules and pick over them (pp_path_rules, pp_pick).
 static uint64_t g_pp_tc[PP_PATHS] = {};   // per path: the tokens x cells of a pass the pool refused it (pp_refusal_of), 0 = none; g_pp_mu
-static constexpr double PP_MIX_COLD = 4096.0;   // below it the prompt mix competes on its mean from the first request, above it only a trial (shortcut: a fixed size, the data has wins to 4.5k and losses at 12k; compute it from the cross-card traffic when 5-10k is measured)
-static constexpr double PP_MIN_BATCH = 32.0;   // GGML_OP_OFFLOAD_MIN_BATCH's default: under it a pass's experts run on the CPU, whichever path was planned
 static constexpr double PP_K_LATE = 1.3;   // predicted staging's real cost over the upload of the experts it calculates; the forced sweep's break-even at 77% of a layer's experts needed (2026-10-31, campaign predictor-upload-bw-reducer)
 static struct { double n = 0.0, us = 0.0; } g_pp_took[PP_PATHS][32];
 static double g_pp_took_split[3][32] = {};   // a dense split pass per pass of a size bucket, by the stream variant it ran with (0 ring, 1 mix, 2 layer parallel): split_variant_pick
@@ -19840,7 +19836,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     for (int i = 0; k_auto && i < PP_KN && (double) mc->n_expert_used * (double) (1 << i) < (double) n_expert; ++i) {
         cand(PP_K + i, estimate_predictor_upload_time(pm, i, PP_K_LATE));
     }
-    int best_mu = -1;
+    const char * pick_why = "";   // the learned planner's reason (pp_pick)
     for (int p = 0; p < PP_PATHS; ++p) {
         if (g_pp_phi[p][1] <= 0.0) { continue; }
         dsf_rls & rp = pp_rls(p);
@@ -19860,52 +19856,20 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         bool ok[PP_PATHS];
         for (int p = 0; p < PP_PATHS; ++p) { ok[p] = g_pp_phi[p][1] > 0.0; }
         if (g_pp_short.load(std::memory_order_relaxed)) { ok[PP_CHAIN] = false; }   // the lend left a chain layer too few blocks for this call
-        // a call under the GPU's smallest expert batch (GGML_OP_OFFLOAD_MIN_BATCH, 32 tokens) streams nothing: its expert matmuls run on the CPU, each expert read from the pool or the SSD. The prompt's
-        // 4-token tail (2026-11-08) took 1.1 s on GLM 3.5 and 1.7 s on DeepSeek that way, 0.5 and 0.3 s on the decode chain: about 10% of a 3k prompt. A chain whenever one can run.
-        if (n < PP_MIN_BATCH && (ok[PP_CHAIN] || ok[PP_DEC])) {
-            for (int p = 0; p < PP_PATHS; ++p) { if (p != PP_CHAIN && p != PP_DEC) { ok[p] = false; } }
-        }
-        // deterministic: the lowest mean among the paths known here, a trial only where its stake pays over the calls of this size so far
-        // (rls_voi_pick; planner-simple/learned, replacing the Thompson draws that lost rows 23768/23769)
+        // deterministic: the lowest mean among the paths known here, a trial only where its stake pays over the calls of this size so far (pp_pick)
         const double R = (double) ++g_pp_size_seen[(uint32_t) n];
-        bool known[PP_PATHS];   // ran at comparable features (rls_known): the arms a trial is weighed against
-        for (int p = 0; p < PP_PATHS; ++p) { known[p] = ok[p] && rls_known(g_pp_rls[p], g_pp_pmu[p], g_pp_var[p]); }
-        // R1 (fork/docs/planner-crossovers.md): above the MEASURED CPU crossover g_mb_auto (the release's max-batch, experts / picks) the chains are no
-        // cold pick - no logged class on Qwen3.6/3.8, GLM, MiMo has a chain win there (-97% to -308%), DeepSeek only below 3k. There they are a trial
-        // against an arm known here, and a chain measured here (known) competes on its mean. (a448602c58 had dropped this as a ballpark; the
-        // ballpark was the calculated dec_max, this is the measured one.)
+        bool known[PP_PATHS], kn[PP_PATHS], tonly[PP_PATHS];
+        int runs[PP_PATHS];
+        for (int p = 0; p < PP_PATHS; ++p) { kn[p] = rls_known(g_pp_rls[p], g_pp_pmu[p], g_pp_var[p]); runs[p] = g_pp_rls[p].n; }
         static const bool pp_switch_r1 = [] { const char * e = moe_opt("pp-switch"); return !e || atoi(e) != 0; }();
         // the switch below decides only on a measured input (pp_switch_pick); a call it leaves alone falls under R1 as before it existed
         const bool sw_in = g_pp_c_us > 0.0 || g_pp_c_chain > 0.0 || pm.wait_us > 0.0;   // compute timed by a pass (the stream's, or the chain's bound), a router wait timed
         const bool sw_decides = pp_switch_r1 && (sw_in || pp_took_us(PP_CHAIN, n) > 0.0 || pp_took_us(PP_RING, n) > 0.0);
-        for (const int p : { PP_CHAIN, PP_DEC }) {
-            // the router path has no CPU side to run away with (the 1170 s below was the decode chain): with the switch on, time per token decides it at any size
-            // (Qwen3.8-Flash-Next IQ4_XS, 512-token passes: router 2.9-3.0 ms per token against the stream's 3.6-3.8, never tried past 256 under this rule)
-            if (p == PP_CHAIN && sw_decides) { continue; }
-            // (g_mb_auto = experts / picks is 32 on these models, and the chains win well past it. Forced sweep 2026-10-31, t/s, cache / stream: MiMo 100 tokens 59/28, 200 64/55, 300 62/82; GLM 3.0 56/27, 62/54, 60/80;
-            // DeepSeek 200 53/13, 500 52/27, 1000 57/57. So up to the calculated crossover dec_max, at most 256 tokens: dec_max alone says thousands before a stream pass measured the compute, and a chain loses there; a chain that ran competes on its mean at any size)
-            // shortcut: 256 is the sweep's crossover on MiMo and GLM, not computed (DeepSeek's is near 1000); use dec_max alone once it is built from a measured compute and link rate
-            if (ok[p] && n > std::max((double) g_mb_auto.load(std::memory_order_relaxed), std::min(dec_max, 256.0)) && !known[p]) { ok[p] = false; }   // no trial past the crossover: MiMo 64k warm, a 16384-token decode chain trial calculated 8.6 s took 1170 s (the stream known, so the old test let it run)
-        }
-        // R1's mirror: at or below that crossover the chains are the cold pick, so an arm that streams and never ran here is no trial there, while a chain can
-        // run. DeepSeek 117 tokens (2026-11-10, third start of two builds): two decode chain samples of 3.7 s left a mean of 14.2 s (the first sample's error
-        // went to the coefficient of the calculated time, which then read 4.4 s instead of 1.1), an unknown stream, k x1 drew 3.5 s and took 29.5 s (49 GB
-        // read from the SSD). A stream measured here competes on its mean at any size.
-        if (ok[PP_DEC] || ok[PP_CHAIN]) {
-            const double xo = std::max((double) g_mb_auto.load(std::memory_order_relaxed), std::min(dec_max, 256.0));
-            for (int p = 0; p < PP_PATHS; ++p) { if (p != PP_CHAIN && p != PP_DEC && ok[p] && !known[p] && n <= xo) { ok[p] = false; } }
-        }
-        // The predictions compete on their calculated upload (user 2026-11-08: "if we are not trying it prior full stream than it is bug"), the lowest k first: it stages the least,
-        // a higher k only after it ran. The mix competes on its mean up to PP_MIX_COLD (2026-11-08 auto rows: MiMo 418 tokens 3018 ms against the stream's 3834, 1016 tokens 3187
-        // against 3907; Qwen3.8 IQ3 1.5-4.5k +18-47%, GLM 3.5 2.3k +10%); past it a mix that never ran here is a trial only, never a mean pick: its prior is the stream's (means
-        // equal to noise, rampool12 rows 23784-23789) and the cross-card traffic grows with the tokens (MiMo 12k 495 against 933 t/s, DS 12k 304 against 530)
-        bool tonly[PP_PATHS];
-        for (int p = 0; p < PP_PATHS; ++p) { tonly[p] = p == PP_MIX && g_pp_rls[p].n == 0 && n > PP_MIX_COLD; }
-        // The mix's freeze drops the uploads not started yet (llama_moe_cache_pp_freeze_fork, pp_settle), as the prompt chain's graph does: right after a start that is the hot set on its
-        // way, and the fast card stays cold for the session (2026-11-08 forced mix cells, Qwen3.8: 24% of the asked experts found on it against 44%, every pass slower than the stream).
-        // So no try of a mix not known here while uploads run; a known one keeps its mean.
-        if (busy && ok[PP_MIX] && !known[PP_MIX]) { ok[PP_MIX] = false; }
-        for (int p = PP_K + 1; p < PP_K + PP_KN; ++p) { if (ok[p] && g_pp_rls[p - 1].n == 0) { ok[p] = false; } }
+        // R1's crossover (pp_path_rules). (g_mb_auto = experts / picks is 32 on these models, and the chains win well past it. Forced sweep 2026-10-31, t/s, cache / stream: MiMo 100 tokens 59/28, 200 64/55, 300 62/82; GLM 3.0 56/27, 62/54, 60/80;
+        // DeepSeek 200 53/13, 500 52/27, 1000 57/57. So up to the calculated crossover dec_max, at most 256 tokens: dec_max alone says thousands before a stream pass measured the compute, and a chain loses there; a chain that ran competes on its mean at any size)
+        // shortcut: 256 is the sweep's crossover on MiMo and GLM, not computed (DeepSeek's is near 1000); use dec_max alone once it is built from a measured compute and link rate
+        const double xo = std::max((double) g_mb_auto.load(std::memory_order_relaxed), std::min(dec_max, 256.0));
+        pp_path_rules(n, xo, sw_decides, busy, runs, kn, ok, known, tonly);   // llama-estimate-fork.h: the smallest batch, R1 and its mirror, the mix's, the k arms' order
         // --moe staging=0: the stream, the mix, layer parallel and the predictions' k arms all run into the cache's blocks (cstream, below). The mix was struck out here
         // while its fast card's share had no fetch ahead (1113 prompt t/s against the stream's 1507); with its shadow on the stream (mix_zero_first) it beat the stream
         // by 6-12% at 4k on five models, and the strike-out left it to forced rows only (user 2026-11-13: "there for sure will be situations where it wins").
@@ -19938,22 +19902,16 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
                     sw == PP_SWITCH_NONE ? "neither struck (no input measured here: the older rules pick)" : stream ? "full stream" : "router",
                     t_r / 1e3 / n, ran_r > 0.0 ? "measured" : "estimate", up / 1e3, wait / 1e3, comp / 1e3, t_s / 1e3 / n, ran_s > 0.0 ? "measured" : "estimate", U / 1e3).c_str());
         }
-        g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial, known, tonly);
-        best_mu   = rls_argmin(g_pp_pmu, ok, PP_PATHS);
-        // the dense split ran this size: its pass teaches no one-card arm, so a stream variant drawn here is never answered (GLM 3.5 2026-11-25: mix and layer
-        // parallel drawn at n=0 on every call, layer parallel 61.6 s against mix 59.9). The variant comes from the split passes measured per variant instead.
-        if (pp_took_us(PP_DENSE, n) > 0.0 && (g_pp_pick == PP_RING || g_pp_pick == PP_MIX || g_pp_pick == PP_LP)) {
-            const int vp[3] = { PP_RING, PP_MIX, PP_LP };
-            const bool vok[3] = { ok[PP_RING], ok[PP_MIX], ok[PP_LP] };
-            const double * vt = g_pp_took_split[pp_bucket(n)];
-            const int v = split_variant_pick(vt, vok, 3);
-            if (v >= 0 && vp[v] != g_pp_pick) {
-                LLAMA_LOG_WARN("moe-cache: prompt call of %.0f tokens runs the dense split: stream variant %s, not the drawn %s (split passes here: stream %.1f s, mix %.1f s, layer parallel %.1f s; 0 = not run yet, tried first)\n",
-                        n, pp_path_name(vp[v]).c_str(), pp_path_name(g_pp_pick).c_str(), vt[0] / 1e6, vt[1] / 1e6, vt[2] / 1e6);
-                g_pp_pick = vp[v];
-                g_pp_trial = false;
-            }
+        // the dense split ran this size: the stream variant from its passes per variant (pp_pick)
+        const double * vt = g_pp_took_split[pp_bucket(n)];
+        const pp_pick_out pk = pp_pick(g_pp_pmu, g_pp_var, ok, known, tonly, R, pp_took_us(PP_DENSE, n) > 0.0 ? vt : nullptr);
+        if (pk.drawn >= 0) {
+            LLAMA_LOG_WARN("moe-cache: prompt call of %.0f tokens runs the dense split: stream variant %s, not the drawn %s (split passes here: stream %.1f s, mix %.1f s, layer parallel %.1f s; 0 = not run yet, tried first)\n",
+                    n, pp_path_name(pk.pick).c_str(), pp_path_name(pk.drawn).c_str(), vt[0] / 1e6, vt[1] / 1e6, vt[2] / 1e6);
         }
+        g_pp_pick  = pk.pick;
+        g_pp_trial = pk.trial;
+        pick_why   = pk.why;
     }
     bool chain, dec, mix, lp;
     double m;
@@ -19963,7 +19921,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         mix   = g_pp_pick == PP_MIX;
         lp    = g_pp_pick == PP_LP;
         m     = g_pp_pick >= PP_K && g_pp_pick < PP_K + PP_KN ? (double) (1 << (g_pp_pick - PP_K)) : 0.0;
-        why   = g_pp_trial ? "trial: its expected gain over the calls of this size beats its expected loss" : g_pp_pick == best_mu ? "lowest mean" : "lowest mean among the paths known here";
+        why   = pick_why;
         g_pp_dec = dec;
         g_pp_mb = chain || dec ? ub_max : 0;
         g_pp_mix_call = mix;
