@@ -2918,13 +2918,15 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     double c_prior = -1.0, c_one = -1.0;
     static double ratio_bench = -1.0;   // the plan's split / one-card compute ratio (matmul bench, link probe): trusted for the ratio, never for the size (rule 41b)
     double c_one_bench = 0.0;   // the bench's one-card compute per token for this size: the cap of an unmeasured one-card prior (below)
+    bool ranges = false;        // token-range copies exist (mirror archs): else the split runs no dense part off the expert card (dsf_prior_ratio)
+    { std::lock_guard<std::mutex> lk(g_mu); auto it = g_sets.find(&model); ranges = it != g_sets.end() && !it->second.copies.empty(); }
     {
         const llama_dsplit_plan_fork plan = llama_dsplit_plan_get_fork(model, n_tokens);
         c_one_bench = plan.valid && plan.t_one_ms > 0.0 ? plan.t_one_ms * 1e3 / (double) n_tokens : 0.0;
         if (g_rls_split.k == 0 || g_rls_one.k == 0) {
             c_prior = plan.valid && plan.t_raw_ms > 0.0 ? plan.t_raw_ms * 1e3 / (double) n_tokens : 0.0;
             c_one   = c_one_bench;
-            if (c_prior > 0.0 && c_one > 0.0) { ratio_bench = dsf_prior_ratio(c_prior, c_one, g_xb_a > 0.0 || g_xb_b > 0.0); }
+            if ((c_prior > 0.0 && c_one > 0.0) || !ranges) { ratio_bench = dsf_prior_ratio(c_prior, c_one, g_xb_a > 0.0 || g_xb_b > 0.0, ranges); }
         }
     }
     std::lock_guard<llama_checked_mutex> dl(g_dsf_mu);
@@ -2998,7 +3000,7 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     int seen_before = 0;
     if (pos0 != seen_pos0) { seen_pos0 = pos0; seen_before = seen[size_class]++; } else { seen_before = seen[size_class] - 1; }
     dsf_call call;
-    call.blocks = g_xb_a > 0.0 || g_xb_b > 0.0;
+    call.blocks = g_xb_a > 0.0 || g_xb_b > 0.0; call.ranges = ranges;
     call.c_one_bench = c_one_bench; call.ratio = ratio; call.split_prior = split_prior; call.split = &g_rls_split; call.f_mu = f_mu; call.f_v = f_v; call.seen_before = seen_before;
     const dsf_pick_out pk = dsf_pick(passes, call);
     const int choice = pk.choice, np = pk.np;

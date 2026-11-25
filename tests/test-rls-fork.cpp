@@ -183,6 +183,14 @@ int main() {
         check("GLM 12k Vulkan request 1 at 1.05, hand-offs block: one card, no trial", g1b.choice == 0 && !g1b.trial, g1b.am[1] / s);
         g1.ratio = 1.0; g1.blocks = false;
         check("the same at 1 in stream order: the split as a trial", dsf_pick({ g1p }, g1).trial, dsf_pick({ g1p }, g1).am[1] / s);
+        // DeepSeek 4.1 13571 tokens, fresh state (equal_prompt_passes relgate 2026-11-25): no token-range graph (deepseek41 is no mirror arch), so its "split" shortens
+        // no compute; the plan's ratio 0.56 priced it at 54.69 s against one card 97.18 +- 34.99 (upload 4.18): the split ran 90.6 s, one card runs 86.6 and was never tried
+        dsf_call ds; ds.ratio = 0.56;
+        const dsf_arm_pass dsp = pass(13571, 4.18, 97.18, 34.99, false, 0);
+        check("DeepSeek 13571 fresh at the plan's 0.56: the split (the miss)", dsf_pick({ dsp }, ds).choice == 1, dsf_pick({ dsp }, ds).am[1] / s);
+        ds.ratio = dsf_prior_ratio(0.56, 1.0, false, false); ds.ranges = false;
+        const dsf_pick_out dso = dsf_pick({ dsp }, ds);
+        check("DeepSeek 13571 fresh, no token ranges: ratio 1, one card, no trial", ds.ratio == 1.0 && dso.choice == 0 && !dso.trial, dso.am[1] / s);
         // MiMo 11k on two CUDA cards, request 1: upload 3.36 s, one card 4.00 +- 1.44, fill 0.10; at ratio 0.84 the split is bound by its upload and its mean
         // (3.46 with the fill) is the lower: the upload rule forbids a trial of the split, not the split where it is ahead (it refused it at 0.84, took it at 0.87)
         dsf_call m1; m1.ratio = 0.84; m1.f_mu = 0.10 * s; m1.f_v = 0.10 * 0.10 * s * s;
