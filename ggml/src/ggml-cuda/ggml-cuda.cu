@@ -1,5 +1,5 @@
-#if defined(__linux__)
 #include "../ggml-evlog-fork.h"
+#if defined(__linux__)
 #include <sys/mman.h>
 #endif
 #if defined(__linux__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
