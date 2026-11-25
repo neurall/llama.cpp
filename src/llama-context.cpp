@@ -73,6 +73,7 @@ void     llama_dsplit_note_limit_fork(uint32_t cap);   // src/llama-dsplit-fork.
 void     llama_dsplit_note_card_max_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the context's card limit (what %limit is of)
 size_t   llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens);   // src/llama-moecache-fork.cpp: what a card's pool lends a prompt graph of n tokens
 size_t   llama_moe_cache_vram_margin_fork(ggml_backend_dev_t dev);
+void     llama_moe_cache_kv_arena_shape_fork(ggml_backend_dev_t dev, size_t * margin, size_t * fixed, size_t * row);   // src/llama-moecache-fork.cpp: the KV arena beside the first graph
 void     llama_moe_cache_alias_refused_fork(uint32_t n_tokens);                        // src/llama-moecache-fork.cpp: a graph that did not fit the lent blocks counts as a refusal                     // src/llama-moecache-fork.cpp: the VRAM margin a card keeps (the first micro-batch cap below)
 bool     llama_moe_cache_pp_short_fork();
 void     llama_moe_cache_pp_freeze_fork();
@@ -1877,9 +1878,14 @@ void llama_context::sched_reserve() {
             if (!ggml_backend_dev_is_gpu(d) || lt[i] == 0) { continue; }
             size_t free_b = 0, total_b = 0;
             ggml_backend_dev_memory(d, &free_b, &total_b);
-            const size_t margin = llama_moe_cache_vram_margin_fork(d);
-            const uint32_t cap = free_b > margin ? (uint32_t) std::min<uint64_t>(n_tokens, (uint64_t) (free_b - margin) * n_tokens / lt[i] / 32 * 32) : 0;
-            why += format("%s%s free %.0f MiB, margin %.0f, graph %.0f MiB at %u -> %u", why.empty() ? "" : "; ", ggml_backend_dev_name(d), free_b / 1048576.0, margin / 1048576.0, lt[i] / 1048576.0, n_tokens, cap);
+            // the KV arena comes after the graph on this card: its margin, fixed part and the cells of one pass stay free too (graph and KV per token both linear)
+            size_t kv_margin = 0, kv_fixed = 0, kv_row = 0;
+            llama_moe_cache_kv_arena_shape_fork(d, &kv_margin, &kv_fixed, &kv_row);
+            const size_t margin = std::max(llama_moe_cache_vram_margin_fork(d), kv_margin) + kv_fixed;
+            const double per_tok = (double) lt[i] / n_tokens + (double) kv_row;
+            const uint32_t cap = free_b > margin ? (uint32_t) std::min<uint64_t>(n_tokens, (uint64_t) ((free_b - margin) / per_tok) / 32 * 32) : 0;
+            why += format("%s%s free %.0f MiB, margin %.0f (KV fixed %.0f, %.3f MiB a cell), graph %.0f MiB at %u -> %u", why.empty() ? "" : "; ", ggml_backend_dev_name(d),
+                          free_b / 1048576.0, margin / 1048576.0, kv_fixed / 1048576.0, kv_row / 1048576.0, lt[i] / 1048576.0, n_tokens, cap);
             u = std::min(u, cap);
         }
         if (u >= 512 && u < n_tokens) {

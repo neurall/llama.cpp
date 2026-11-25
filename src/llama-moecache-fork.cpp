@@ -7080,6 +7080,16 @@ template <class Take> static kv_arena_shape kv_arena_shape_of(ggml_backend_dev_t
 }
 static size_t kv_arena_margin() { return (size_t) (knobs().margin_mb > 0 ? knobs().margin_mb : 484) * 1024 * 1024; }   // VRAM an arena leaves free behind it
 // what an arena allocated now would take on a card: the whole context of the records not placed yet
+// fork: what the KV arena of a card needs beside the graph, for the first micro-batch (llama_context::sched_reserve): its margin, the fixed part
+// (sliding-window rings at full size) and the bytes of one combined row a cell. The arena is made after the graph: a micro-batch sized from free VRAM
+// alone left it 393 MiB of 3212 (Inkling 2 Mini on 8 GB, "kv-arena: no room for the KV", 2026-11-25).
+void llama_moe_cache_kv_arena_shape_fork(ggml_backend_dev_t dev, size_t * margin, size_t * fixed, size_t * row) {
+    std::lock_guard<std::mutex> lk(g_kvt_mtx);
+    const kv_arena_shape s = kv_arena_shape_of(dev, [](const llama_kv_tail_fork & r) { return !r.attached; });
+    *margin = s.row ? kv_arena_margin() : 0;
+    *fixed  = s.row ? s.fixed + s.pad * s.row : 0;   // the least an arena takes: the fixed part and one pad of cells
+    *row    = s.row;
+}
 static size_t kv_arena_need(ggml_backend_dev_t dev) {
     std::lock_guard<std::mutex> lk(g_kvt_mtx);
     const kv_arena_shape s = kv_arena_shape_of(dev, [](const llama_kv_tail_fork & r) { return !r.attached; });
