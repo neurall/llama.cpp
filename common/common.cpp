@@ -2010,26 +2010,17 @@ LLAMA_API double llama_moe_ram_read_gbs_fork(void);
 LLAMA_API double llama_moe_vram_gbs_fork(ggml_backend_dev_t d);
 static void decide_fork(const char * name, const std::string & value, const std::string & why) { llama_moe_decision_fork(name, value.c_str(), why.c_str()); }
 
-// the decode fusions on or off for the placement taken, measured (measured_ab_pick): the VRAM fit's placements and the expert cache's
+// the decode fusions for the placement taken: off unless GGML_CUDA_EW_CHAIN / MM_MULTI / NORM_Q8 is set (the record key names the arm)
 static void place_fusions_pick() {
-    if (!g_place_sec.empty()) {   // the decode fusions on or off for the placement taken, measured (measured_ab_pick)
+    if (!g_place_sec.empty()) {
         const char * fv[3] = { "GGML_CUDA_EW_CHAIN", "GGML_CUDA_MM_MULTI", "GGML_CUDA_NORM_Q8" };
         bool user = false;
         for (const char * v : fv) { user = user || getenv(v) != nullptr; }
         if (user) {
             g_place_arm = ".user";
-        } else {
-            const std::string k = g_place_key + (g_place_one ? ".one" : ".split");
-            double pa = 0, ga = 0, npa = 0, nga = 0, pb = 0, gb = 0, npb = 0, ngb = 0;
-            const bool ha = place_read(k, pa, ga, npa, nga), hb = place_read(k + ".nofuse", pb, gb, npb, ngb);
-            const double np = ha && hb ? (npa + npb) / 2 : 0, ng = ha && hb ? (nga + ngb) / 2 : 0;
-            const bool fuse = measured_ab_pick(ha, pa, ga, hb, pb, gb, np, ng);
-            g_place_arm = fuse ? "" : ".nofuse";
-            if (!fuse) { for (const char * v : fv) { common_set_env(v, "0"); } }
-            decide_fork("fusions", fuse ? "on" : "off", !ha ? std::string("decode fusions on: not measured yet on this placement, tried first")
-                : !hb ? string_format("fusions on measured (%.0f i/s, %.1f o/s), off not yet: tried once", 1000 / pa, 1000 / ga)
-                : string_format("for %.0f prompt + %.0f answer tokens: on %.1f s (%.0f i/s, %.1f o/s), off %.1f s (%.0f i/s, %.1f o/s)", np, ng,
-                                (np * pa + ng * ga) / 1000, 1000 / pa, 1000 / ga, (np * pb + ng * gb) / 1000, 1000 / pb, 1000 / gb));
+        } else {   // off, no trial arm: fusions lost every measured on/off pair (Qwen3.6 split 1483 vs 1602 i/s, Qwen3.8 cache 15.3 vs 15.8 o/s, 2026-11-25); GGML_CUDA_*=1 turns one on
+            g_place_arm = ".nofuse";
+            decide_fork("fusions", "off", "decode fusions off by default: on lost every measured pair; per-kernel check before any comes back");
         }
     }
 }

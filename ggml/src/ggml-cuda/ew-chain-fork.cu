@@ -162,7 +162,7 @@ static bool ewc_build(const ggml_cgraph * cgraph, int i, ewc_prog & P, int * ix,
 
 // returns the nodes to skip after i (0: no fusion)
 int ggml_cuda_try_fuse_ew_chain_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i) {
-    static const bool on  = !getenv("GGML_CUDA_EW_CHAIN") || atoi(getenv("GGML_CUDA_EW_CHAIN")) != 0;
+    static const bool on  = getenv("GGML_CUDA_EW_CHAIN") && atoi(getenv("GGML_CUDA_EW_CHAIN")) != 0;   // off by default: lost every measured on/off pair (2026-11-25)
     static const bool log = getenv("GGML_CUDA_EW_CHAIN_LOG") && atoi(getenv("GGML_CUDA_EW_CHAIN_LOG")) != 0;
     static const bool log_all = getenv("GGML_CUDA_EW_CHAIN_LOG") && atoi(getenv("GGML_CUDA_EW_CHAIN_LOG")) >= 2;   // every run, to count them
     ewc_prog P;

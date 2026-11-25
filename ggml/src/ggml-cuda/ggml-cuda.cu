@@ -8385,7 +8385,7 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
     // shortcut: members within MM_MULTI_WIN nodes and the plain kernel only (an epilogue member is left out), upgrade if a wider layer shows up
     if (node->op == GGML_OP_MUL_MAT && node->ne[1] == 1 && node->ne[2] == 1 && node->ne[3] == 1 && ggml_is_quantized(node->src[0]->type) &&
             cuda_ctx->stream_context().concurrent_events.empty()) {
-        static const bool multi_on = !getenv("GGML_CUDA_MM_MULTI") || atoi(getenv("GGML_CUDA_MM_MULTI")) != 0;
+        static const bool multi_on = getenv("GGML_CUDA_MM_MULTI") && atoi(getenv("GGML_CUDA_MM_MULTI")) != 0;   // off by default: lost every measured on/off pair (2026-11-25)
         extern void ggml_cuda_mul_mat_vec_q_multi_fork(ggml_backend_cuda_context & ctx, const ggml_tensor * src1, int n, ggml_tensor * const * dst);
         const auto plain = [&](const ggml_tensor * t) {
             const ggml_tensor * w = t->src[0];
@@ -8595,7 +8595,7 @@ void ggml_cuda_rms_norm_q8_fork(const float * x, int64_t s_x, const float * w, f
 // rms_norm, then optionally mul by a one-row f32 weight, read by a later quantized matvec: one kernel writes the f32 output and the matvec's q8_1 slot.
 // GGML_CUDA_NORM_Q8=0 turns it off. Returns the nodes to skip after i.
 static int ggml_cuda_try_fuse_norm_q8_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i) {
-    static const bool on = !getenv("GGML_CUDA_NORM_Q8") || atoi(getenv("GGML_CUDA_NORM_Q8")) != 0;
+    static const bool on = getenv("GGML_CUDA_NORM_Q8") && atoi(getenv("GGML_CUDA_NORM_Q8")) != 0;   // off by default: lost every measured on/off pair (2026-11-25)
     const ggml_tensor * rms = cgraph->nodes[i];
     const int device = ctx.device;
     if (!on || rms->op != GGML_OP_RMS_NORM || g_q8r_buf[device] == nullptr || rms->type != GGML_TYPE_F32 || rms->src[0]->type != GGML_TYPE_F32) {
