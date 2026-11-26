@@ -18126,6 +18126,11 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                 if (!ggml_is_contiguous(op) || !ggml_is_contiguous(op->src[0])) {
                     return false;
                 }
+                // fork: the shader takes no offset: a source view that starts off the storage-buffer alignment aborted in ggml_vk_tensor_subbuffer
+                // (Inkling 2 + DSpark draft on one Vulkan card, 2026-11-26); such a view runs elsewhere
+                if (op->src[0]->view_src && op->src[0]->view_offs % device->properties.limits.minStorageBufferOffsetAlignment != 0) {
+                    return false;
+                }
                 // large k falls back to radix-select
                 const uint32_t min_pipeline =
                     std::max((uint32_t) log2f(float(op->ne[0])) + 1, device->subgroup_size_log2);
