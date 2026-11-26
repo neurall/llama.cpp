@@ -1255,6 +1255,9 @@ llama_model_qwen4exp::llm_graph_input_kpool * llama_model_qwen4exp::graph::build
     ggml_set_input(inp->tail_idxs);
 
     // set_input fills them all, so keep them allocated even when no op reads them
+    // fork: k_idxs too: the MTP draft's graph of a few tokens reads none of it, it stayed unallocated and set_input_k_idxs hit GGML_ASSERT(buffer)
+    // (Qwen3.8 Flash Next + its MTP draft, every draft cell, 2026-11-25/26)
+    ggml_build_forward_expand(gf, inp->k_idxs);
     ggml_build_forward_expand(gf, inp->pool_cells);
     ggml_build_forward_expand(gf, inp->pool_idxs);
     ggml_build_forward_expand(gf, inp->pool_mask);
