@@ -103,6 +103,7 @@ bool llama_moe_cache_refilling_fork();
 std::string llama_moe_cache_refill_stats_fork();   // dev: the refill's upload counters   // src/llama-moecache-fork.cpp: the refill a prompt left behind is still uploading
 bool llama_moe_cache_tuning_fork();      // a self-tune cycle is open (the decode tuners take turns: src/llama-estimate-fork.h)
 void llama_moe_cache_threads_searching_fork(bool on);
+void llama_moe_cache_decode_team_fork(int n_threads);   // src/llama-moecache-fork.cpp: a decode team that spins beside the bell pool (src/llama-bellsize-fork.h)
 int  llama_cpu_allowed_count_fork();                          // src/llama-moecache-fork.cpp: the CPUs this process may run on
 static int64_t g_thr_cpu_bytes = -1, g_thr_up_bytes = -1;   // the decode thread search's byte baseline; a prompt call resets it (thread_tune_feed_batch)
 void llama_moe_cache_split_feed_fork(int64_t dt_us);   // a decode token's time: the CPU/GPU split's A/B (llama-moecache-fork.cpp); < 0 voids its samples   // a refused pass: its path's ceiling, the retry size
@@ -1799,6 +1800,33 @@ static std::string sampler_sig_fork(const std::map<llama_seq_id, llama_sampler *
         sig += ";";
     }
     return sig;
+}
+
+// fork: does the decode team compute every token? Then it spins through the token (OpenMP's KMP_BLOCKTIME, 200 ms, ggml-cpu.c) beside the bell pool's
+// workers, and the pool sizes itself beside it (src/llama-bellsize-fork.h). A CPU node of the decode graph that ggml-cpu runs on more than one thread starts
+// the team; ggml_get_n_tasks runs views, SCALE, SET, CLAMP, DIAG, a one-row SOFT_MAX and a gather of few rows (under 256 indices or a float table) on one.
+// Hy4-Flash: 12 lightning indexers a token; a model whose CPU nodes are the token gather alone (Qwen3.8, GLM): the team waits.
+// Read from an allocated graph: the nodes' backends are set by ggml_backend_sched_alloc_graph (a reserve resets them). The first node that starts the
+// team, nullptr: none; *known false: no node has a backend (not allocated: nothing to say yet)
+static const ggml_tensor * decode_graph_team_node(ggml_backend_sched_t sched, ggml_backend_t cpu, ggml_cgraph * gf, bool * known) {
+    *known = false;
+    if (!sched || !cpu || !gf) { return nullptr; }
+    for (int k = 0; k < ggml_graph_n_nodes(gf); ++k) {
+        ggml_tensor * t = ggml_graph_node(gf, k);
+        ggml_backend_t b = ggml_backend_sched_get_tensor_backend(sched, t);
+        if (!b) { continue; }
+        *known = true;
+        if (b != cpu) { continue; }
+        switch (t->op) {
+            case GGML_OP_NONE: case GGML_OP_VIEW: case GGML_OP_RESHAPE: case GGML_OP_PERMUTE: case GGML_OP_TRANSPOSE:
+            case GGML_OP_SCALE: case GGML_OP_SET: case GGML_OP_CLAMP: case GGML_OP_DIAG: continue;
+            case GGML_OP_GET_ROWS: if (!(ggml_is_quantized(t->src[0]->type) && ggml_nelements(t->src[1]) >= 256)) { continue; } break;
+            case GGML_OP_SOFT_MAX: if (ggml_nrows(t->src[0]) < 2) { continue; } break;
+            default: break;
+        }
+        return t;
+    }
+    return nullptr;
 }
 
 void llama_context::sched_reserve() {
@@ -6465,6 +6493,19 @@ ggml_status llama_context::graph_compute(
     // set the number of threads for all the backends
     for (const auto & set_n_threads_fn : set_n_threads_fns) {
         set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
+    }
+    if (!batched && cparams.moe_cache) {   // before the graph: its first bell sizes the bell pool (the expert cache's context rings the bells)
+        static int team = -1;   // one expert cache context a process: -1 not read yet, 0 its decode graph gives the CPU team no work, 1 it does
+        if (team < 0) {
+            bool known = false;
+            const ggml_tensor * t = decode_graph_team_node(sched.get(), backend_cpu, gf, &known);
+            if (known) {
+                team = t ? 1 : 0;
+                LLAMA_LOG_WARN("%s: the decode graph %s\n", __func__, t ? format("computes on the CPU every token (%s %s): its %d threads spin beside the bell pool",
+                               ggml_op_desc(t), t->name, n_threads).c_str() : "has no CPU node for the thread team (it waits)");
+            }
+        }
+        if (team > 0) { llama_moe_cache_decode_team_fork(n_threads); }
     }
 
     copy_experts.reset();

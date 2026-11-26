@@ -20783,13 +20783,30 @@ static void bell_need(const llama_moe_cache_layer_fork * pub, const int32_t * mi
 #include "llama-bellpool-fork.h"
 extern "C" bool llama_bell_dots_fork(int type, int * act, bellpool_dot_t * dot, bellpool_dot2_t * dot2);   // llama-belldots-avx2-fork.cpp: *dot / *dot2 nullptr where a type has none
 
-static int bell_pool_n() {   // --moe bell-pool=N: the bell's CPU experts on a pool of N workers (0: the scheduler's CPU graph); unset: a worker a physical core
+#include "llama-bellsize-fork.h"
+// the largest decode team whose graph computes on the CPU every token (llama-context.cpp, graph_compute): it spins beside the bell pool; 0: none seen
+static std::atomic<int> g_bell_team{0};
+void llama_moe_cache_decode_team_fork(int n_threads) {
+    int c = g_bell_team.load(std::memory_order_relaxed);
+    while (n_threads > c && !g_bell_team.compare_exchange_weak(c, n_threads, std::memory_order_relaxed)) {}
+}
+
+// --moe bell-pool=N: the bell's CPU experts on a pool of N workers (0: the scheduler's CPU graph); unset: beside the decode team (bell_pool_size)
+// shortcut: sized once, at the first bell; a decode team that grows later (the thread walk's 3/2 or all threads) spins beside the same pool
+static int bell_pool_n() {
     static const int n = [] {
         const char * e = moe_opt("bell-pool");
         if (e) { return atoi(e); }
+        const auto doms = l3_domain_cores();
         int phys = 0;
-        for (const auto & d : l3_domain_cores()) { phys += (int) d.size(); }
-        return phys > 0 ? phys : std::max(1, (int) std::thread::hardware_concurrency() / 2);
+        for (const auto & d : doms) { phys += (int) d.size(); }
+        if (phys <= 0) { phys = std::max(1, (int) std::thread::hardware_concurrency() / 2); }
+        const int n_allowed = llama_cpu_allowed_count_fork(), team = g_bell_team.load(std::memory_order_relaxed);
+        const int k = bell_pool_size(n_allowed, phys, team, (int) doms.size());
+        LLAMA_LOG_WARN("moe-cache: bell pool: %d workers: %d CPUs, %d cores, %d L3 domains, %s\n", k, n_allowed, phys, (int) doms.size(),
+                team > 0 ? format("a decode team of %d that computes on the CPU every token (it spins beside the pool; a free CPU an L3 domain)", team).c_str()
+                         : "the decode team has no CPU work (it waits): a worker a core");
+        return k;
     }();
     return n;
 }
