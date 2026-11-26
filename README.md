@@ -73,7 +73,7 @@ All rows, all builds: [fork/docs/perf-history.md](fork/docs/perf-history.md).
 
 ## Against Strata
 
-Where both run the same model, this fork is comparable with [Strata](https://github.com/Niko1221/Strata) and [Adamant](https://github.com/nixcat-dev/adamant) (a [Basalt](https://github.com/jesdga95/basalt) fork). The models with the biggest gains above are in none of their model lists (their READMEs, 2026-11-26): Strata 0.2.22 lists Qwen3.8-Flash-Next, Hy4-Flash, Qwen3.6-35B-A3B and Inkling 2 Mini; Basalt lists Qwen3.8-Flash-Next, DeepSeek-V4.1-Flash, Qwen3.8-27B, Hy4-Flash and Inkling 2 Mini, on Blackwell GPUs only; Adamant, its port to Ada and Ampere cards, lists Qwen3.8-Flash-Next. Of these engines, Kimi K3.1, GLM 5.3 and MiMo 2.6 run only here.
+Where both run the same model, this fork is comparable with [Strata](https://github.com/Niko1221/Strata). The models with the biggest gains above are not in its model list (its README, 2026-11-26: Qwen3.8-Flash-Next, Hy4-Flash, Qwen3.6-35B-A3B and Inkling 2 Mini): Kimi K3.1, GLM 5.3, MiMo 2.6 and DeepSeek 4.1 run only here.
 
 The same machine, one session (2026-11-26), 1024 tokens out, the better of two runs. This fork: release b16903. Strata: 0.2.21 with engine 0.1.60 (Qwen), 0.2.20 (Inkling), its own packs. **Cards** = the cards the engine used: with both cards visible, Strata ran on one.
 
