@@ -94,17 +94,6 @@ The same machine, one session (2026-11-26), 1024 tokens out, the better of two r
 | | Strata + draft | 1 | 918.9 | 69.50 | - |
 | | Strata, no draft | 1 | 918.7 | 69.50 | - |
 
-**Notebook with an 8 GB card** (ASUS GA403UV: RTX 4060 laptop 8 GB, 32 GB RAM, Windows), run 1 / run 2. Qwen 3.8 rows: one session (2026-11-25, this fork b16046); Inkling rows: this fork b16903 on 2026-11-26, Strata on 2026-11-25. Adamant does not run on Windows with this RAM (its 92 GB pack).
-
-| model | engine | long prompt i/s | long prompt o/s | short/1k o/s |
-|---|---|---|---|---|
-| Qwen 3.8 Next IQ4_XS, 14k/1k | this fork | 14.7 / 8.8 | 2.48 / 2.93 | 3.80 / 3.31 |
-| | Strata 0.2.21 | 130.4 | 3.6 / 3.4 | 2.4 / 2.3 |
-| Inkling 2 Mini IQ4_XS, 12k/1k | this fork | 30.2 / 29.1 | 12.71 / 12.91 | 13.28 / 11.30 |
-| | Strata 0.2.21 | 228.6 / 229.5 | 13.2 / 13.1 | 22.61 / 22.80 |
-
-On the 8 GB card Strata reads prompts 7-15x faster; this fork decodes Qwen 3.8 short answers faster. Inkling 2 Mini's experts still run on the CPU here (its fused experts enter the cache in the next release); the 8 GB prompt path is this fork's next target.
-
 This fork reads prompts fastest in every row and leads Inkling 2 Mini with its DSpark draft. On Qwen 3.8 Next, Adamant's MTP drafter decodes fastest (117.8 o/s on one card) and Strata decodes 7-13% faster than this fork without drafts; this fork's own MTP draft is slower than no draft there (the next release turns a slower draft off by itself).
 
 ## Where it wins, where it does not
