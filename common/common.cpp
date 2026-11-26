@@ -1399,9 +1399,9 @@ static size_t common_ram_total() {
 static size_t common_ram_available(bool with_pool = false) {
 #if defined(_WIN32)
     GGML_UNUSED(with_pool);
-    MEMORYSTATUSEX st = {};
-    st.dwLength = sizeof(st);
-    const size_t a = GlobalMemoryStatusEx(&st) ? (size_t) st.ullAvailPhys : 0;
+    // fork: the commit left (RAM + page file) and a job's limit count too: the pinned weights are committed, and a free-RAM reading pinned them beside too little
+    // commit for the rest (Inkling 2 Mini on W10 with the page file unable to grow: "bad allocation" at the first decode, 2026-11-26)
+    const size_t a = host_room_fork();
     return a - std::min(a, common_sim_ram_held());
 #elif defined(__linux__)
     size_t cma_kb = 0;   // free CMA pages are in MemAvailable but take no pinned page (PC1: 9.4 GiB with CmaTotal 0): never counted
