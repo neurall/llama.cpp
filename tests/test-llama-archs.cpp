@@ -604,7 +604,8 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const 
         // text-only hy_v4 files carry no sections, keep the normal rope path
         ms.add_kv(LLM_KV_ROPE_DIMENSION_SECTIONS, std::vector<uint32_t>({0, 0, 0, 0}));
     } else if (arch == LLM_ARCH_HY_V4_FLASH) {
-        // published hy_v4_flash files carry no sections, the model defaults them to [12, 10, 10, 0] (IMROPE path)
+        // the published files carry the VL sections, so the text model runs the M-RoPE path
+        ms.add_kv(LLM_KV_ROPE_DIMENSION_SECTIONS, std::vector<uint32_t>({12, 10, 10, 0}));
     } else {
         ms.add_kv(LLM_KV_ROPE_DIMENSION_SECTIONS, std::vector<uint32_t>({n_embd_head/4, n_embd_head/4, n_embd_head/4, n_embd_head/4}));
     }
@@ -1496,23 +1497,19 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
 
         const bool encode = arch == LLM_ARCH_T5 || arch == LLM_ARCH_DREAM || arch == LLM_ARCH_LLADA || arch == LLM_ARCH_LLADA_MOE || arch == LLM_ARCH_RND1;
         // hy_v4 also runs as the VL text model, with rope sections and the IMROPE path
-        // hy_v4_flash also runs without an indexer, where the sparse layers attend their whole context
-        struct arch_config { bool moe; bool vl; bool no_indexer; };
-        std::vector<arch_config> configs = {{false, false, false}, {true, false, false}};
+        struct arch_config { bool moe; bool vl; };
+        std::vector<arch_config> configs = {{false, false}, {true, false}};
         if (arch == LLM_ARCH_HY_V4) {
-            configs.push_back({true, true, false});
+            configs.push_back({true, true});
         }
-        if (arch == LLM_ARCH_HY_V4_FLASH) {
-            configs.push_back({true, false, true});
-        }
-        for (const auto & [moe, vl, no_indexer] : configs) {
+        for (const auto & [moe, vl] : configs) {
             if (moe && !moe_implemented(arch)) {
                 continue;
             }
             if (!moe && moe_mandatory(arch)) {
                 continue;
             }
-            const std::string config_name = moe ? (vl ? "MoE-VL" : (no_indexer ? "MoE-noidx" : "MoE")) : "Dense";
+            const std::string config_name = moe ? (vl ? "MoE-VL" : "MoE") : "Dense";
             gguf_context_ptr gguf_ctx = get_gguf_ctx(arch, moe);
             if (arch == LLM_ARCH_BAILINGMOE3) {
                 GGML_ASSERT(gguf_remove_key(gguf_ctx.get(), "bailingmoe3.kda.safe_gate") >= 0);
@@ -1521,10 +1518,6 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
                 // sums to n_rot / 2, unequal so that a swapped section is caught
                 const std::vector<uint32_t> sections = {12, 10, 10, 0};
                 gguf_set_arr_data(gguf_ctx.get(), llama_arch_kv_name(arch, LLM_KV_ROPE_DIMENSION_SECTIONS).c_str(), GGUF_TYPE_UINT32, sections.data(), sections.size());
-            }
-            if (no_indexer) {
-                // without top_k the memory is a plain iSWA pair and the graph builds no selection
-                GGML_ASSERT(gguf_remove_key(gguf_ctx.get(), llama_arch_kv_name(arch, LLM_KV_ATTENTION_INDEXER_TOP_K).c_str()) >= 0);
             }
             std::pair<llama_model_ptr, llama_context_ptr> model_and_ctx_cpu;
             std::vector<float> logits_cpu;

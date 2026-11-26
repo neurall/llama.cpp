@@ -2470,7 +2470,6 @@ struct llama_model_hy_v4 : public llama_model_base {
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
 
-
 // hy_v4 iHC, gated MLA and sinks, with sparse and sliding-window layers, sandwich norms and latent routed experts
 struct llama_model_hy_v4_flash : public llama_model_base {
     llama_model_hy_v4_flash(const struct llama_model_params & params) : llama_model_base(params) {}
@@ -2485,14 +2484,10 @@ struct llama_model_hy_v4_flash : public llama_model_base {
     void engram_hash(int e, const llama_ubatch & ubatch, const std::vector<llama_token> & prev,
             std::vector<int32_t> & ids, std::vector<float> & valid) const;
 
-    class llm_graph_input_kpool;
+    class llm_graph_input_pool;
 
     struct graph : public llm_graph_context {
         graph(const llama_model & model, const llm_graph_params & params);
-
-        // the MTP graph reuses the helpers without running the trunk
-        struct no_build {};
-        graph(const llm_graph_params & params, no_build) : llm_graph_context(params) {}
 
         // iHC, same layout as hy_v4
         struct hc_pre {
@@ -2525,31 +2520,30 @@ struct llama_model_hy_v4_flash : public llama_model_base {
                 ggml_tensor * hc_scale,
                 ggml_tensor * hc_base) const;
 
-        // mctx_idx and inp_kpool are null without an indexer
         ggml_tensor * build_attention(
                 const llama_model & model,
-                llm_graph_input_attn_k_iswa * inp_attn,
+                llm_graph_input_attn_k_dsa_iswa * inp_attn,
+                llm_graph_input_pool * inp_pool,
                 ggml_tensor * cur,
                 ggml_tensor * inp_pos,
-                const llama_memory_idx_iswa_context * mctx_idx,
-                llm_graph_input_kpool * inp_kpool,
                 int il);
 
-        llm_graph_input_kpool * build_inp_kpool(const llama_memory_idx_iswa_context * mctx_idx);
+        llm_graph_input_pool * build_inp_pool(llm_graph_input_attn_k_dsa_iswa * inp_attn);
 
         // rotate only the trailing n_rot of each indexer head
         ggml_tensor * build_indexer_rope(ggml_tensor * x, ggml_tensor * pos, int64_t n_idx,
                 float freq_base, int il) const;
 
-        // keep the best scored pools plus the current one
-        ggml_tensor * build_kpool_select(
+        // the kq_mask of the sparse layer, opened on the best scored pools plus the token's own pool
+        ggml_tensor * build_pool_select(
                 ggml_tensor * cur,
                 ggml_tensor * qr,
                 ggml_tensor * inp_pos,
                 float freq_base,
                 const llama_layer & layer,
-                const llama_memory_idx_iswa_context * mctx_idx,
-                llm_graph_input_kpool * inp_kpool,
+                llm_graph_input_attn_k_dsa_iswa * inp_attn,
+                llm_graph_input_pool * inp_pool,
+                ggml_tensor * kq_mask,
                 int il);
 
         // routed experts run at n_expert_latent, the router and the shared expert at n_embd
@@ -2565,11 +2559,6 @@ struct llama_model_hy_v4_flash : public llama_model_base {
                 ggml_tensor * rows,
                 ggml_tensor * valid,
                 int il) const;
-    };
-
-    // the draft block: one sparse layer without hyper-connections
-    struct graph_mtp : public graph {
-        graph_mtp(const llama_model & model, const llm_graph_params & params);
     };
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
