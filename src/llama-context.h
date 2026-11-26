@@ -307,6 +307,7 @@ private:
 
     // (re)allocate the device buffer for cparams.embeddings_nextn_dev, false if it does not fit
     bool h_nextn_dev_alloc();
+    bool h_nextn_front_fork();   // fork: the rows at the start of the block pool, in front of the draft's graphs
 
     ggml_backend_t backend_from_dev(ggml_backend_dev_t dev) const;
 

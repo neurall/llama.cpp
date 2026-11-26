@@ -1444,6 +1444,14 @@ bool llama_context::moe_alias_shrink_fork(bool graph_fits, bool stage_fits, size
 }
 
 // fork: --moe alias=1: the GPUs' compute graphs go into the expert pool buffers (llama_moe_cache_alias_fork lends the blocks they reach)
+static std::mutex g_draft_need_mtx;
+static std::map<const void *, std::map<ggml_backend_dev_t, size_t>> g_draft_decode_need;   // draft context -> card -> bytes of its graphs the area keeps
+// fork: bytes at the start of each card's pool in front of the draft's graphs: the target's h_nextn rows for its MTP draft (h_nextn_front_fork)
+static std::map<ggml_backend_dev_t, size_t> g_pool_front;   // guarded by g_draft_need_mtx
+static const void * g_pool_front_owner = nullptr;            // the target whose rows they are: cleared when it is freed (its pool goes with it)
+static size_t pool_front_locked(ggml_backend_dev_t dev) { auto it = g_pool_front.find(dev); return it == g_pool_front.end() ? 0 : it->second; }
+static size_t pool_front_fork(ggml_backend_dev_t dev) { std::lock_guard<std::mutex> lk(g_draft_need_mtx); return pool_front_locked(dev); }
+
 void llama_context::apply_moe_alias() {
     // prefetch overlap: --prefetch-experts-slots / --moe pf-slots; unset (-1) = the expert tensors of one layer (up, gate and down; 2 when gate and up are
     // one tensor): the next layer's uploads run while this one computes. They are only filled when expert weights are host-resident and a prompt batch computes
@@ -1477,7 +1485,8 @@ void llama_context::apply_moe_alias() {
             ggml_backend_dev_t dev = ggml_backend_get_device(be.get());
             ggml_backend_buffer_t buf = nullptr;
             const size_t c = ggml_backend_dev_is_gpu(dev) ? llama_moe_cache_draft_area_fork(dev, 0, &buf) : 0;
-            if (c > 0 && buf) { ggml_backend_sched_set_external_buffer(sched.get(), be.get(), buf, 0, c); }
+            const size_t f = pool_front_fork(dev);   // the target's h_nextn rows hold the area's start
+            if (c > f && buf) { ggml_backend_sched_set_external_buffer(sched.get(), be.get(), buf, f, c - f); }
         }
     }
 }
@@ -1491,8 +1500,6 @@ void llama_draft_decode_shape_fork(const llama_model * model, uint32_t n_tok, ui
     g_draft_shape[model] = { n_tok, n_out };
 }
 size_t llama_moe_cache_draft_area_set_fork(ggml_backend_dev_t dev, size_t need, ggml_backend_buffer_t * buf);   // src/llama-moecache-fork.cpp (no header edit)
-static std::mutex g_draft_need_mtx;
-static std::map<const void *, std::map<ggml_backend_dev_t, size_t>> g_draft_decode_need;   // draft context -> card -> bytes of its decode calls
 
 // fork: a draft's graphs get an area at the start of the target's pool on each card (llama_moe_cache_draft_area_fork), a static range taken from the
 // left of the pool (user 2026-11-26: the same memory that worked outside the pool, through the pool's allocator so it can be reclaimed). Only its decode
@@ -1509,18 +1516,26 @@ uint32_t llama_context::draft_area_fork(uint32_t n_tokens, uint32_t n_seqs, uint
     dout = std::max<uint32_t>(1, std::min({ dout, dt, n_outputs }));
     std::vector<size_t> tg(backend_ptrs.size(), 0);
     graph_reserve(dt, n_seqs, dout, mctx, true, tg.data());   // the decode calls: what the area holds from the start
+    // --moe draft-area=P (user 2026-11-26): the area holds P% of the draft's largest graph from the start, a prompt catch-up pass of a full micro-batch
+    // (one output). 100 (default, "first version prealloc 100% to focus on perf"): it never grows or shrinks, so the pool's layout never moves for it;
+    // 0: its decode calls only, grown while a bigger graph runs and shrunk back when the answer starts
+    static const uint32_t pct = [] { const char * o = llama_moe_get_opt("draft-area"); return o ? (uint32_t) std::min(100, std::max(0, atoi(o))) : 100u; }();
+    std::vector<size_t> tm(backend_ptrs.size(), 0);
+    if (pct > 0 && n_tokens > dt) { graph_reserve(n_tokens, n_seqs, 1, mctx, true, tm.data()); }
     cparams.ctx_other->synchronize();   // the area's blocks are taken from the target's pool: its graphs are done with them
     std::lock_guard<std::mutex> lk(g_draft_need_mtx);
     auto & need = g_draft_decode_need[this];
     for (size_t bi = 0; bi < backend_ptrs.size(); ++bi) {
         ggml_backend_dev_t dev = ggml_backend_get_device(backend_ptrs[bi]);
         if (!ggml_backend_dev_is_gpu(dev)) { continue; }
-        need[dev] = tg[bi];
+        need[dev] = std::max(tg[bi], tm[bi] / 100 * pct);
+        const size_t f = pool_front_locked(dev);   // the target's h_nextn rows hold the area's start
         ggml_backend_buffer_t buf = nullptr;
-        const size_t c = llama_moe_cache_draft_area_fork(dev, tg[bi], &buf);
-        if (c > 0 && buf) { ggml_backend_sched_set_external_buffer(sched.get(), backend_ptrs[bi], buf, 0, c); }
-        LLAMA_LOG_WARN("%s: draft area on %s: %.1f MiB for its decode calls (%u tokens, %u outputs); a bigger graph grows it while it runs\n", __func__,
-                       ggml_backend_dev_name(dev), c / 1048576.0, dt, dout);
+        const size_t c = llama_moe_cache_draft_area_fork(dev, f + need[dev], &buf);
+        if (c > f && buf) { ggml_backend_sched_set_external_buffer(sched.get(), backend_ptrs[bi], buf, f, c - f); }
+        LLAMA_LOG_WARN("%s: draft area on %s: %.1f MiB for its graphs (decode calls %.1f MiB at %u tokens, a catch-up pass %.1f MiB at %u tokens, %u%% of it held), "
+                       "behind %.1f MiB of the target's h_nextn rows; a bigger graph grows it while it runs\n", __func__, ggml_backend_dev_name(dev),
+                       (c > f ? c - f : 0) / 1048576.0, tg[bi] / 1048576.0, dt, tm[bi] / 1048576.0, n_tokens, pct, f / 1048576.0);
     }
     return n_tokens;
 }
@@ -1539,12 +1554,15 @@ bool llama_context::draft_area_grow_fork(ggml_cgraph * gf) {
         if (!ggml_backend_dev_is_gpu(dev) || sz[bi] == 0) { continue; }
         // in larger steps (user 2026-11-26): at least twice the area it has, so a prompt whose passes keep growing moves the pool's layout (the target's
         // graph start, the dense split's copies, the KV zone behind them) a few times, not at every pass; the pool refuses more than half of what it lends
-        const size_t cur = llama_moe_cache_draft_area_fork(dev, 0, nullptr);
+        const size_t f   = pool_front_fork(dev);   // the target's h_nextn rows hold the area's start
+        const size_t all = llama_moe_cache_draft_area_fork(dev, 0, nullptr);
+        const size_t cur = all > f ? all - f : 0;
         ggml_backend_buffer_t buf = nullptr;
-        size_t c = llama_moe_cache_draft_area_set_fork(dev, std::max(sz[bi], 2 * cur), &buf);
-        if (c < sz[bi]) { c = llama_moe_cache_draft_area_set_fork(dev, sz[bi], &buf); }
+        size_t c = llama_moe_cache_draft_area_set_fork(dev, f + std::max(sz[bi], 2 * cur), &buf);
+        if (c < f + sz[bi]) { c = llama_moe_cache_draft_area_set_fork(dev, f + sz[bi], &buf); }
+        c = c > f ? c - f : 0;
         if (c >= sz[bi] && buf) {
-            ggml_backend_sched_set_external_buffer(sched.get(), backend_ptrs[bi], buf, 0, c);
+            ggml_backend_sched_set_external_buffer(sched.get(), backend_ptrs[bi], buf, f, c);
             grew = true;
         }
         // the cost of a resize (user 2026-11-26: "measure how much time this expanding draft reshuffle costs"): measure + wait for the target, then the pool's move
@@ -1575,11 +1593,14 @@ void llama_context::draft_area_shrink_fork() {
         ggml_backend_dev_t dev = ggml_backend_get_device(backend_ptrs[bi]);
         auto it = need.find(dev);
         if (it == need.end()) { continue; }
-        const size_t cur = llama_moe_cache_draft_area_fork(dev, 0, nullptr);
+        const size_t f   = pool_front_fork(dev);   // the target's h_nextn rows hold the area's start
+        const size_t all = llama_moe_cache_draft_area_fork(dev, 0, nullptr);
+        const size_t cur = all > f ? all - f : 0;
         if (cur <= it->second) { continue; }
         ggml_backend_buffer_t buf = nullptr;
-        const size_t c = llama_moe_cache_draft_area_set_fork(dev, it->second, &buf);
-        if (c > 0 && buf) { ggml_backend_sched_set_external_buffer(sched.get(), backend_ptrs[bi], buf, 0, c); }
+        size_t c = llama_moe_cache_draft_area_set_fork(dev, f + it->second, &buf);
+        c = c > f ? c - f : 0;
+        if (c > 0 && buf) { ggml_backend_sched_set_external_buffer(sched.get(), backend_ptrs[bi], buf, f, c); }
         LLAMA_LOG_WARN("%s: draft area on %s %.1f -> %.1f MiB when the answer starts: %.2f ms (wait %.2f ms)\n", __func__, ggml_backend_dev_name(dev),
                        cur / 1048576.0, c / 1048576.0, (ggml_time_us() - t0) / 1e3, (t1 - t0) / 1e3);
     }
@@ -3563,6 +3584,11 @@ bool llama_context::h_nextn_dev_alloc() {
         return true;
     }
 
+    // fork: --moe draft-rows=host: the rows go to host memory (no VRAM; each batch's rows copied down and back), to compare with the pool's start
+    if (const char * o = llama_moe_get_opt("draft-rows"); o && strcmp(o, "host") == 0) {
+        return fail("--moe draft-rows=host");
+    }
+
     h_nextn_dev_dev = model.dev_output();
     h_nextn_backend = h_nextn_dev_dev ? backend_from_dev(h_nextn_dev_dev) : nullptr;
     if (h_nextn_backend == nullptr) {
@@ -3579,8 +3605,12 @@ bool llama_context::h_nextn_dev_alloc() {
     h_nextn_dev = ggml_new_tensor_2d(ctx_h_nextn_dev.get(), GGML_TYPE_F32, model.hparams.n_embd_out(), cparams.n_batch + cparams.n_seq_max);
     ggml_set_name(h_nextn_dev, "h_nextn_dev");
 
-    buf_h_nextn_dev.reset(ggml_backend_alloc_ctx_tensors_from_buft(ctx_h_nextn_dev.get(), ggml_backend_dev_buffer_type(h_nextn_dev_dev)));
-    if (!buf_h_nextn_dev) {
+    // fork: no VRAM beside the block pool: with a pool the rows sit at its start (h_nextn_front_fork); before the pool starts they take a buffer of their
+    // own, which goes back to the card when the pool is sized (decode: the pool start)
+    if (!h_nextn_front_fork()) {
+        buf_h_nextn_dev.reset(ggml_backend_alloc_ctx_tensors_from_buft(ctx_h_nextn_dev.get(), ggml_backend_dev_buffer_type(h_nextn_dev_dev)));
+    }
+    if (!buf_h_nextn_dev && h_nextn_dev->buffer == nullptr) {
         return fail("failed to allocate the h_nextn device buffer");
     }
 
@@ -3592,9 +3622,54 @@ bool llama_context::h_nextn_dev_alloc() {
         return fail("the device has no events");
     }
 
-    LLAMA_LOG_INFO("%s: %10s h_nextn buffer size = %8.2f MiB\n", __func__,
-            ggml_backend_buffer_name(buf_h_nextn_dev.get()), ggml_backend_buffer_get_size(buf_h_nextn_dev.get())/1024.0/1024.0);
+    if (buf_h_nextn_dev) {
+        LLAMA_LOG_INFO("%s: %10s h_nextn buffer size = %8.2f MiB\n", __func__,
+                ggml_backend_buffer_name(buf_h_nextn_dev.get()), ggml_backend_buffer_get_size(buf_h_nextn_dev.get())/1024.0/1024.0);
+    }
 
+    return true;
+}
+
+// fork: the target's h_nextn rows at the start of the pool, in front of its draft's graphs (user 2026-11-26: "just put it at start of pool not outside"):
+// n_batch + n_seq rows of the model output, 640 MiB on Qwen3.8 at a 16384 batch (one row 2560 x 4 floats). The draft's area grows by them
+// (llama_moe_cache_draft_area_fork: lent blocks no release gives back, the target's graphs start behind the area); the draft's graphs go behind them at
+// its next reserve. false: no pool on the card, or no room for them there (the caller gives them a buffer of their own)
+bool llama_context::h_nextn_front_fork() {
+    if (!h_nextn_dev || !h_nextn_dev_dev || llama_moe_cache_alias_buffers_fork().empty()) { return false; }
+    const size_t bytes = ggml_backend_buft_get_alloc_size(ggml_backend_dev_buffer_type(h_nextn_dev_dev), h_nextn_dev);
+    synchronize();
+    size_t graph = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_draft_need_mtx);
+        const size_t have = llama_moe_cache_draft_area_fork(h_nextn_dev_dev, 0, nullptr);
+        const size_t old  = g_pool_front.count(h_nextn_dev_dev) ? g_pool_front[h_nextn_dev_dev] : 0;
+        graph = have > old ? have - old : 0;
+    }
+    ggml_backend_buffer_t buf = nullptr;
+    const size_t c = llama_moe_cache_draft_area_fork(h_nextn_dev_dev, bytes + graph, &buf);
+    if (c < bytes + graph || !buf) {
+        LLAMA_LOG_WARN("%s: the pool on %s has no %.1f MiB at its start for the h_nextn rows: they take a buffer of their own\n", __func__,
+                ggml_backend_dev_name(h_nextn_dev_dev), bytes / 1048576.0);
+        return false;
+    }
+    h_nextn_dev->buffer = nullptr;
+    h_nextn_dev->data   = nullptr;
+    if (ggml_backend_tensor_alloc(buf, h_nextn_dev, ggml_backend_buffer_get_base(buf)) != GGML_STATUS_SUCCESS) {
+        h_nextn_dev->buffer = nullptr;
+        h_nextn_dev->data   = nullptr;
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_draft_need_mtx);
+        g_pool_front[h_nextn_dev_dev] = bytes;
+        g_pool_front_owner = this;
+    }
+    {   // the draft's graphs move behind the rows: its next decode reserves again (draft_area_fork places them there)
+        std::lock_guard<std::mutex> lk(g_live_ctx_mtx);
+        for (llama_context * o : g_live_ctx) { if (o != this && o->get_cparams().ctx_other == this) { o->sched_need_reserve = true; } }
+    }
+    LLAMA_LOG_WARN("%s: the h_nextn rows (%lld rows of %lld floats, %.1f MiB) hold the start of the pool on %s, in front of the draft's graphs\n", __func__,
+            (long long) h_nextn_dev->ne[1], (long long) h_nextn_dev->ne[0], bytes / 1048576.0, ggml_backend_dev_name(h_nextn_dev_dev));
     return true;
 }
 
@@ -4870,10 +4945,21 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             ggml_backend_reg_t r = d ? ggml_backend_dev_backend_reg(d) : nullptr;
             if (auto warm = r && ggml_backend_dev_is_gpu(d) ? (void (*)(ggml_backend_t)) ggml_backend_reg_get_proc_address(r, "ggml_backend_cuda_warm_cublas_fork") : nullptr) { warm(be.get()); }
         }
+        // the h_nextn rows' own buffer (an MTP draft's target) goes back to the card: the pool is sized with that memory and the rows take its start
+        const bool h_rows_move = alias && buf_h_nextn_dev != nullptr && h_nextn_dev != nullptr;
+        if (h_rows_move) {
+            buf_h_nextn_dev.reset();
+            h_nextn_dev->buffer = nullptr;
+            h_nextn_dev->data   = nullptr;
+        }
         llama_moe_cache_init_fork(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots < 0 ? 3 : cparams.prefetch_experts_slots, cparams.moe_cache_window,
                 cparams.moe_predict, cparams.moe_predict_train);
         if (alias) {
             moe_alias_bufs = llama_moe_cache_alias_buffers_fork();   // applied to every scheduler created from now on (sched_reserve makes a new one)
+        }
+        if (h_rows_move && !h_nextn_front_fork()) {   // no room at the pool's start: a buffer of their own again (said above)
+            buf_h_nextn_dev.reset(ggml_backend_alloc_ctx_tensors_from_buft(ctx_h_nextn_dev.get(), ggml_backend_dev_buffer_type(h_nextn_dev_dev)));
+            GGML_ASSERT(buf_h_nextn_dev && "the h_nextn rows lost their buffer at the pool start");
         }
         // --moe mirror-pool: the dense split's copies get their places now that the pools exist (the start of each card's pool, or a buffer of their own);
         // the reserve below then sizes the worst case behind them
@@ -8090,7 +8176,7 @@ void llama_free(llama_context * ctx) {
     llama_moe_cache_context_live_fork(ctx, nullptr, false);
     { std::lock_guard<std::mutex> lk(g_live_ctx_mtx); g_live_ctx.erase(ctx); }
     llama_moe_cache_graph_forget_fork(ctx);
-    { std::lock_guard<std::mutex> lk(g_draft_need_mtx); g_draft_decode_need.erase(ctx); }   // a new context may get the same address
+    { std::lock_guard<std::mutex> lk(g_draft_need_mtx); g_draft_decode_need.erase(ctx); if (g_pool_front_owner == ctx) { g_pool_front.clear(); g_pool_front_owner = nullptr; } }   // a new context may get the same address
     delete ctx;
 }
 
