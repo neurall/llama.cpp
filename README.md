@@ -1,6 +1,6 @@
 # Rocket LLama 
 
-# up to 59x faster input tokens\s and 22x output t\s especially on best big models 
+# up to 59x (k 3.1) faster input tokens\s and 22x (mimo) output t\s especially on best big models 
 
 <img width="1894" height="621" alt="image" src="https://github.com/user-attachments/assets/a6be5bb1-7bb7-4b63-b25b-5c4112d7dc64" />
 
