@@ -195,6 +195,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-rampool-fork.cpp)   # the RAM pool's resize between requests (ggml/src/ggml-rampool-fork.cpp), no GPU
     llama_build_and_test(test-fit-retry-fork.cpp)   # fit's retry of a draft's memory measure against a dry target (common/fit-retry-fork.h), no GPU
     llama_build_and_test(test-draft-ubatch-fork.cpp)   # the draft context's ubatch, shared by the runtime and fit (common/draft-ubatch-fork.h), no GPU
+    llama_build_and_test(test-vk-staging-split-fork.cpp) # Vulkan host copies land in a staging buffer of at most 32 MiB (ggml/src/ggml-vulkan/vk-staging-split-fork.h), no GPU
     llama_build_and_test(test-spec-guard-fork.cpp)   # a separate draft is refused beside a target bigger than the free VRAM (common/spec-guard-fork.h), no GPU
     llama_build_and_test(test-moetopic-fork.cpp)
     llama_build_and_test(test-pass-fork.cpp)

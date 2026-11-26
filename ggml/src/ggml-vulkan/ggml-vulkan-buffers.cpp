@@ -1,4 +1,5 @@
 #include "ggml-vulkan-common.h"
+#include "vk-staging-split-fork.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -889,7 +890,8 @@ static size_t ggml_vk_staging_size_n(const vk_device & device, const std::vector
         total += r.size;
         max = std::max(max, r.size);
     }
-    return std::max(max, std::min(total, (size_t) device->suballocation_block_size));
+    // fork: regions come split to the staging cap (vk-staging-split-fork.h), so the staging never takes more than the cap
+    return std::max(max, std::min(total, std::min((size_t) device->suballocation_block_size, vk_staging_cap_fork())));
 }
 
 // returns number of regions recorded, stops when staging is full
@@ -985,6 +987,7 @@ void ggml_vk_buffer_write_n(const vk_buffer_region * regions, size_t n) {
 
     vk_device device = pending[0].buf->device;
     std::lock_guard<std::recursive_mutex> guard(device->mutex);
+    pending = vk_staging_split_fork(pending, vk_staging_cap_fork());
     const size_t staging_size = ggml_vk_staging_size_n(device, pending);
     if (staging_size > 0) {
         ggml_vk_ensure_sync_staging_buffer(device, staging_size);
@@ -1046,6 +1049,7 @@ void ggml_vk_buffer_read_n(const vk_buffer_region * regions, size_t n) {
         return;
     }
 
+    pending = vk_staging_split_fork(pending, vk_staging_cap_fork());
     const size_t staging_size = ggml_vk_staging_size_n(device, pending);
     if (staging_size > 0) {
         ggml_vk_ensure_sync_staging_buffer(device, staging_size);
