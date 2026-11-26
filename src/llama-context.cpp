@@ -1888,6 +1888,35 @@ void llama_context::sched_reserve() {
                           free_b / 1048576.0, margin / 1048576.0, kv_fixed / 1048576.0, kv_row / 1048576.0, lt[i] / 1048576.0, n_tokens, cap);
             u = std::min(u, cap);
         }
+        // the graph is linear in tokens but not through the origin: op offload copies the host expert weights of a pass into the graph's buffer, a part
+        // no smaller pass sheds (Inkling 2 Mini on a real 8 GB 4060: 6869 MiB at 768 tokens, 6971 at 1024, 401 with --no-op-offload; the card read 0 MiB
+        // free and the KV had no room, 2026-11-26). A second measure at half the tokens gives that fixed part; a card where it does not fit beside its
+        // margin and a 512-token pass runs this context without op offload (the expert matmuls of a pass stay on the CPU: slower prompt, it runs)
+        if (cparams.op_offload) {
+            std::vector<size_t> lt2(backend_ptrs.size(), 0);
+            graph_reserve(n_tokens / 2, n_seqs, std::min(n_outputs_pp, n_tokens / 2), mctx.get(), true, lt2.data());
+            for (size_t i = 0; i < backend_ptrs.size(); ++i) {
+                ggml_backend_dev_t d = ggml_backend_get_device(backend_ptrs[i]);
+                if (!ggml_backend_dev_is_gpu(d) || lt[i] == 0 || lt2[i] >= lt[i]) { continue; }
+                const double per_tok = (double) (lt[i] - lt2[i]) / (n_tokens - n_tokens / 2);
+                const double fixed   = std::max(0.0, (double) lt[i] - per_tok * n_tokens);
+                size_t free_b = 0, total_b = 0;
+                ggml_backend_dev_memory(d, &free_b, &total_b);
+                size_t kv_margin = 0, kv_fixed = 0, kv_row = 0;
+                llama_moe_cache_kv_arena_shape_fork(d, &kv_margin, &kv_fixed, &kv_row);
+                const double need = fixed + std::max(llama_moe_cache_vram_margin_fork(d), kv_margin) + kv_fixed + 512 * (per_tok + kv_row);
+                if ((double) free_b < need) {
+                    const std::string w = format("%s: graph %.0f MiB at %u tokens, %.0f at %u: %.0f MiB fixed (op offload's weight copies) + %.3f MiB a token; free %.0f MiB < %.0f MiB for a 512-token pass",
+                                                 ggml_backend_dev_name(d), lt[i] / 1048576.0, n_tokens, lt2[i] / 1048576.0, n_tokens / 2, fixed / 1048576.0, per_tok / 1048576.0, free_b / 1048576.0, need / 1048576.0);
+                    LLAMA_LOG_WARN("%s: op offload off for this context (%s)\n", __func__, w.c_str());
+                    llama_moe_decision_fork("op offload", "off", w.c_str());
+                    cparams.op_offload = false;
+                    sched_need_reserve = true;
+                    sched_reserve();
+                    return;
+                }
+            }
+        }
         if (u >= 512 && u < n_tokens) {
             LLAMA_LOG_WARN("%s: micro-batch from free VRAM: %u tokens (configured %u; %s)\n", __func__, u, n_tokens, why.c_str());
             llama_moe_decision_fork("ubatch", std::to_string(u).c_str(), ("free VRAM at the first reserve: " + why).c_str());
