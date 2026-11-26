@@ -12,6 +12,7 @@
 #include "../src/llama-ext.h" // fork: llama_set_embeddings_layer_inp_last (DSpark prompt ring)
 #include "draft-ubatch-fork.h"
 void llama_draft_area_shrink_fork(llama_context * ctx);   // src/llama-context.cpp (no header edit): the draft's area back to its decode calls
+bool llama_kv_shared_fork(const llama_context * ctx);      // src/llama-context.cpp (no header edit): the draft's KV is the target's (Gemma4Assistant)
 
 #include <algorithm>
 #include <cassert>
@@ -2228,7 +2229,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             }
         }
 
-        is_mem_shared = llama_get_ctx_other(ctx_dft) == ctx_tgt;
+        // fork: ctx_other also lends a draft the target's embeddings and head, so it alone does not say the KV is shared. Taken as shared, the
+        // Qwen3.8 MTP draft skipped the prompt catch-up (its layer saw none of the prompt) and put every draft step at one position (the second step
+        // failed: 'inconsistent sequence positions', 1143 times in one 2k-token run; acceptance 0.50-0.57, 2026-11-26)
+        is_mem_shared = llama_get_ctx_other(ctx_dft) == ctx_tgt && llama_kv_shared_fork(ctx_dft);
         chain_heads   = n_mtp_layers > 1 && !is_mem_shared;
 
         llama_set_embeddings_nextn(ctx_tgt, true, /*masked*/ is_mem_shared);

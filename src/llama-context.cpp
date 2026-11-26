@@ -8769,3 +8769,9 @@ llama_memory_breakdown llama_get_memory_breakdown(const struct llama_context * c
 llama_context * llama_get_ctx_other(struct llama_context * ctx) {
     return ctx->get_cparams().ctx_other;
 }
+
+// fork: true when the context's KV is its ctx_other's (Gemma4Assistant reuses the target's cache layers, llama_model::create_memory). ctx_other also
+// lends a draft the target's token embeddings and head (qwen4exp and glm5-next MTP files without them); such a draft keeps a KV of its own
+bool llama_kv_shared_fork(const llama_context * ctx) {
+    return ctx->get_cparams().ctx_other != nullptr && ctx->get_model().arch == LLM_ARCH_GEMMA4_ASSISTANT;
+}
