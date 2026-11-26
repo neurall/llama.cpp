@@ -236,6 +236,21 @@ template <class S> static int32_t poolx_lend_blocks(const S & sg, size_t need_b)
     return sg.B == 0 ? 0 : (int32_t) std::min<size_t>((size_t) sg.n, (cov + sg.B - 1) / sg.B);
 }
 
+// ---- the speculative draft's compute area ----------------------------------------------------------------------------------------------------
+// (user 2026-10-26/27 and 2026-11-25: the draft lives in the pool, no VRAM beside it.) A draft context's compute graphs (its own scheduler) get [0, draft_c) of its
+// card's pool. The size is what a measure-only reserve of the draft's worst-case graphs needs, on whole blocks (a lend's own rounding), never smaller than before
+// (a graph planned for the old size still fits). 0: the area would take more than half of what the pool lends (the target's graphs and the KV need the rest).
+// Qwen3.8 + its MTP draft (2026-11-25): the draft's buffer came after the pool and took 349 MiB on CUDA0 (1265 MiB on CUDA1 with two cards) beside it.
+template <class P> static size_t poolx_draft_area(const P & ap, size_t need, size_t lendable) {
+    if (need == 0) { return ap.draft_c; }
+    const size_t c = std::max(ap.draft_c, poolx_lend_round(ap, need));
+    return c <= lendable / 2 ? c : 0;
+}
+// where the target's graph starts in the pool buffer: behind the draft's area, and behind the dense split's copies too when the graph splits (they sit behind the area)
+static inline size_t poolx_graph_start(size_t draft_c, size_t copies) { return draft_c + copies; }
+// the blocks of a class the lend keeps at a release: what the last graph needed, and never fewer than the draft's area covers (it stays lent while the draft lives)
+template <class S> static int32_t poolx_release_keep(const S & sg, size_t want_b, size_t draft_c) { return poolx_lend_blocks(sg, std::max(want_b, draft_c)); }
+
 // ---- owner ledger -----------------------------------------------------------------------------------------------------------------------------
 // ps: { std::vector<int32_t> owner, free; int32_t home_lo, home_hi; }. The caller holds the cache's mutex. evict(layer, block) takes an expert out of a block it owned (the caller's bookkeeping).
 // Lend blocks [from, to) of a class to a graph. Returns the blocks that were under the KV zone (-3): they are NOT taken (a lend never goes over the zone; the caller reports).

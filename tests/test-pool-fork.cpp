@@ -47,6 +47,7 @@ struct tps  { std::vector<int32_t> owner, free; int32_t home_lo = 0, home_hi = I
 struct tpool {
     std::vector<tseg> segs; std::vector<tps> ps; std::vector<int> kvt;
     size_t tail_end = 0, floor_end = 0, kv_fixed = 0, kv_h = 0, kv_row = 0, kv_start = 0, span = 0, want_b = 0;
+    size_t draft_c = 0;   // the draft's compute area at the pool start (poolx_draft_area)
     size_t room_max = 0, room_lo = 0, room_lo_want = 0, tail_real = 0;   // CUDA's room at the tail: [min(room_lo, room_lo_want), tail_real) when room_max > 0
 };
 // grids (--moe staging=0): a class's block grid runs on from its home to the pool's end; blocks past its home are -4 until the ring claims them
@@ -1354,6 +1355,39 @@ static void test_regress_room_moves_not_evicts() {
     report("free and empty blocks are filled before any expert is overwritten", plan.size() == 10 && n_free == 3, fmt("%zu moves, %d to free", plan.size(), n_free));
 }
 
+// ---- the draft's compute area ([Qwen3.8 + MTP draft, 2026-11-25]: the draft's compute buffer came after the pool, outside it: 349 MiB on CUDA0, 1265 MiB on CUDA1) ----
+static void test_regress_draft_area() {
+    printf("Testing the draft's compute area at the pool start (Qwen3.8 MTP draft outside the pool, 2026-11-25):\n");
+    const size_t MiB = 1048576, B = (size_t) (2.24 * MiB) / 256 * 256;
+    // one card: 7201 blocks, 16819 MiB lendable; the draft's graphs measured 349.02 MiB
+    tpool p; p.segs = { { 0, 0, B, 7201, 0 } };
+    const size_t need1 = (size_t) (349.02 * MiB), lend1 = 16819 * MiB;
+    const size_t c1 = poolx_draft_area(p, need1, lend1);
+    report("one card: the area holds the draft's 349 MiB, on whole blocks", c1 >= need1 && c1 % B == 0 && c1 - need1 < B);
+    p.draft_c = c1;
+    report("a smaller graph later keeps the area (never shrinks)", poolx_draft_area(p, 100 * MiB, lend1) == c1);
+    report("a query (need 0) answers the area as it is", poolx_draft_area(p, 0, lend1) == c1);
+    report("the target's graph starts behind the area", poolx_graph_start(c1, 0) == c1);
+    // two cards: the draft sits on CUDA1 (18157 MiB lendable, 2078 MiB of dense-split copies); its graphs measured 1264.69 MiB
+    tpool q; q.segs = { { 0, 0, B, 8100, 0 } };
+    const size_t need2 = (size_t) (1264.69 * MiB), lend2 = 18157 * MiB, copies = 2078 * MiB;
+    const size_t c2 = poolx_draft_area(q, need2, lend2);
+    report("two cards: CUDA1's area holds the draft's 1265 MiB", c2 >= need2 && c2 % B == 0);
+    report("a split graph starts behind the area and the copies", poolx_graph_start(c2, copies) == c2 + copies);
+    report("an area over half of what the pool lends is refused (0)", poolx_draft_area(q, lend2 / 2 + B, lend2) == 0);
+    // the ledger: the area's blocks stay lent when a smaller graph's lend is released
+    tps ps; ps.owner.assign(64, -1); for (int b = 63; b >= 0; --b) { ps.free.push_back(b); }
+    tseg sg{ 0, 0, B, 64, 0 };
+    std::vector<int32_t> take; for (int b = 0; b < 4; ++b) { take.push_back(b); }
+    poolx_zone_take(ps, take, nullptr, [](int32_t, int32_t) {}, [](int32_t) {}, -2);   // the area: 4 blocks lent
+    poolx_lend(ps, 4, 10, [](int32_t, int32_t) {}, [](int32_t) {});                   // a target graph behind it: blocks 4..9
+    sg.blocked = 10;
+    poolx_release(ps, poolx_release_keep(sg, 2 * B, 4 * B), sg.blocked);              // the next graph needs 2 blocks only
+    bool kept = true; for (int b = 0; b < 4; ++b) { kept = kept && ps.owner[b] == -2; }
+    bool back = true; for (int b = 4; b < 10; ++b) { back = back && ps.owner[b] == -1; }
+    report("a release keeps the area's blocks lent, gives the rest back", kept && back);
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -1389,6 +1423,7 @@ int main(int argc, char ** argv) {
     test_regress_room_give_back_chunks();
     test_regress_pool_buffer_limits();
     test_regress_room_moves_not_evicts();
+    test_regress_draft_area();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

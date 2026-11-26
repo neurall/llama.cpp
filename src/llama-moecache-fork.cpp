@@ -430,6 +430,7 @@ struct moe_cache {
         size_t                span   = 0;       // lendable bytes: up to the last class's last expert block
         size_t                want_b = 0;       // bytes the last graph needed (what alias_release keeps)
         size_t                mirror_b = 0;     // the dense split's copies at the start of the buffer (--moe mirror-pool, see llama_dsplit_mirror_place_fork)
+        size_t                draft_c  = 0;     // the speculative draft's compute area at the very start, in front of the copies (llama_moe_cache_draft_area_fork)
         // CUDA's room (user 2026-11-16: "use tail", "keep just hot moes there", "do it in moe sized chunks", no gap kept free): [vol_lo, tail_real) at the end of the
         // buffer is the tail area, whole blocks of the last class that hold cached experts only; the ring, the grids, the lend and the KV stop in front of it
         // (tail_end = vol_lo). CUDA's own memory (kernels loaded on first use, cuBLAS, CUDA graphs, page tables of pinned RAM) takes whole blocks from its top:
@@ -6181,7 +6182,7 @@ size_t llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens
         const size_t cap  = kv_lend_potential(ap, (size_t) n_tokens);
         size_t bmax = 0;
         for (const auto & sg : ap.segs) { bmax = std::max(bmax, sg.B); }
-        const size_t used = ap.mirror_b + bmax;
+        const size_t used = ap.draft_c + ap.mirror_b + bmax;
         return cap > used ? cap - used : 0;
     }
     return 0;
@@ -6689,6 +6690,7 @@ static std::map<int32_t, size_t>::const_iterator need_exact(const moe_cache::ali
 static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size_t l, size_t cells, bool dry, size_t lend_min = 0) {
     if (!dry) { ap.refused_b = 0; }   // the zone is laid out again: an earlier refusal no longer holds
     const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
+    l = std::max(l, ap.draft_c); lend_min = std::max(lend_min, ap.draft_c);   // the zone stays behind the draft's compute area (a lend size learned before it was smaller)
     l = kv_lend_round(ap, l);   // the lend's end on its block edge (poolx_lend_round)
     lend_min = std::min(l, kv_lend_round(ap, lend_min));   // the zone may go back down to the end of the lend, never into it
     // The attention reads the growing records up to the cells in use rounded up to the pad (256 with flash attention); those pad rows must be the zone's
@@ -7221,7 +7223,7 @@ static size_t kv_prompt_cells(const moe_cache::alias_pool & ap, size_t F, size_t
     // beside a prompt pass: the terms the pass cap reads too (pp_cap_to_pool), the dense split's copies in front of the graph and the pass's own growth with the cells
     // (need_at_cells' line between the start-up probes), not only the f16 copies of quantized K/V. Without them f16 "held" 137078 tokens beside a 6436-token pass
     // (Qwen3.6 128k at 4.5 GiB a card, 720 / 798 MiB of copies) whose cap at the end cells was 2528: the KV stayed f16, 1790 prompt t/s against 3017 on q8_0
-    const size_t Fm = F + ap.mirror_b;
+    const size_t Fm = F + ap.draft_c + ap.mirror_b;
     return kvx_cells_grow(ap.floor_end, Fm, R, pc, (double) n_pass, ap.grow_p0, ap.grow_p1, ap.kv_step, ap.grow_c1, kvx_cells(ap.floor_end, kv_prompt_lend0(ap, n_pass), Fm, R, pc));
 }
 static bool kv_any_out(const moe_cache::alias_pool & ap);
@@ -7301,7 +7303,7 @@ static ggml_backend_t kv_conv_backend(ggml_backend_dev_t dev) {
 // a staging range for the conversion (kvz_stage_range): whole blocks of one size class, at most 256 MiB, in front of the zone or past both its extents. Its experts
 // are evicted for the conversion, the zone's final layout gives the blocks back free.
 static bool kv_stage_range(const moe_cache::alias_pool & ap, size_t zend, size_t & lo, size_t & hi) {
-    return kvz_stage_range(ap, kv_lend_round(ap, ap.mirror_b), zend, (size_t) 256 << 20, lo, hi);
+    return kvz_stage_range(ap, kv_lend_round(ap, ap.draft_c + ap.mirror_b), zend, (size_t) 256 << 20, lo, hi);
 }
 
 struct kv_cv_part { const std::vector<llama_kv_tail_fork::seg> * so; const std::vector<llama_kv_tail_fork::seg> * sn; size_t so_add, sn_add; const std::function<ggml_tensor *(int32_t, bool)> * rot; };
@@ -8522,8 +8524,7 @@ static size_t alias_release(moe_cache * mc) {
     size_t n_back = 0;
     for (auto & ap : mc->alias) {
         for (auto & sg : ap.segs) {
-            const size_t  cov  = ap.want_b > sg.base ? ap.want_b - sg.base : 0;
-            const int32_t keep = (int32_t) std::min<size_t>((size_t) sg.n, (cov + sg.B - 1) / sg.B);
+            const int32_t keep = poolx_release_keep(sg, ap.want_b, ap.draft_c);   // the draft's area stays lent
             if (keep < sg.blocked) {
                 auto & ps = mc->pool[sg.pcls];
                 n_back += poolx_release(ps, keep, sg.blocked);
@@ -8535,6 +8536,61 @@ static size_t alias_release(moe_cache * mc) {
     }
     if (n_back > 0) { if (mc->v2.on) { pv2_sync(mc, true); } pv2_shadow_held(mc); alias_cost_log("after a prompt"); }   // pool-v2: the bytes back to the heap (the shadow hears the lend back)
     return n_back;
+}
+
+// The speculative draft's compute area (user 2026-10-26/27 and 2026-11-25: the draft lives in the pool, no VRAM beside it). A draft context (MTP head, DFlash or
+// DSpark: its own scheduler, no expert cache of its own) asks for its card's area at each reserve, with what a measure-only reserve of its worst-case graphs needs
+// there; its graphs are then placed in [0, draft_c) of the pool buffer. The area is lent blocks (owner -2) that no release gives back, the target's graphs start
+// behind it (llama_context::apply_moe_alias, moe_mirror_offsets), the dense split's copies move behind it, the KV zone stays behind it (kv_layout). The draft's
+// graphs and the target's never overlap, so neither waits for the other. Qwen3.8 + its MTP draft (2026-11-25): the draft's buffer came after the pool, 349 MiB on
+// CUDA0 (1265 MiB on CUDA1 with two cards) outside it. need 0: the area as it is (0: none, or no pool on dev). The caller has synchronized the target context.
+// Returns the area's bytes and its buffer in *buf, or 0 when the pool cannot hold it (the draft keeps its own buffer, which the VRAM guard reports).
+size_t llama_moe_cache_draft_area_fork(ggml_backend_dev_t dev, size_t need, ggml_backend_buffer_t * buf) {
+    moe_cache * mc = g_cache;
+    if (!mc || !alias_on()) { return 0; }
+    moe_cache::alias_pool * ap = nullptr;
+    for (auto & a : mc->alias) { if (a.dev == dev) { ap = &a; } }
+    if (!ap) { return 0; }
+    if (need == 0) { if (buf && ap->draft_c) { *buf = ap->buf; } return ap->draft_c; }
+    const size_t c = poolx_draft_area(*ap, need, ap->span_full);   // the lend's reach without the KV zone (the zone moves behind the area)
+    if (c == 0) {
+        LLAMA_LOG_WARN("moe-cache: draft: its graphs need %.1f MiB on %s, more than half of the %.1f MiB the pool lends: they keep a buffer of their own\n",
+                need / 1048576.0, ggml_backend_dev_name(dev), ap->span_full / 1048576.0);
+        return 0;
+    }
+    if (buf) { *buf = ap->buf; }
+    if (c == ap->draft_c) { return c; }
+    if (!ap->kvt.empty() && kv_lend_round(*ap, c + ap->want_b) > ap->kv_start) {
+        // the zone moves behind the area and the target's lend as it is now (alias_fork's own move: the rows in use and their pad, on the lend's block edge)
+        size_t cells = 0, pad = 1, cmx = 0;
+        for (auto & r : ap->kvt) { if (!r.fixed) { cells = std::max(cells, r.rows ? r.rows() : 0); pad = std::max(pad, r.pad); cmx = std::max(cmx, r.cells_max); } }
+        cells = kvz_read_cells(cells, pad, cmx);
+        const size_t lr = kv_lend_round(*ap, c + ap->want_b);
+        if (lr + kvz_bytes(*ap, std::max(cells, (size_t) 1)) > ap->floor_end) {
+            LLAMA_LOG_WARN("moe-cache: draft: an area of %.1f MiB on %s leaves no room for %zu cells of KV behind it: its graphs keep a buffer of their own\n",
+                    c / 1048576.0, ggml_backend_dev_name(dev), cells);
+            return 0;
+        }
+        const size_t room = (ap->floor_end - lr - ap->kv_fixed) / std::max<size_t>(1, ap->kv_row);
+        ap->draft_c = c;   // kv_layout's floor
+        kv_layout(mc, *ap, std::min(ap->kv_h, std::max(room, cells)), lr, cells, false, lr);
+        poison_free_blocks(mc, *ap);
+    }
+    const size_t was = ap->draft_c;
+    size_t n_take = 0, n_give = 0, n_evict = 0;
+    pool_move_begin(*ap, 0, c);
+    kv_blocks_apply(mc, *ap, 0, c, true, false, n_take, n_give, n_evict, -2);   // lent blocks: experts out, uploads into them dropped or awaited
+    pool_move_end(*ap);
+    ap->draft_c = c;
+    ap->want_b  = std::max(ap->want_b, c);
+    flush_tables();   // the evicted experts leave the device tables before the draft's graphs write there
+    llama_dsplit_mirror_shift_fork(dev, c);
+    g_lend_epoch++;   // the target's graphs move behind the area: built again
+    LLAMA_LOG_WARN("moe-cache: draft: its compute graphs hold [0, %.1f MiB) of the pool on %s (measured %.1f MiB, was %.1f; %zu blocks lent, %zu cached experts out): the "
+            "target's graphs%s start behind it\n", c / 1048576.0, ggml_backend_dev_name(dev), need / 1048576.0, was / 1048576.0, n_take, n_evict,
+            ap->mirror_b ? " and the dense split's copies" : "");
+    if (led_on()) { led_map(*ap, "draft area"); }
+    return c;
 }
 
 // After a prompt: fill the blocks it borrowed.
@@ -18961,7 +19017,7 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     size_t cells_end = end_cells > 0 ? end_cells : (size_t) n_prompt;
     for (auto & r : ap.kvt) { if (!r.fixed && end_cells == 0) { cells_end = std::max(cells_end, (r.rows ? r.rows() : 0) + (size_t) n_prompt); } }
     auto seeded = [&]() -> uint32_t {   // the graph alone: the staging slots take what the pool holds behind it (ppx_stage_slots), they never cut a pass
-        return ap.graph_tok > 0 ? kvz_pass_cap(ap, cells_end, ub, 0.0, (double) (ap.graph_tok + ap.scr_tok), pad, ap.mirror_b) : ub;
+        return ap.graph_tok > 0 ? kvz_pass_cap(ap, cells_end, ub, 0.0, (double) (ap.graph_tok + ap.scr_tok), pad, ap.draft_c + ap.mirror_b) : ub;
     };
     if (ap.need_tok.empty()) { return seeded(); }
     // every measured size at the cells this call ends at (need_at_cells): the fit below then includes the masks' growth with the context
@@ -18985,21 +19041,21 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     // headroom there (Qwen3.6-35B, 3 GiB free per card, cold: a 4128-token pass lent 1222 of the x4 card's 1282 MiB and its KV did not fit, 2026-10-22)
     if (moe_log_has("w")) {   // the cap's inputs: a 22381-token call of GLM (split-pass=0, 55k cells) was capped to 96 tokens (239 passes)
         LLAMA_LOG_WARN("moe-cache: pass cap: n %u cells_end %zu pts %zu a %.0f b %.0f mirror %zu lend_potential %zu -> %u\n", n_prompt, cells_end, pts.size(), a, b, ap.mirror_b,
-                (size_t) kvz_lend_potential(ap, kvz_read_cells(std::max<size_t>(cells_end, ap.kv_h), pad)), kvz_pass_cap(ap, cells_end, ub, a, b, pad, ap.mirror_b));
+                (size_t) kvz_lend_potential(ap, kvz_read_cells(std::max<size_t>(cells_end, ap.kv_h), pad)), kvz_pass_cap(ap, cells_end, ub, a, b, pad, ap.draft_c + ap.mirror_b));
         for (const auto & p : pts) { LLAMA_LOG_WARN("moe-cache: pass cap point: %d tokens -> %zu B\n", p.first, p.second); }
     }
-    unsigned cap = kvz_pass_cap(ap, cells_end, ub, a, b, pad, ap.mirror_b);
+    unsigned cap = kvz_pass_cap(ap, cells_end, ub, a, b, pad, ap.draft_c + ap.mirror_b);
     // a graph measured at this very size is the truth, not the line (find_slot checks with it): Qwen3.8 staging=0, the 5408-token graph measured 3811 MiB, the
     // line said less, the pass ran at 8312 cells and its KV did not fit ("failed to prepare attention ubatches"). The line moves up through that point.
     if (lay_fit) {   // (the layout's own size at exactly this many tokens)
         const auto & lay = ap.need_lay[llama_dsplit_helpers_experts_fork((int64_t) ub) ? 1 : 0];
         if (const auto ex = lay.find((int32_t) cap); ex != lay.end()) {
             const double m = (double) need_at_cells(ap, ex->first, ex->second.first, cells_end, ex->second.second);
-            if (m > a + b * (double) cap) { cap = kvz_pass_cap(ap, cells_end, ub, m - b * (double) cap, b, pad, ap.mirror_b); }
+            if (m > a + b * (double) cap) { cap = kvz_pass_cap(ap, cells_end, ub, m - b * (double) cap, b, pad, ap.draft_c + ap.mirror_b); }
         }
     } else if (const auto ex = ap.need_tok.find((int32_t) cap); ex != ap.need_tok.end() && !(real_only && ap.need_est.count(ex->first))) {
         const double m = (double) need_at_cells(ap, ex->first, ex->second, cells_end);
-        if (m > a + b * (double) cap) { cap = kvz_pass_cap(ap, cells_end, ub, m - b * (double) cap, b, pad, ap.mirror_b); }
+        if (m > a + b * (double) cap) { cap = kvz_pass_cap(ap, cells_end, ub, m - b * (double) cap, b, pad, ap.draft_c + ap.mirror_b); }
     }
     return cap;   // the zone for the padded prompt rows lies in a gap: the lend can reach only what kvz_lend_potential says (OLMoE 3440-token prompt, 1.0 GiB free: planned from the pool end, the zone then held 2962 cells behind a 451-token pass: no slot, 2026-10-18)
 }
@@ -19217,7 +19273,7 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
     double   best_U  = 0.0;
     for (uint32_t P = P0; P <= n && best_P == 0; ++P) {
         const uint32_t u = std::min<uint32_t>(ub_max, ((n + P - 1) / P + 31) / 32 * 32);
-        const double   L = per_t * (double) u + (double) ap->mirror_b;
+        const double   L = per_t * (double) u + (double) (ap->draft_c + ap->mirror_b);
         if (L > span_eff) { continue; }
         best_P  = P;
         best_ub = u;
@@ -19234,7 +19290,7 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
     static const bool dbg = moe_log_has("w");   // --moe log=w: the pass planner's choice per prompt
     if (dbg) {
         LLAMA_LOG_WARN("moe-cache: pass plan: %u tokens: %u passes of %u, staging slots: what the pool holds behind the graph, upload %.0f ms per pass (the pool holds %.1f of %.1f GB), compute %.1f us per token%s\n",
-                n, (n + best_ub - 1) / best_ub, best_ub, best_U / 1e3, rho * (span_eff - (per_t * best_ub + (double) ap->mirror_b)) / 1e9, E / 1e9,
+                n, (n + best_ub - 1) / best_ub, best_ub, best_U / 1e3, rho * (span_eff - (per_t * best_ub + (double) (ap->draft_c + ap->mirror_b))) / 1e9, E / 1e9,
                 c_us, c_us > 0 ? "" : " (not measured yet)");
         (void) best_t;
     }
@@ -20591,7 +20647,15 @@ void llama_moe_cache_measure_stream_fork(bool on) {
 }
 
 static bool g_starved_built = false;
-bool llama_moe_cache_graph_reusable_fork() {
+static std::mutex g_ctx_epoch_mtx;
+static std::map<const void *, std::pair<int, int>> g_ctx_epoch_built;   // per context: the KV and lend epochs its last graph was built at
+bool llama_moe_cache_graph_reusable_fork(const void * ctx, bool other) {
+    {
+        std::lock_guard<std::mutex> lk(g_ctx_epoch_mtx);
+        auto it = g_ctx_epoch_built.find(ctx);
+        if (it == g_ctx_epoch_built.end() || it->second.first != g_kv_epoch.load() || it->second.second != g_lend_epoch.load()) { return false; }
+    }
+    if (other) { return true; }
     g_cs_order_graph.clear();   // asked right before a graph is built or reused: what a reserve graph's build listed is not the next graph's
     g_cs_rng_graph.clear();
     g_cs_mix_graph.clear();
@@ -21203,7 +21267,16 @@ static void bell_free_all() {
     g_bell_n_graphs = g_bell_n_layers = g_bell_n_wait = g_bell_n_miss = g_bell_n_skip = 0;
 }
 
-void llama_moe_cache_graph_built_fork() {
+void llama_moe_cache_graph_forget_fork(const void * ctx) {   // a freed context: its key goes (a new context may get the same address)
+    std::lock_guard<std::mutex> lk(g_ctx_epoch_mtx);
+    g_ctx_epoch_built.erase(ctx);
+}
+void llama_moe_cache_graph_built_fork(const void * ctx, bool other) {
+    {
+        std::lock_guard<std::mutex> lk(g_ctx_epoch_mtx);
+        g_ctx_epoch_built[ctx] = { g_kv_epoch.load(), g_lend_epoch.load() };
+    }
+    if (other) { return; }
     g_starved_built = g_cache && g_cache->starved.load();
     g_pred_train_built = g_pred_train_now;
     g_pred_epoch_built = g_pred_epoch;

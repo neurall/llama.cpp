@@ -1565,7 +1565,11 @@ void common_spec_auto(common_params & params) {
             return;
         }
     }
-    if (dft.n_start == 0 && !dft.n_max_user && params.speculative.has_dft()) {
+    // an MTP head loaded with -md (one layer, shares the target's embeddings: Qwen3.8 shared 1.9 GB) is kept like built-in MTP:
+    // measured 1 GPU, Qwen3.8 IQ4_XS 3.7x free VRAM, Adamant's MTP 104-109 o/s vs 69 without; the depth tuner measures from 0
+    const bool mtp_head = std::find(params.speculative.types.begin(), params.speculative.types.end(),
+                                    COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params.speculative.types.end();
+    if (dft.n_start == 0 && !dft.n_max_user && params.speculative.has_dft() && !mtp_head) {
         // measured (GLM-5.3-Flash, 2.3x VRAM, separate -md draft with MoE experts): the draft's VRAM
         // costs the expert cache more than drafting gains, even at depth 0; --spec-draft-n-max N
         // loads it anyway. Built-in MTP (no -md) is kept: MiMo-V2.6 (2.8x VRAM, 3 dense MTP layers)

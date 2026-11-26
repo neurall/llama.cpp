@@ -7,6 +7,7 @@ void llama_moe_set_opt(const char * key, const char * value);
 #include <filesystem>
 #include <map>
 #include <mutex>
+#include <set>
 #include <thread>
 
 #include "llama-moecache-fork.h"
@@ -127,6 +128,9 @@ uint32_t llama_moe_ubadapt_next_fork(uint32_t n_tokens, uint32_t ceil);
 void llama_moe_decision_fork(const char * name, const char * value, const char * why);
 void llama_moe_cache_vram_watch_fork(bool prompt);   // src/llama-moecache-fork.cpp: the lowest free VRAM per pool card
 void llama_moe_cache_context_live_fork(const void * ctx, const llama_model * model, bool live);   // src/llama-moecache-fork.cpp: the live contexts' models
+// fork: the live contexts, so a target finds its draft (the context whose ctx_other it is) when it sizes the pool
+static std::mutex g_live_ctx_mtx;
+static std::set<llama_context *> g_live_ctx;
 
 static void llama_verify_hadamard_graph(
         ggml_cgraph * gf,
@@ -1457,7 +1461,7 @@ void llama_context::apply_moe_alias() {
     moe_alias_off.assign(moe_alias_bufs.size(), 0);
     for (size_t i = 0; i < moe_alias_bufs.size(); ++i) {
         const auto & ab = moe_alias_bufs[i];
-        const size_t off = std::min(ab.capacity, llama_dsplit_mirror_offset_fork(model, ab.dev, true));
+        const size_t off = std::min(ab.capacity, llama_moe_cache_draft_area_fork(ab.dev, 0, nullptr) + llama_dsplit_mirror_offset_fork(model, ab.dev, true));
         moe_alias_off[i] = off;
         llama_moe_cache_alias_offset_fork(ab.dev, off);
         for (auto & be : backends) {
@@ -1466,6 +1470,43 @@ void llama_context::apply_moe_alias() {
             }
         }
     }
+    // a draft (no expert cache of its own, the target's pool on its cards): a new scheduler places its graphs in the area it has (draft_area_fork sizes it)
+    if (cparams.ctx_other && !cparams.moe_cache) {
+        for (auto & be : backends) {
+            ggml_backend_dev_t dev = ggml_backend_get_device(be.get());
+            ggml_backend_buffer_t buf = nullptr;
+            const size_t c = ggml_backend_dev_is_gpu(dev) ? llama_moe_cache_draft_area_fork(dev, 0, &buf) : 0;
+            if (c > 0 && buf) { ggml_backend_sched_set_external_buffer(sched.get(), be.get(), buf, 0, c); }
+        }
+    }
+}
+
+// fork: a draft's graphs get an area at the start of the target's pool on each card (llama_moe_cache_draft_area_fork), sized by a measure-only reserve of
+// its worst-case graphs; before, its compute buffers were made after the pool took the cards' memory: outside it (Qwen3.8 MTP: 349 MiB on CUDA0)
+void llama_context::draft_area_fork(uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx) {
+    std::vector<size_t> pp(backend_ptrs.size(), 0), tg(backend_ptrs.size(), 0);
+    graph_reserve(n_tokens, n_seqs, n_outputs, mctx, true, pp.data());
+    graph_reserve(n_seqs, n_seqs, n_seqs, mctx, true, tg.data());
+    cparams.ctx_other->synchronize();   // the area's blocks are taken from the target's pool: its graphs are done with them
+    for (size_t bi = 0; bi < backend_ptrs.size(); ++bi) {
+        ggml_backend_dev_t dev = ggml_backend_get_device(backend_ptrs[bi]);
+        if (!ggml_backend_dev_is_gpu(dev)) { continue; }
+        ggml_backend_buffer_t buf = nullptr;
+        const size_t c = llama_moe_cache_draft_area_fork(dev, std::max(pp[bi], tg[bi]), &buf);
+        if (c > 0 && buf) { ggml_backend_sched_set_external_buffer(sched.get(), backend_ptrs[bi], buf, 0, c); }
+    }
+}
+
+// fork: the target sizes its pool: this draft's compute buffers go back to the card first (the pool takes that memory; draft_area_fork lends it back)
+void llama_context::pool_release_fork() {
+    synchronize();
+    for (auto & be : backends) {
+        if (ggml_backend_dev_is_gpu(ggml_backend_get_device(be.get()))) {
+            ggml_backend_sched_set_external_buffer(sched.get(), be.get(), nullptr, 0, 0);
+        }
+    }
+    gf_res_prev_active = nullptr;
+    sched_need_reserve = true;
 }
 
 // --moe mirror-pool, before a graph is placed: a pass that splits goes behind the dense split's copies in each card's pool, any other graph to the start
@@ -1473,8 +1514,9 @@ void llama_context::apply_moe_alias() {
 void llama_context::moe_mirror_offsets() {
     for (size_t i = 0; i < moe_alias_bufs.size() && i < moe_alias_off.size(); ++i) {
         const auto & ab = moe_alias_bufs[i];
-        const size_t off = std::min(ab.capacity, llama_dsplit_mirror_offset_fork(model, ab.dev, false));
-        if (off == 0) {
+        const size_t ds  = llama_dsplit_mirror_offset_fork(model, ab.dev, false);
+        const size_t off = std::min(ab.capacity, llama_moe_cache_draft_area_fork(ab.dev, 0, nullptr) + ds);   // behind the draft's area
+        if (ds == 0) {
             llama_dsplit_mirror_invalidate_fork(model, ab.dev);
         }
         if (off == moe_alias_off[i]) {
@@ -1505,7 +1547,7 @@ void llama_context::moe_mirror_fill() {
     for (size_t i = 0; i < moe_alias_bufs.size(); ++i) {
         const auto & ab = moe_alias_bufs[i];
         // a pass that does not split has its graph at the start of the pool, where the copies are: filling them now would overwrite that graph's tensors
-        if (i < moe_alias_off.size() && moe_alias_off[i] == 0) {
+        if (i < moe_alias_off.size() && moe_alias_off[i] <= llama_moe_cache_draft_area_fork(ab.dev, 0, nullptr)) {
             continue;
         }
         auto todo = llama_dsplit_mirror_take_upload_fork(model, ab.dev);
@@ -2074,6 +2116,11 @@ void llama_context::sched_reserve() {
             sched_reserve();
             return;
         }
+    }
+
+    // fork: a draft's graphs go into its area of the target's pool
+    if (cparams.ctx_other && !cparams.moe_cache && !model.no_alloc() && !llama_moe_cache_alias_buffers_fork().empty()) {   // only with a pool to lend from
+        draft_area_fork(n_tokens, n_seqs, n_outputs_pp, mctx.get());
     }
 
     // reserve pp (prompt processing) graph first so that buffers are only allocated once
@@ -4037,7 +4084,7 @@ g_st_m[1] = ggml_time_us();     auto * res = get_gf_res_prev();
     const bool ctl_changed = ubatch.n_tokens >= 32 && llama_split_ctl_poll_fork((int64_t) model.hparams.n_expert, (int64_t) model.hparams.n_embd);
     const int64_t t_graph0 = ggml_time_us(); g_st_m[2] = ggml_time_us();
     bool graph_rebuilt = false;
-    bool reuse = [&] { st_piece sp(4); return !graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork() && !ds_changed && !ctl_changed; }();
+    bool reuse = [&] { st_piece sp(4); return !graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork(this, cparams.ctx_other && !cparams.moe_cache) && !ds_changed && !ctl_changed; }();
     // fork (--moe dynhot): the pass that ends a prompt (its last token has the output) copies the key rows out; a reused graph without the copies is built again
     const bool want_key = cparams.moe_cache_started && !cparams.ctx_other && ubatch.output != nullptr && ubatch.output[ubatch.n_tokens - 1] &&
                           llama_moe_topic_key_wanted_fork();
@@ -4091,7 +4138,7 @@ g_st_m[1] = ggml_time_us();     auto * res = get_gf_res_prev();
             llama_moe_cache_bell_begin_fork();
             { GGML_EV_SCOPE(GGML_EV_DECODE, "build_graph", (int64_t) ubatch.n_tokens); gf = model.build_graph(gparams); }
             llama_moe_cache_bell_expand_fork(gf);   // --moe bell=1: the bells' host chains go behind everything else
-            llama_moe_cache_graph_built_fork();
+            llama_moe_cache_graph_built_fork(this, cparams.ctx_other && !cparams.moe_cache);
 
             //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
 
@@ -4718,6 +4765,12 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 if (ggml_backend_dev_is_gpu(ggml_backend_get_device(be.get()))) {
                     ggml_backend_sched_set_external_buffer(sched.get(), be.get(), nullptr, 0, 0);
                 }
+            }
+        }
+        {   // a draft's compute buffers go back to the card too: its graphs get an area of the pool at its next reserve (llama_context::draft_area_fork)
+            std::lock_guard<std::mutex> lk(g_live_ctx_mtx);
+            for (llama_context * o : g_live_ctx) {
+                if (o != this && o->get_cparams().ctx_other == this && !o->get_cparams().moe_cache) { o->pool_release_fork(); }
             }
         }
         llama_moe_cache_kv_tail_detach_fork();   // --moe kv-tail=1: the KV records' small buffers go back to the card before the pool is sized
@@ -7925,6 +7978,7 @@ llama_context * llama_init_from_model(
     try {
         auto * ctx = new llama_context(*model, params);
         llama_moe_cache_context_live_fork(ctx, model, true);   // fork: the expert pool keys its stored VRAM need by the other live contexts (a draft)
+        { std::lock_guard<std::mutex> lk(g_live_ctx_mtx); g_live_ctx.insert(ctx); }
         const auto & cparams = ctx->get_cparams();
 
         if (cparams.rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_YARN && cparams.rope_freq_scale != model->hparams.rope_freq_scale_train) {
@@ -7943,6 +7997,8 @@ llama_context * llama_init_from_model(
 
 void llama_free(llama_context * ctx) {
     llama_moe_cache_context_live_fork(ctx, nullptr, false);
+    { std::lock_guard<std::mutex> lk(g_live_ctx_mtx); g_live_ctx.erase(ctx); }
+    llama_moe_cache_graph_forget_fork(ctx);
     delete ctx;
 }
 
