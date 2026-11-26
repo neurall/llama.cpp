@@ -1528,9 +1528,11 @@ uint32_t llama_context::draft_area_fork(uint32_t n_tokens, uint32_t n_seqs, uint
 // fork: a draft graph that does not fit its area takes a bigger one (exactly its size on each card), placed again by the caller. false: no area to grow
 bool llama_context::draft_area_grow_fork(ggml_cgraph * gf) {
     if (!cparams.ctx_other || cparams.moe_cache || llama_moe_cache_alias_buffers_fork().empty()) { return false; }
+    const int64_t t0 = ggml_time_us();
     std::vector<size_t> sz(backend_ptrs.size(), 0);
     ggml_backend_sched_reserve_size(sched.get(), gf, sz.data());
     cparams.ctx_other->synchronize();
+    const int64_t t1 = ggml_time_us();
     bool grew = false;
     for (size_t bi = 0; bi < backend_ptrs.size(); ++bi) {
         ggml_backend_dev_t dev = ggml_backend_get_device(backend_ptrs[bi]);
@@ -1545,6 +1547,10 @@ bool llama_context::draft_area_grow_fork(ggml_cgraph * gf) {
             ggml_backend_sched_set_external_buffer(sched.get(), backend_ptrs[bi], buf, 0, c);
             grew = true;
         }
+        // the cost of a resize (user 2026-11-26: "measure how much time this expanding draft reshuffle costs"): measure + wait for the target, then the pool's move
+        // (its own line names the experts evicted and the KV rows moved)
+        LLAMA_LOG_WARN("%s: draft area on %s %.1f -> %.1f MiB for a graph of %.1f MiB: %.2f ms (measure and wait %.2f ms)\n", __func__, ggml_backend_dev_name(dev),
+                       cur / 1048576.0, c / 1048576.0, sz[bi] / 1048576.0, (ggml_time_us() - t0) / 1e3, (t1 - t0) / 1e3);
     }
     return grew;
 }
@@ -1561,15 +1567,21 @@ void llama_context::draft_area_shrink_fork() {
         if (it == g_draft_decode_need.end()) { return; }
         need = it->second;
     }
+    const int64_t t0 = ggml_time_us();
     synchronize();
     if (cparams.ctx_other) { cparams.ctx_other->synchronize(); }
+    const int64_t t1 = ggml_time_us();
     for (size_t bi = 0; bi < backend_ptrs.size(); ++bi) {
         ggml_backend_dev_t dev = ggml_backend_get_device(backend_ptrs[bi]);
         auto it = need.find(dev);
         if (it == need.end()) { continue; }
+        const size_t cur = llama_moe_cache_draft_area_fork(dev, 0, nullptr);
+        if (cur <= it->second) { continue; }
         ggml_backend_buffer_t buf = nullptr;
         const size_t c = llama_moe_cache_draft_area_set_fork(dev, it->second, &buf);
         if (c > 0 && buf) { ggml_backend_sched_set_external_buffer(sched.get(), backend_ptrs[bi], buf, 0, c); }
+        LLAMA_LOG_WARN("%s: draft area on %s %.1f -> %.1f MiB when the answer starts: %.2f ms (wait %.2f ms)\n", __func__, ggml_backend_dev_name(dev),
+                       cur / 1048576.0, c / 1048576.0, (ggml_time_us() - t0) / 1e3, (t1 - t0) / 1e3);
     }
     gf_res_prev_active = nullptr;
 }
