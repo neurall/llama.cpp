@@ -2140,7 +2140,28 @@ static void common_auto_pin(common_params & params) {
         return;
     }
     if (params.auto_pin && params.load_mode == LLAMA_LOAD_MODE_AUTO) {
-        const size_t avail = std::min(common_ram_available(true), common_cgroup_room());
+        size_t avail = std::min(common_ram_available(true), common_cgroup_room());
+#if defined(_WIN32)
+        {   // fork: the devices' allocations still to come are committed too (WDDM): the pin leaves them their share of the commit, free VRAM as their ceiling.
+            // W10 2026-11-26: 21.8 GiB of commit left, 14.7 GiB pinned, 6.3 GiB left for a 3.3 GiB KV arena, the graphs and CUDA: "bad allocation" at the first decode
+            size_t vram = 0;
+            for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+                ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+                if (!ggml_backend_dev_is_gpu(dev)) { continue; }
+                size_t fr = 0, tot = 0;
+                ggml_backend_dev_memory(dev, &fr, &tot);
+                vram += fr;
+            }
+            size_t phys = 0, commit = 0;
+            host_room_fork(&phys, &commit);
+            const size_t room = host_room_fork_calc(phys, commit, host_job_room_fork(), vram);
+            if (room < avail) {
+                LOG_INF("%s: %.1f GiB of host memory for the pin: %.1f GiB of commit left less %.1f GiB of free VRAM the devices commit too (RAM %.1f GiB free)\n", __func__,
+                        room / 1073741824.0, commit / 1073741824.0, vram / 1073741824.0, phys / 1073741824.0);
+                avail = room;
+            }
+        }
+#endif
         // RAM kept for the system, the KV cache in RAM and the page cache of the mapped rest: a tenth of the machine, at least 4 GiB (user 2026-11-02: a share, not 12 GiB on any machine; was 0 when
         // the model fitted and 4 GiB when it did not until 2026-10-21), plus the largest prompt pass's pinned host buffer (user 2026-10-22: a full-size pass comes before how much of the model is pinned)
         const size_t pass_buf = common_pass_buffer_reserve(params);

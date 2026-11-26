@@ -4,11 +4,14 @@
 // 2026-11-26: N: full, page file held at 16 of its 32 GiB, 24.7 of 47.3 GB committed while idle) has 22 GB of free RAM beside little commit, and a free-RAM
 // reading pinned the weights up to it: the first decode ended in "uncaught exception: bad allocation". The room is the smaller of free RAM, the commit left and
 // the room under a job object's process limit (Windows' cgroup; --moe commit-cap=MiB sets one for tests).
+// The pin of the weights reads it (common_auto_pin, with the free VRAM as the devices' commit), so do the RAM pool and the RAM KV tier; a host allocation that still
+// fails inside a decode ends that call with an error (decode_guarded in llama-context.cpp), not the process.
 // test: tests/test-hostroom-fork.cpp
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <new>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -21,9 +24,12 @@
 #include <psapi.h>   // PROCESS_MEMORY_COUNTERS_EX; K32GetProcessMemoryInfo is in kernel32 (no psapi.lib)
 #endif
 
-// the rule: every reading is a ceiling, the room is the lowest (SIZE_MAX: no such ceiling)
-static inline size_t host_room_fork_calc(size_t avail_phys, size_t avail_commit, size_t job_room) {
-    return std::min(avail_phys, std::min(avail_commit, job_room));
+// the rule: every reading is a ceiling, the room is the lowest (SIZE_MAX: no such ceiling). dev_commit: commit the devices will still take from the same
+// limit (Windows WDDM backs the KV arena, the compute buffers and CUDA's modules with commit: under a job cap the 3346 MiB arena's cudaMalloc failed, W10
+// 2026-11-26); taken off the commit and the job room, not off the free RAM.
+static inline size_t host_room_fork_calc(size_t avail_phys, size_t avail_commit, size_t job_room, size_t dev_commit = 0) {
+    const auto less = [](size_t a, size_t b) { return a == SIZE_MAX ? a : a - std::min(a, b); };
+    return std::min(avail_phys, std::min(less(avail_commit, dev_commit), less(job_room, dev_commit)));
 }
 
 #if defined(_WIN32)
