@@ -2047,10 +2047,6 @@ class TensorNameMap:
             "visual.rope_freqs",
         ),
 
-        MODEL_TENSOR.V_ENC_ROPE_FREQS: (
-            "visual.rope_freqs",
-        ),
-
         MODEL_TENSOR.V_ENC_EMBD_PATCH: (
             "visual.embeddings.patch_embedding", # mage-vl
             "vision.patch_embed.proj", # deepseek4v
