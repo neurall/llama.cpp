@@ -1495,7 +1495,7 @@ void llama_context::apply_moe_alias() {
 // MTP the catch-up after a verify (n_max + 1 rows, a draft step is 1 row), a block draft its block, the DSV4 prompt ring its window and a block
 static std::mutex g_draft_shape_mtx;
 static std::map<const llama_model *, std::pair<uint32_t, uint32_t>> g_draft_shape;   // model -> (tokens, outputs)
-void llama_draft_decode_shape_fork(const llama_model * model, uint32_t n_tok, uint32_t n_out) {
+LLAMA_API void llama_draft_decode_shape_fork(const llama_model * model, uint32_t n_tok, uint32_t n_out) {
     std::lock_guard<std::mutex> lk(g_draft_shape_mtx);
     g_draft_shape[model] = { n_tok, n_out };
 }
@@ -1574,7 +1574,7 @@ bool llama_context::draft_area_grow_fork(ggml_cgraph * gf) {
 }
 
 // fork: the answer starts: the draft's area goes back to its decode calls on every card (the prompt catch-up's growth is given back to the experts)
-void llama_draft_area_shrink_fork(llama_context * ctx) {
+LLAMA_API void llama_draft_area_shrink_fork(llama_context * ctx) {
     if (ctx) { ctx->draft_area_shrink_fork(); }
 }
 void llama_context::draft_area_shrink_fork() {
@@ -8860,6 +8860,6 @@ llama_context * llama_get_ctx_other(struct llama_context * ctx) {
 
 // fork: true when the context's KV is its ctx_other's (Gemma4Assistant reuses the target's cache layers, llama_model::create_memory). ctx_other also
 // lends a draft the target's token embeddings and head (qwen4exp and glm5-next MTP files without them); such a draft keeps a KV of its own
-bool llama_kv_shared_fork(const llama_context * ctx) {
+LLAMA_API bool llama_kv_shared_fork(const llama_context * ctx) {
     return ctx->get_cparams().ctx_other != nullptr && ctx->get_model().arch == LLM_ARCH_GEMMA4_ASSISTANT;
 }
