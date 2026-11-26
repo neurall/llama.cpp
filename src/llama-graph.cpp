@@ -951,8 +951,6 @@ void llm_graph_input_cls::set_input(const llama_ubatch * ubatch) {
 }
 
 void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
-    GGML_UNUSED(ubatch);
-
     const int64_t n_rs = mctx->get_n_rs();
 
     if (s_copy) {
@@ -962,6 +960,34 @@ void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
         // assuming copy destinations ALWAYS happen ONLY on the cells between head and head+n
         for (uint32_t i = 0; i < n_rs; ++i) {
             data[i] = mctx->s_copy(i);
+        }
+    }
+
+    set_input_rep(mctx, ubatch);
+}
+
+void llm_graph_input_rs::set_input_rep(const llama_memory_recurrent_context * mctx, const llama_ubatch * ubatch) {
+    if (!has_rep) {
+        return;
+    }
+
+    const int64_t n_seqs = ubatch->n_seqs;
+
+    int32_t * reps = (int32_t *) rep_n->data;
+    int32_t * cols = (int32_t *) rep_cols->data;
+
+    GGML_ASSERT(ggml_backend_buffer_is_host(rep_n->buffer));
+    GGML_ASSERT(ggml_backend_buffer_is_host(rep_cols->buffer));
+
+    for (int64_t s = 0; s < n_seqs; ++s) {
+        const int64_t n_rep = mctx->get_rs_rep(s);
+        GGML_ASSERT(n_rep <= n_pend);
+
+        reps[s] = n_rep;
+
+        // the conv history is [window | pending]: the window after the kept tokens
+        for (int64_t c = 0; c < n_conv; ++c) {
+            cols[s*n_conv + c] = n_rep + c;
         }
     }
 }
@@ -1691,6 +1717,8 @@ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
             data[i] = mctx->get_recr()->s_copy(i);
         }
     }
+
+    inp_rs->set_input_rep(mctx->get_recr(), ubatch);
 }
 
 bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params) {
@@ -1737,6 +1765,8 @@ void llm_graph_input_mem_hybrid_k::set_input(const llama_ubatch * ubatch) {
             data[i] = mctx->get_recr()->s_copy(i);
         }
     }
+
+    inp_rs->set_input_rep(mctx->get_recr(), ubatch);
 }
 
 bool llm_graph_input_mem_hybrid_k::can_reuse(const llm_graph_params & params) {
@@ -1794,6 +1824,8 @@ void llm_graph_input_mem_hybrid_iswa::set_input(const llama_ubatch * ubatch) {
             data[i] = mctx->get_recr()->s_copy(i);
         }
     }
+
+    inp_rs->set_input_rep(mctx->get_recr(), ubatch);
 }
 
 bool llm_graph_input_mem_hybrid_iswa::can_reuse(const llm_graph_params & params) {
@@ -1883,6 +1915,8 @@ void llm_graph_input_mem_hybrid_iswa_rel::set_input(const llama_ubatch * ubatch)
             data[i] = mctx->get_recr()->s_copy(i);
         }
     }
+
+    inp_rs->set_input_rep(mctx->get_recr(), ubatch);
 }
 
 bool llm_graph_input_mem_hybrid_iswa_rel::can_reuse(const llm_graph_params & params) {
@@ -2304,7 +2338,7 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     }
 
 
-    prec_policy.apply(res);
+    prec_policy.apply(res, w);
 
     if (w_s) {
         res = ggml_mul(ctx0, res, w_s);
@@ -2391,7 +2425,6 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
           ggml_tensor * slots,
                  bool   cached) const {
     ggml_tensor * w_s = model.get_w_scale(w);
-
     // as in build_lora_mm: the folded weight reads the transformed input, the LoRA delta reads `cur`
     ggml_tensor * cur_mm = build_hadamard_input(w, cur);
     // the experts in the MoE cache are selected by their slots
@@ -2409,7 +2442,7 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
     }
 
     // after the NVFP4 default, so that the policy can request a higher precision
-    prec_policy.apply(res);
+    prec_policy.apply(res, w);
 
     if (w_s) {
         const int64_t n_expert = w_s->ne[0];
@@ -3715,8 +3748,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
         // upstream (#30656): src1 of the down projection can exceed the F16 range on these architectures, so it is rescaled by a power of two and the product scaled back
         // (the amax op cannot be split across devices, so these architectures are denied -sm tensor [TAG_MOE_AMAX_SCALE])
+        const bool use_amax = llm_arch_mmid_down_bf16(arch) && prec_policy.get_src1(down_exps) != GGML_PREC_BF16;
         llm_graph_amax_src1 amax_src1 = { nullptr, nullptr };
-        if (arch == LLM_ARCH_MISTRAL4 || arch == LLM_ARCH_MELLUM || arch == LLM_ARCH_FLINT || arch == LLM_ARCH_LAGUNA) {
+        if (use_amax) {
             amax_src1 = build_amax_src1_f16(cur);
             cur = amax_src1.res;
         }
@@ -5961,6 +5995,8 @@ ggml_tensor * llm_graph_context::build_rs(
 static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
            ggml_context * ctx0,
      const llama_ubatch & ubatch,
+    const llama_hparams & hparams,
+    const llama_cparams & cparams,
     const llama_memory_recurrent_context * mctx_cur) {
 
     auto inp = std::make_unique<llm_graph_input_rs>(mctx_cur);
@@ -5978,13 +6014,38 @@ static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
     inp->head = mctx_cur->get_head();
     inp->rs_z = mctx_cur->get_rs_z();
 
+    inp->has_rep = mctx_cur->get_rs_replay();
+    if (inp->has_rep) {
+        // the widest conv window of the model: the delta-net conv, or the PLE n-gram conv (qwen4exp)
+        const int64_t n_conv_r = hparams.ssm_d_conv - 1;
+        const int64_t n_conv_p = hparams.ple_conv_state() > 0 ? (int64_t) (hparams.ple_conv_kernel - 1)*hparams.ple_ngram_size : 0;
+
+        inp->n_conv = std::max(n_conv_r, n_conv_p);
+        inp->n_pend = cparams.n_rs_seq + 1;
+
+        inp->rep_cols = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, inp->n_conv, n_seqs);
+        ggml_set_input(inp->rep_cols);
+        ggml_set_name(inp->rep_cols, "rs_rep_cols");
+
+        const auto win = [&](int64_t n) {
+            return n == inp->n_conv ? inp->rep_cols : ggml_view_2d(ctx0, inp->rep_cols, n, n_seqs, inp->rep_cols->nb[1], 0);
+        };
+
+        inp->rep_cols_r = win(n_conv_r);
+        inp->rep_cols_p = n_conv_p > 0 ? win(n_conv_p) : nullptr;
+
+        inp->rep_n = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_seqs);
+        ggml_set_input(inp->rep_n);
+        ggml_set_name(inp->rep_n, "rs_rep_n");
+    }
+
     return inp;
 }
 
 llm_graph_input_rs * llm_graph_context::build_rs_inp() const {
     const auto * mctx_cur = static_cast<const llama_memory_recurrent_context *>(mctx);
 
-    auto inp = build_rs_inp_impl(ctx0, ubatch, mctx_cur);
+    auto inp = build_rs_inp_impl(ctx0, ubatch, hparams, cparams, mctx_cur);
 
     return (llm_graph_input_rs *) res->add_input(std::move(inp));
 }
@@ -6131,7 +6192,7 @@ ggml_tensor * llm_graph_context::build_rwkv_token_shift_store(
 llm_graph_input_mem_hybrid * llm_graph_context::build_inp_mem_hybrid() const {
     const auto * mctx_cur = static_cast<const llama_memory_hybrid_context *>(mctx);
 
-    auto inp_rs   = build_rs_inp_impl     (ctx0, ubatch, mctx_cur->get_recr());
+    auto inp_rs   = build_rs_inp_impl     (ctx0, ubatch, hparams, cparams, mctx_cur->get_recr());
     auto inp_attn = build_attn_inp_kv_impl(ctx0, ubatch, hparams, cparams, mctx_cur->get_attn());
 
     auto inp = std::make_unique<llm_graph_input_mem_hybrid>(cparams, std::move(inp_attn), std::move(inp_rs), mctx_cur);
@@ -6142,7 +6203,7 @@ llm_graph_input_mem_hybrid * llm_graph_context::build_inp_mem_hybrid() const {
 llm_graph_input_mem_hybrid_k * llm_graph_context::build_inp_mem_hybrid_k() const {
     const auto * mctx_cur = static_cast<const llama_memory_hybrid_context *>(mctx);
 
-    auto inp_rs   = build_rs_inp_impl     (ctx0, ubatch, mctx_cur->get_recr());
+    auto inp_rs   = build_rs_inp_impl     (ctx0, ubatch, hparams, cparams, mctx_cur->get_recr());
     auto inp_attn = build_attn_inp_k_impl(ctx0, ubatch, hparams, cparams, mctx_cur->get_attn());
 
     auto inp = std::make_unique<llm_graph_input_mem_hybrid_k>(cparams, std::move(inp_attn), std::move(inp_rs), mctx_cur);
@@ -6153,7 +6214,7 @@ llm_graph_input_mem_hybrid_k * llm_graph_context::build_inp_mem_hybrid_k() const
 llm_graph_input_mem_hybrid_iswa * llm_graph_context::build_inp_mem_hybrid_iswa() const {
     const auto * mctx_cur = static_cast<const llama_memory_hybrid_iswa_context *>(mctx);
 
-    auto inp_rs = build_rs_inp_impl(ctx0, ubatch, mctx_cur->get_recr());
+    auto inp_rs = build_rs_inp_impl(ctx0, ubatch, hparams, cparams, mctx_cur->get_recr());
 
     // build iswa attention input
     const auto * attn_ctx = mctx_cur->get_attn();
@@ -6190,7 +6251,7 @@ llm_graph_input_mem_hybrid_iswa_rel * llm_graph_context::build_inp_mem_hybrid_is
         uint32_t extent_swa) const {
     const auto * mctx_cur = static_cast<const llama_memory_hybrid_iswa_context *>(mctx);
 
-    auto inp_rs = build_rs_inp_impl(ctx0, ubatch, mctx_cur->get_recr());
+    auto inp_rs = build_rs_inp_impl(ctx0, ubatch, hparams, cparams, mctx_cur->get_recr());
 
     const auto * attn_ctx = mctx_cur->get_attn();
 
