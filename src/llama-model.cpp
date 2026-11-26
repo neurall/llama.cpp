@@ -3988,8 +3988,14 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         if (arch == LLM_ARCH_QWEN4EXP && params.ctx_type == LLAMA_CONTEXT_TYPE_MTP) {
                             filter_attn = [&](uint32_t il) { return il >= hparams.n_layer(); };
                             filter_recr = [&](uint32_t)    { return false; };
-                            if (filter_idx) {
-                                filter_idx = [&](uint32_t il) { return il >= hparams.n_layer(); };
+                            // fork: an indexer cache only for MTP layers that run QSA (compress ratio above 0). Qwen3.8's MTP layer 48 runs dense
+                            // attention: its indexer rows (512 B a cell) were kept and the k-pool state was built at every draft step for nothing
+                            bool mtp_qsa = false;
+                            for (uint32_t il = hparams.n_layer(); il < hparams.n_layer_all; ++il) { mtp_qsa = mtp_qsa || hparams.dsv4_compress_ratios[il] > 0; }
+                            if (filter_idx && mtp_qsa) {
+                                filter_idx = [&](uint32_t il) { return il >= hparams.n_layer() && hparams.dsv4_compress_ratios[il] > 0; };
+                            } else {
+                                filter_idx = nullptr;   // llama_memory_hybrid_idx without an indexer cache (as a GGUF without indexer tensors)
                             }
                         }
                     }
