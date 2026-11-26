@@ -11,6 +11,7 @@
 #include "llama-moestate-fork.h"
 #include "llama-model.h"
 #include "llama-moe-cache.h"
+#include "../ggml/src/ggml-op-slots-fork.h"   // the op_params slots the fork gives a meaning of its own
 #include "llama-batch.h"
 #include "llama-cparams.h"
 #include "llama-sampler.h"
@@ -461,7 +462,7 @@ static ggml_tensor * build_attn_inp_kq_mask(
     ggml_tensor * res = ggml_new_tensor_4d(ctx, type, n_kv - k0, n_tokens/n_stream, 1, n_stream);
     ggml_set_input(res);
     ggml_set_name(res, "attn_inp_kq_mask");
-    res->op_params[0] = (int32_t) n_kv;   // the mask's width no longer tells the graph's cells, and a graph can be reused only for the cells its K/V views cover (can_reuse_kq_mask)
+    ggml_fork_mask_set_n_kv(res, (int32_t) n_kv);   // the mask's width no longer tells the graph's cells, and a graph can be reused only for the cells its K/V views cover (can_reuse_kq_mask)
 
     return res;
 }
@@ -478,7 +479,7 @@ static bool can_reuse_kq_mask(
     bool res = true;
 
     res &= (kq_mask->ne[0] == n_kv - (cparams.flash_attn ? mctx->get_kq_mask_k0() : 0));   // fork: the same first cell too (a reused mask must cover this ubatch's cells)
-    res &= (kq_mask->op_params[0] == (int32_t) n_kv);   // fork: and the same cells: two passes can have equal widths at different cells, and the old graph read too few of them (PPL 1.18 vs 1.09)
+    res &= (ggml_fork_mask_n_kv(kq_mask) == (int32_t) n_kv);   // fork: and the same cells: two passes can have equal widths at different cells, and the old graph read too few of them (PPL 1.18 vs 1.09)
     res &= (kq_mask->ne[1] == n_tokens/n_stream);
     res &= (kq_mask->ne[2] == 1);
     res &= (kq_mask->ne[3] == n_stream);
@@ -2432,8 +2433,8 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
         ggml_mul_mat_id(ctx0, w, cur_mm, ids) :
         ggml_mul_mat_id(ctx0, cached ? moe_cache->get_experts(w) : w, cur_mm, slots);
     if (mm_id_backend) {
-        res->op_params[1] = 1; // ids may be -1: zero the output first
-        if (mm_id_hi > mm_id_lo) { res->op_params[8] = mm_id_lo; res->op_params[9] = mm_id_hi; }
+        ggml_fork_mmid_set_neg_ids(res); // ids may be -1: zero the output first
+        if (mm_id_hi > mm_id_lo) { ggml_fork_mmid_set_range(res, mm_id_lo, mm_id_hi); }
         ggml_backend_sched_set_tensor_backend(sched, res, mm_id_backend);
     }
 
@@ -3523,7 +3524,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // every block of the pool (ggml_cuda_mul_mat_q).
         auto mc_mm = [&](ggml_tensor * w, ggml_tensor * x, ggml_tensor * ids, ggml_tensor * table) {
             ggml_tensor * m = ggml_mul_mat_id(ctx0, w, x, ids);
-            if (mc_zero) { m->op_params[1] = 1; }
+            if (mc_zero) { ggml_fork_mmid_set_neg_ids(m); }
             if (n_tokens > 1) { m->src[3] = sel_dev; m->src[4] = table; }
             return m;
         };
@@ -3622,7 +3623,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
             if (mcache && !mc_mix_b) {
                 up->src[3] = mcache->host_table;
-                up->op_params[0] = mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots;   // no id equals INT32_MIN: nothing on the host, the router observation stays
+                ggml_fork_mmid_set_cache_absent(up, mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots);   // no id equals INT32_MIN: nothing on the host, the router observation stays
                 if (mc_cpu_backend) {
                     // must run where the skip table is honored (CPU), never op-offloaded
                     ggml_backend_sched_set_tensor_backend(sched, up, mc_cpu_backend);
@@ -3650,7 +3651,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                         cur->src[6] = probs;   // policy r: the router's probability of every expert for these tokens, the relevance the cache scores by
                     }
                     cur->src[3] = mcache->host_table;
-                    cur->op_params[0] = mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots;
+                    ggml_fork_mmid_set_cache_absent(cur, mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots);
                     if (mc_ppk) { ggml_format_name(cur, "ffn_moe_defer_ppk-%d", il); }   // the prompt upload observed the pass's ids already: the CPU's op must not count them again
                     if (mc_cpu_backend) {
                         ggml_backend_sched_set_tensor_backend(sched, cur, mc_cpu_backend);
@@ -4168,7 +4169,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 ggml_tensor * m = ggml_mul_mat_id(ctx0, w, in, sl);
                 // zero first: the ids of the other parts' ranges are -1 (a part with every expert has none, unless the mix's table masks the other card's: NaN on
                 // Qwen3.6, mix_on_stream: the home part's down matmul left 148 output values unwritten, the weighted sum made NaN logits of them)
-                if (pt.lo > 0 || pt.hi < n_expert || mix_on) { m->op_params[1] = 1; }
+                if (pt.lo > 0 || pt.hi < n_expert || mix_on) { ggml_fork_mmid_set_neg_ids(m); }
                 m->src[3] = selected_experts;
                 m->src[4] = pt.pc->dev_table;
                 return pin(m);
@@ -4292,7 +4293,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             if (!t || depth > 6) { return; }
             if (t->op == GGML_OP_MUL_MAT_ID) {
                 t->src[3] = llama_moe_cache_bell_table_fork(mcache);
-                t->op_params[0] = mcache->n_slots;
+                ggml_fork_mmid_set_cache_absent(t, mcache->n_slots);
                 if (strstr(t->src[0]->name, "gate_exps")) { t->src[5] = all_h; }
             }
             for (int j = 0; j < 2; ++j) { each(t->src[j], depth + 1); }
@@ -4338,7 +4339,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
     if (mcache && !mc_pp && !mc_bell) {
         experts->src[3] = mcache->host_table;
-        experts->op_params[0] = mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots;
+        ggml_fork_mmid_set_cache_absent(experts, mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots);
         if (mc_cpu_backend) {
             ggml_backend_sched_set_tensor_backend(sched, experts, mc_cpu_backend);
         }
@@ -4397,7 +4398,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         ggml_tensor * dexp = expert_chain(cur, mc_ids_def);
         each_mmid(dexp, 0, [&](ggml_tensor * t) {
             t->src[3] = mc_defer_tbl;
-            t->op_params[0] = mcache->n_slots;
+            ggml_fork_mmid_set_cache_absent(t, mcache->n_slots);
             t->src[4] = nullptr; // no predictor handoff on the deferred gate op
             const char * kind = strstr(t->src[0]->name, "gate_exps") ? "gate" : strstr(t->src[0]->name, "up_exps") ? "up" : "down";
             ggml_format_name(t, "ffn_moe_defer_%s-%d", kind, il);

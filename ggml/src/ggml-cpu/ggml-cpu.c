@@ -6,6 +6,7 @@
 #include "traits.h"
 #include "ggml-cpu-impl.h"
 #include "ggml-impl.h"
+#include "ggml-op-slots-fork.h"
 #include "quants.h"
 #include "ggml-threading.h"
 #include "unary-ops.h"
@@ -1608,7 +1609,7 @@ static void * incr_ptr_aligned(void ** p, size_t size, size_t align) {
 static size_t ggml_moe_host_bytes(const struct ggml_tensor * dst) {
     const struct ggml_tensor * ids = dst->src[2];
     const int32_t * tbl   = (const int32_t *) dst->src[3]->data;
-    const int32_t   dummy = ggml_get_op_params_i32(dst, 0);
+    const int32_t   dummy = ggml_fork_mmid_cache_absent(dst);
     const int64_t   n_as  = dst->src[0]->ne[2];
     // an expert counts once however many tokens use it: a seen flag per expert (O(tokens x used), was a rescan of every earlier slot)
     uint8_t   seen_stack[1024];
@@ -1725,14 +1726,14 @@ static void ggml_compute_forward_mul_mat_id_impl(
         memset(matrix_row_counts, 0, n_as*sizeof(int64_t));
 
         // llama MoE expert cache: when src[3] is set it is an I32 table mapping
-        // expert id -> device cache slot, with op_params[0] holding the "not
+        // expert id -> device cache slot, with op_params[GGML_FORK_SLOT_MMID_CACHE_ABSENT] holding the "not
         // cached" dummy value. Cached ids are served by the device-side cache
         // chain, so this op skips them and zeroes their dst rows instead.
         const int32_t * moe_tbl   = NULL;
         int32_t         moe_dummy = 0;
         if (dst->src[3]) {
             moe_tbl   = (const int32_t *) dst->src[3]->data;
-            moe_dummy = ggml_get_op_params_i32(dst, 0);
+            moe_dummy = ggml_fork_mmid_cache_absent(dst);
         }
 
         // group rows by src0 matrix
@@ -1907,12 +1908,12 @@ static void ggml_compute_forward_mul_mat_id_impl(
 // so uploads can be timed around them
 static atomic_int g_moe_cpu_active;
 
-// A MoE cache product (src[3]: the host table, op_params[0]: the table's value for an expert that is not on a card) has host work when one of its picks is such
+// A MoE cache product (src[3]: the host table, op_params[GGML_FORK_SLOT_MMID_CACHE_ABSENT]: the table's value for an expert that is not on a card) has host work when one of its picks is such
 // an expert. Every pick cached, skipped or negative (fully cached layers, empty deferred runs): nothing to compute, the op only zeroes its output.
 static bool ggml_moe_host_work(const struct ggml_tensor * dst) {
     const struct ggml_tensor * ids = dst->src[2];
     const int32_t * tbl   = (const int32_t *) dst->src[3]->data;
-    const int32_t   dummy = ggml_get_op_params_i32(dst, 0);
+    const int32_t   dummy = ggml_fork_mmid_cache_absent(dst);
     for (int64_t t = 0; t < ids->ne[1]; ++t) {
         for (int64_t i = 0; i < ids->ne[0]; ++i) {
             const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);

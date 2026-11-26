@@ -4,6 +4,7 @@
 #include "ggml-backend-impl.h"
 
 #include "ggml-impl.h"
+#include "ggml-op-slots-fork.h"
 #include "ggml-cpu.h"
 #include "ggml-cpu-impl.h"
 #include "simd-mappings.h"
@@ -4852,7 +4853,7 @@ template <typename BLOC_TYPE, int64_t INTER_SIZE, int64_t NB_COLS, ggml_type PAR
             // llama MoE expert cache: skip ids served by the device cache and zero
             // their dst rows (same contract as the generic CPU mul_mat_id)
             const int32_t * moe_tbl   = dst->src[3] ? (const int32_t *) dst->src[3]->data : nullptr;
-            const int32_t   moe_dummy = ggml_get_op_params_i32(dst, 0);
+            const int32_t   moe_dummy = ggml_fork_mmid_cache_absent(dst);
 
             // group rows by src0 matrix
             for (int32_t iid1 = 0; iid1 < ids->ne[1]; ++iid1) {

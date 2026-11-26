@@ -7389,7 +7389,7 @@ struct test_mul_mat_id_unit : public test_case {
             out->op_params[1] = 1; // zero the outputs first, as the graph does for a pass of several tokens
         }
         if (with_table) {
-            // the CPU takes src[3] for its host table (ggml-cpu.c: a pick runs there when its entry equals op_params[0], 0 here): the expert ids sit in
+            // the CPU takes src[3] for its host table (ggml-cpu.c: a pick runs there when its entry equals the absent value, op_params slot 10, 0 here): the expert ids sit in
             // rows n_units long and zero past the picks, so every unit offset (n_used and up) reads a 0 and the reference computes every pick
             sel = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_units(), n_tokens);
             ggml_set_name(sel, "sel");

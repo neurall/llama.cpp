@@ -4,6 +4,7 @@
 #include "ggml-version.h"
 #include "ggml-backend.h"
 #include "ggml-impl.h"
+#include "ggml-op-slots-fork.h"
 #include "ggml-threading.h"
 #include "ggml-cpu.h"
 #include "ggml.h"
@@ -5614,9 +5615,9 @@ void ggml_flash_attn_ext_set_sparse_min(
     GGML_ASSERT(a->op == GGML_OP_FLASH_ATTN_EXT);
     GGML_ASSERT(n_kv_min >= 0);
 
-    // fork: slot 6, not 5: upstream's indexed bias flag is slot 5 (ggml_flash_attn_ext_has_indexed_bias), a gate there made every gated sparse pass
-    // look like one with a bias table, which CUDA does not run (no kernel: abort at the first prompt of GLM-5.3-Flash and Qwen3.8-Flash-Next)
-    ggml_set_op_params_i32(a, 6, n_kv_min);
+    // fork: the slot is in ggml-op-slots-fork.h (it was 5, upstream's indexed bias flag: every gated sparse pass read as one with a bias table,
+    // which CUDA has no kernel for, abort at the first prompt of GLM-5.3-Flash and Qwen3.8-Flash-Next)
+    ggml_set_op_params_i32(a, GGML_FORK_SLOT_FA_SPARSE_MIN, n_kv_min);
 }
 
 void ggml_flash_attn_ext_set_n_kv_max(
