@@ -1084,6 +1084,12 @@ protected:
             char buf[16] = {};
             const bool ring = llama_model_meta_val_str(model_dft, "dflash.hyper_connection.count", buf, sizeof(buf)) >= 0 && std::atoi(buf) > 0;
             n_keep = ring ? llama_model_n_swa(model_dft) : 0;
+            // fork, --moe draft-prompt-rows=N (user 2026-11-26): a draft without the DSV4 window keeps only the last N prompt rows too (no draft work while the prompt runs)
+            if (!ring) {
+                if (const char * o = llama_moe_get_opt("draft-prompt-rows"); o && std::atoi(o) > 0) {
+                    n_keep = std::atoi(o);
+                }
+            }
             kept.assign(n_seq, {});
             answering.assign(n_seq, 0);
             answer_pos0.assign(n_seq, 0);
@@ -2160,6 +2166,16 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     int32_t n_batch_tgt = 0;
     std::vector<int32_t> verify_row0; // [n_seq] device row of the first verify row, see verify_h_rows
 
+    // fork, --moe draft-prompt-rows=N (user 2026-11-26: "no hogging vram during prefill"): a prompt pass runs no draft; its last N rows (token k with the
+    // target's h of row k - 1) wait here and go into the draft when the answer starts (begin). The draft then runs no prompt-size graph and takes no
+    // pool memory or time while the prompt runs; it attends to those N rows of the prompt only. 0 (default): every prompt row goes into the draft.
+    int32_t n_keep_prompt = 0;
+    struct kept_row { llama_token id; llama_pos pos; std::vector<float> h; };
+    std::vector<std::vector<kept_row>> kept_rows;
+    std::vector<char>      mtp_answering;   // the answer of seq has started (begin), its steps go into the draft at once
+    std::vector<llama_pos> mtp_answer_pos0;
+    int64_t kept_passes = 0, kept_rows_seen = 0;
+
     common_speculative_impl_draft_mtp(const common_params_speculative & params, uint32_t n_seq)
         : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_MTP, n_seq, params.draft.n_max)
         , params(params.draft)
@@ -2247,6 +2263,18 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             }
         }
         SPC_TRC("- target h rows on the device: %s\n", dev_rows ? "yes" : "no");
+        if (const char * o = llama_moe_get_opt("draft-prompt-rows"); o && std::atoi(o) > 0) {
+            if (is_mem_shared || chain_heads || n_seq != 1) {
+                LOG_WRN("%s: --moe draft-prompt-rows is for one sequence and a single MTP head with its own KV: not used here\n", __func__);
+            } else {
+                n_keep_prompt = std::min<int32_t>(std::atoi(o), (int32_t) llama_n_batch(ctx_dft));
+                kept_rows.assign(n_seq, {});
+                mtp_answering.assign(n_seq, 0);
+                mtp_answer_pos0.assign(n_seq, 0);
+                LOG_INF("%s: MTP draft: a prompt pass runs no draft and keeps its last %d rows, they go into the draft when the answer starts (--moe draft-prompt-rows)\n",
+                        __func__, n_keep_prompt);
+            }
+        }
     }
 
     ~common_speculative_impl_draft_mtp() override {
@@ -2277,6 +2305,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         }
 
         auto * ctx_dft = this->params.ctx_dft;
+        if (n_keep_prompt > 0 && seq_id < (llama_seq_id) kept_rows.size()) {
+            mtp_answering[seq_id]   = 1;
+            mtp_answer_pos0[seq_id] = N;
+            if (!inject_kept_rows(seq_id, N)) {
+                SPC_WRN("%s", "the kept prompt rows could not go into the draft: drafts may degrade\n");
+            }
+            return;   // the draft holds the prompt's last rows only (by design, no pos_max check)
+        }
         const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(ctx_dft), seq_id);
 
         if (pos_max < N - 1 && !is_mem_shared) {
@@ -2286,6 +2322,80 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     "Drafts may degrade.\n",
                     (int) pos_max, N - 1);
         }
+    }
+
+    // fork, --moe draft-prompt-rows: a prompt pass keeps its last rows and runs no draft (an answer step and vision rows take the old path)
+    bool keep_prompt_rows(const common_batch & batch_in) {
+        if (n_keep_prompt <= 0 || i_batch_beg[0] < 0) {
+            return false;
+        }
+        const int32_t   beg    = i_batch_beg[0];
+        const int32_t   end    = i_batch_end[0];
+        const int32_t   n_rows = end - beg + 1;
+        const llama_pos p0     = batch_in.tokens[beg].pos[0];
+        if (mtp_answering[0] && p0 >= mtp_answer_pos0[0] && n_rows <= this->n_max + 1) {
+            return false;
+        }
+        for (int32_t k = beg; k <= end; ++k) {
+            if (batch_in.tokens[k].id == LLAMA_TOKEN_NULL) {
+                return false;
+            }
+        }
+        mtp_answering[0] = 0;
+        auto & kp = kept_rows[0];
+        kp.erase(std::remove_if(kp.begin(), kp.end(), [&](const kept_row & r) { return r.pos >= p0; }), kp.end());   // a request or branch that is gone
+        const int32_t k0 = std::max(beg, end + 1 - n_keep_prompt);
+        const int32_t r0 = std::max(beg, k0 - 1);   // the target rows these need: r0 .. end - 1 (row beg pairs with pending_h)
+        const int32_t nr = end - r0;
+        std::vector<float> h((size_t) std::max(0, nr) * n_embd);
+        if (nr > 0) {
+            if (dev_rows) {
+                if (!llama_get_embeddings_nextn_rows(this->params.ctx_tgt, r0, nr, h.data())) {
+                    return false;
+                }
+            } else {
+                const float * ht = llama_get_embeddings_nextn(this->params.ctx_tgt);
+                if (!ht) {
+                    return false;
+                }
+                std::memcpy(h.data(), ht + (size_t) r0 * n_embd, h.size() * sizeof(float));
+            }
+        }
+        for (int32_t k = k0; k <= end; ++k) {
+            kept_row r;
+            r.id  = batch_in.tokens[k].id;
+            r.pos = batch_in.tokens[k].pos[0];
+            const float * src = k == beg ? pending_h[0].data() : h.data() + (size_t) (k - 1 - r0) * n_embd;
+            r.h.assign(src, src + n_embd);
+            kp.push_back(std::move(r));
+        }
+        if ((int32_t) kp.size() > n_keep_prompt) {
+            kp.erase(kp.begin(), kp.end() - n_keep_prompt);
+        }
+        kept_passes++;
+        kept_rows_seen += n_rows;
+        return true;
+    }
+
+    // the answer starts: the kept rows go into the draft's KV in one call
+    bool inject_kept_rows(llama_seq_id seq_id, int32_t n_prompt) {
+        auto & kp = kept_rows[seq_id];
+        LOG_INF("%s: prompt of %d tokens: %lld passes (%lld rows) ran no draft; its last %zu rows go into the draft now\n", __func__, n_prompt,
+                (long long) kept_passes, (long long) kept_rows_seen, kp.size());
+        kept_passes = kept_rows_seen = 0;
+        if (kp.empty()) {
+            return true;
+        }
+        auto * ctx_dft = this->params.ctx_dft;
+        llama_memory_seq_rm(llama_get_memory(ctx_dft), seq_id, kp.front().pos, -1);
+        batch.clear();
+        for (const auto & r : kp) {
+            const int32_t idx = batch.add(r.id, r.pos, seq_id, false);
+            batch.set_embd_state(idx, { r.h.data(), 1, (size_t) n_embd });
+        }
+        const int32_t rc = llama_process(ctx_dft, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+        kp.clear();
+        return rc == 0;
     }
 
     bool process(const common_batch & batch_in) override {
@@ -2320,7 +2430,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         const size_t row_bytes = (size_t) n_embd * sizeof(float);
 
         // if kv is shared with target (e.g Gemma4), then we can skip this catch-up decode
-        if (!is_mem_shared) {
+        if (!is_mem_shared && !keep_prompt_rows(batch_in)) {
             batch.clear();
 
             // pair each token with the tgt embedding shifted right by one position, and
