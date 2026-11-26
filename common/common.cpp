@@ -4,7 +4,6 @@
 
 #include "build-info.h"
 #include "common.h"
-#include "spec-guard-fork.h"
 #include "../src/llama-backend-fork.h"
 #include "../src/llama-sidefile-fork.h"
 #include "../src/llama-estimate-fork.h"
@@ -1546,13 +1545,6 @@ void common_spec_auto(common_params & params) {
     dft.n_start = ratio <= 1 ? 3 : ratio <= 2 ? 2 : 0;
     if (!dft.n_max_user) {
         dft.n_max = ratio <= 1 ? 5 : 2; // bigger than VRAM: 2 measured best (Qwen); --spec-draft-n-max raises it
-    }
-    if (spec_draft_refused_fork(ratio, params.speculative.has_dft(), dft.n_max_user)) {   // before a stored depth: that one was measured before the pool took the cards
-        LOG_WRN("%s: model is %.1fx free VRAM: the expert pool takes the cards and a separate draft has no place in it yet, not loading it "
-                "(--spec-draft-n-max N to force)\n", __func__, ratio);
-        params.speculative.types = { COMMON_SPECULATIVE_TYPE_NONE };
-        dft.mparams = {};
-        return;
     }
     {   // fork: a depth the server's tuner measured on these GPUs before is the start (and a reason to load the draft), not the size guess
         const auto key = common_spec_state_key(params);
