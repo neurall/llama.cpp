@@ -1911,6 +1911,16 @@ void llama_context::sched_reserve() {
                     LLAMA_LOG_WARN("%s: op offload off for this context (%s)\n", __func__, w.c_str());
                     llama_moe_decision_fork("op offload", "off", w.c_str());
                     cparams.op_offload = false;
+                    // the pass without the copies: its graph takes at most half of what the margins leave, the KV the other half (at the configured
+                    // 8192 tokens the 3.5 GiB graph left the KV 10240 cells and an 18642-token prompt failed, "Context size has been exceeded")
+                    const double left = (double) free_b - (need - 512 * (per_tok + kv_row) - fixed);
+                    const uint32_t u_off = left > 0 ? (uint32_t) std::min<double>(n_tokens, left / 2 / per_tok) / 32 * 32 : 512;
+                    if (u_off < n_tokens) {
+                        cparams.n_ubatch = std::max<uint32_t>(512, u_off);
+                        LLAMA_LOG_WARN("%s: micro-batch without op offload: %u tokens (configured %u; %.3f MiB a token, half of %.0f MiB left beside the margins goes to the KV)\n",
+                                       __func__, cparams.n_ubatch, n_tokens, per_tok / 1048576.0, left / 1048576.0);
+                        llama_moe_decision_fork("ubatch", std::to_string(cparams.n_ubatch).c_str(), "without op offload: the graph takes half of the VRAM beside the margins, the KV the rest");
+                    }
                     sched_need_reserve = true;
                     sched_reserve();
                     return;
