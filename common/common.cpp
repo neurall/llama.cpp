@@ -7,6 +7,7 @@
 #include "../src/llama-backend-fork.h"
 #include "../src/llama-sidefile-fork.h"
 #include "../src/llama-estimate-fork.h"
+#include "../src/llama-place-fork.h"
 #include "cpu-topo-fork.h"
 
 #include "../src/llama-ext.h"
@@ -1483,28 +1484,6 @@ std::pair<std::string, std::string> common_spec_state_key(const common_params & 
     return { "spec " + base(params.model.path) + " + " + dft, "depth." + (gpus.empty() ? std::string("cpu") : gpus) };
 }
 
-// fork: one card or the layer split for a model that fits one card, measured (place_one_card_pick): [place <model file>] <GPU names>.one / .split =
-// "<prompt ms/token> <answer ms/token> <prompt tokens> <answer tokens>" of the last request long enough to count. Set at placement, written by the server.
-// Each placement has two arms: the decode fusions on (key as above) and off (".nofuse": GGML_CUDA_EW_CHAIN, MM_MULTI, NORM_Q8 = 0). On Qwen3.6's layer split
-// they cost 5% decode (fewer kernels, none faster, the side-stream overlap lost); on one card they change nothing; set by hand, they are not tuned (".user").
-static std::string g_place_sec, g_place_key, g_place_arm;
-static bool g_place_one = false;
-
-static bool place_read(const std::string & key, double & p, double & g, double & np, double & ng) {
-    char b[128];
-    return llama_state_get(g_place_sec.c_str(), key.c_str(), b, sizeof b) && sscanf(b, "%lf %lf %lf %lf", &p, &g, &np, &ng) == 4 && place_record_counts(p, g);   // -1: phase not timed
-}
-
-// called after each request (place_record_update: which phases the request times)
-void common_place_record(double p_ms, int n_p, double g_ms, int n_g) {
-    if (g_place_sec.empty()) { return; }
-    const std::string key = g_place_key + (g_place_one ? ".one" : ".split") + g_place_arm;
-    double p = -1, g = -1, np = 0, ng = 0;
-    place_read(key, p, g, np, ng);
-    place_record_update(p, g, np, ng, p_ms, n_p, g_ms, n_g);
-    if (p > 0 || g > 0) { llama_state_set(g_place_sec.c_str(), key.c_str(), string_format("%.5f %.5f %.0f %.0f", p, g, np, ng).c_str()); }
-}
-
 // fork: the weight bytes the fitter leaves in RAM for the stock layer split of this start (place_estimate's host_bytes). The fit runs on a copy of the
 // params as the load would run it, and the model tensors its host overrides match are summed (Inkling 2 Mini on two 3090s 2026-11-25: 6.2 GiB, which
 // cost the split 40% decode). 0 when the fit is off or keeps every weight on the cards.
@@ -2042,18 +2021,13 @@ LLAMA_API double llama_moe_vram_gbs_fork(ggml_backend_dev_t d);
 LLAMA_API double llama_moe_link_gbs_fork(ggml_backend_dev_t d);
 static void decide_fork(const char * name, const std::string & value, const std::string & why) { llama_moe_decision_fork(name, value.c_str(), why.c_str()); }
 
-// the decode fusions for the placement taken: off unless GGML_CUDA_EW_CHAIN / MM_MULTI / NORM_Q8 is set (the record key names the arm)
+// the decode fusions for the placement taken: off unless GGML_CUDA_EW_CHAIN / MM_MULTI / NORM_Q8 is set
 static void place_fusions_pick() {
-    if (!g_place_sec.empty()) {
-        const char * fv[3] = { "GGML_CUDA_EW_CHAIN", "GGML_CUDA_MM_MULTI", "GGML_CUDA_NORM_Q8" };
-        bool user = false;
-        for (const char * v : fv) { user = user || getenv(v) != nullptr; }
-        if (user) {
-            g_place_arm = ".user";
-        } else {   // off, no trial arm: fusions lost every measured on/off pair (Qwen3.6 split 1483 vs 1602 i/s, Qwen3.8 cache 15.3 vs 15.8 o/s, 2026-11-25); GGML_CUDA_*=1 turns one on
-            g_place_arm = ".nofuse";
-            decide_fork("fusions", "off", "decode fusions off by default: on lost every measured pair; per-kernel check before any comes back");
-        }
+    const char * fv[3] = { "GGML_CUDA_EW_CHAIN", "GGML_CUDA_MM_MULTI", "GGML_CUDA_NORM_Q8" };
+    bool user = false;
+    for (const char * v : fv) { user = user || getenv(v) != nullptr; }
+    if (!user) {   // off, no trial arm: fusions lost every measured on/off pair (Qwen3.6 split 1483 vs 1602 i/s, Qwen3.8 cache 15.3 vs 15.8 o/s, 2026-11-25); GGML_CUDA_*=1 turns one on
+        decide_fork("fusions", "off", "decode fusions off by default: on lost every measured pair; per-kernel check before any comes back");
     }
 }
 
@@ -2345,75 +2319,27 @@ static void common_moe_cache_auto_impl(common_params & params) {
                 std::vector<size_t> card_free;
                 for (ggml_backend_dev_t d : g_gpu_used) { size_t f = 0, t = 0; ggml_backend_dev_memory(d, &f, &t); card_free.push_back(f); }
                 const int pick = fits_one_card_pick(model_size, (size_t) 1 << 30, card_free.data(), (int) card_free.size());
-                bool try_one = pick >= 0;
-                place_line line;
-                if (pick >= 0) {   // measured pick between one card and the layer split (place_one_card_pick)
-                    auto base = [](const std::string & p) { const size_t sl = p.find_last_of("/\\"); return sl == std::string::npos ? p : p.substr(sl + 1); };
-                    std::string gpus;
-                    for (ggml_backend_dev_t d : g_gpu_used) { gpus += (gpus.empty() ? "" : "+") + std::string(ggml_backend_dev_description(d)); }
-                    for (char & c : gpus) { if (c == ' ' || c == '=') { c = '_'; } }
-                    g_place_sec = "place " + base(params.model.path);
-                    g_place_key = gpus;
-                    auto best_arm = [&](const std::string & k, double & p, double & g, double & n_p, double & n_g) {   // the faster fusion arm of a placement
-                        double pa = 0, ga = 0, npa = 0, nga = 0, pb = 0, gb = 0, npb = 0, ngb = 0;
-                        const bool ha = place_read(k, pa, ga, npa, nga), hb = place_read(k + ".nofuse", pb, gb, npb, ngb);
-                        double ta = 0, tb = 0;
-                        place_totals(pa, ga, pb, gb, npa, nga, ta, tb);   // a phase one record never timed (-1) is not weighed
-                        const bool a = !hb || (ha && ta <= tb);
-                        if (a) { p = pa; g = ga; n_p = npa; n_g = nga; return ha; }
-                        p = pb; g = gb; n_p = npb; n_g = ngb; return true;
-                    };
-                    double p1 = 0, g1 = 0, n1p = 0, n1g = 0, p2 = 0, g2 = 0, n2p = 0, n2g = 0;
-                    const bool h1 = best_arm(gpus + ".one", p1, g1, n1p, n1g), h2 = best_arm(gpus + ".split", p2, g2, n2p, n2g);
-                    const double np = h1 && h2 ? (n1p + n2p) / 2 : 0, ng = h1 && h2 ? (n1g + n2g) / 2 : 0;
-                    // the estimate (place_estimate): a cold start runs its pick; its inputs are kept (".est") until both arms are measured, then the
-                    // measured totals are checked against it once
-                    const std::string est_key = gpus + ".est";
-                    bool est_one = false;
-                    std::string est_why;
-                    if (!h1 && !h2) {
-                        common_params ps = params;   // the split as it would load: its micro-batch first, the fit sees it
-                        ub_split = common_fits_ubatch(ps, false);
-                        if (params.ubatch_user) { ub_split = std::min<uint32_t>(ub_split, params.n_ubatch); }
-                        ps.n_ubatch = ub_split;
-                        ps.n_batch  = std::max<uint32_t>(ps.n_batch, 2 * ub_split);
-                        if (ps.n_ctx > 0) { ps.n_batch = std::min<uint32_t>(ps.n_batch, std::max<uint32_t>(ps.n_ctx, ub_split)); }
-                        place_est_in in;
-                        in.host_bytes = place_split_host_bytes(ps);
-                        in.used_share = n_expert_used > 0 ? (double) n_expert_used / n_expert : 1.0;
-                        in.ram_gbs = ram_gbs;
-                        in.link_gbs = 0;
-                        for (ggml_backend_dev_t d : g_gpu_used) { const double l = llama_moe_link_gbs_fork(d); in.link_gbs = in.link_gbs > 0 ? std::min(in.link_gbs, l) : l; }
-                        in.pass_tokens = ub_split;
-                        in.passes_per_call = std::max(1.0, (double) ps.n_batch / ub_split);
-                        in.n_cards = (int) g_gpu_used.size();
-                        const double enp = moe_auto_est_prompt(params), eng = moe_auto_est_gen(params);
-                        const place_est e = place_estimate(in, enp);
-                        est_one = place_estimate_pick(e, enp, eng);
-                        est_why = place_estimate_why(e, enp, eng);
-                        llama_state_set(g_place_sec.c_str(), est_key.c_str(), string_format("%.0f %.6f %.3f %.3f %.0f %.0f %d", in.host_bytes, in.used_share,
-                            in.ram_gbs, in.link_gbs, in.pass_tokens, in.passes_per_call, in.n_cards).c_str());
-                    } else if (h1 && h2) {
-                        char b[256];
-                        place_est_in in;
-                        if (llama_state_get(g_place_sec.c_str(), est_key.c_str(), b, sizeof b) && sscanf(b, "%lf %lf %lf %lf %lf %lf %d", &in.host_bytes,
-                                &in.used_share, &in.ram_gbs, &in.link_gbs, &in.pass_tokens, &in.passes_per_call, &in.n_cards) == 7) {
-                            in.p1 = p1; in.g1 = g1;   // one card measured: the split's estimate is derived from it
-                            const place_est e = place_estimate(in, np);
-                            double t1 = 0, t2 = 0;
-                            place_totals(p1, g1, p2, g2, np, ng, t1, t2);
-                            const bool eo = place_estimate_pick(e, np, ng);
-                            if (place_estimate_wrong(eo, t1, t2)) { LOG_WRN("%s: %s\n", __func__, place_estimate_wrong_line(in, e, np, ng, t1, t2).c_str()); }
-                            else { LOG_INF("%s: placement estimate held: it picked %s, measured one card %.2f s, split %.2f s\n", __func__, eo ? "one card" : "the layer split", t1 / 1000, t2 / 1000); }
-                            llama_state_erase(g_place_sec.c_str(), est_key.c_str());   // checked once; the measured totals decide from here on
-                        }
-                    }
-                    try_one = place_one_card_pick(h1, p1, g1, h2, p2, g2, np, ng, est_one);
-                    g_place_one = try_one;
-                    line = place_pick_line(try_one, h1, p1, g1, h2, p2, g2, np, ng, est_why);
-                    if (!try_one) { decide_fork("placement", line.label, line.why); }
+                place_start line = { false, "", "" };
+                if (pick >= 0) {   // one card or the layer split: this start's estimate decides (place_start_pick); nothing earlier starts measured is read
+                    common_params ps = params;   // the split as it would load: its micro-batch first, the fit sees it
+                    ub_split = common_fits_ubatch(ps, false);
+                    if (params.ubatch_user) { ub_split = std::min<uint32_t>(ub_split, params.n_ubatch); }
+                    ps.n_ubatch = ub_split;
+                    ps.n_batch  = std::max<uint32_t>(ps.n_batch, 2 * ub_split);
+                    if (ps.n_ctx > 0) { ps.n_batch = std::min<uint32_t>(ps.n_batch, std::max<uint32_t>(ps.n_ctx, ub_split)); }
+                    place_est_in in;
+                    in.host_bytes = place_split_host_bytes(ps);
+                    in.used_share = n_expert_used > 0 ? (double) n_expert_used / n_expert : 1.0;
+                    in.ram_gbs = ram_gbs;
+                    in.link_gbs = 0;
+                    for (ggml_backend_dev_t d : g_gpu_used) { const double l = llama_moe_link_gbs_fork(d); in.link_gbs = in.link_gbs > 0 ? std::min(in.link_gbs, l) : l; }
+                    in.pass_tokens = ub_split;
+                    in.passes_per_call = std::max(1.0, (double) ps.n_batch / ub_split);
+                    in.n_cards = (int) g_gpu_used.size();
+                    line = place_start_pick(in, moe_auto_est_prompt(params), moe_auto_est_gen(params));
+                    if (!line.one) { decide_fork("placement", line.label, line.why); }
                 }
-                if (try_one) {
+                if (line.one) {
                     params.devices = { g_gpu_used[pick], nullptr };   // that card alone, as -dev: other visible cards would still join the dense/expert split
                     const uint32_t ub1 = common_fits_ubatch(params, false);
                     if (ub1 > 512) {
@@ -2424,11 +2350,10 @@ static void common_moe_cache_auto_impl(common_params & params) {
                     } else {
                         LOG_INF("%s: placement one card dropped: the card's pass probe found no pass above 512 tokens, the layer split runs (%s)\n", __func__, line.why.c_str());
                         params.devices.clear();
-                        g_place_one = false;
                     }
                 }
+                if (pick >= 0) { place_fusions_pick(); }
             }
-            place_fusions_pick();
             if (!ub && ub_split && !one_card) { ub = ub_split; }   // the estimate probed the split's micro-batch already (same params)
             if (!ub) { ub = common_fits_ubatch(params, in_ram); }
             if (params.ubatch_user) { ub = std::min<uint32_t>(ub, params.n_ubatch); }   // -ub is a clamp on the largest micro-batch, not a fixed size (user 2026-10-25: dense ubatch sweep)
@@ -2500,18 +2425,8 @@ static void common_moe_cache_auto_impl(common_params & params) {
     // stock placement (the model fitter places layers): only the expert cache and what exists for it stays off (experts on the
     // CPU, repack disabled, cache slots, the big prompt batch that its uploads want); pinned weights and the thread choice stay
     if (use_cache) {
-        // the expert cache's own fusion arms (Qwen3.8 IQ4_XS 12k/4k on two cards, 2026-11-25: fusions on 15.23-15.37 o/s, off 15.84)
-        if (g_place_sec.empty() && !g_gpu_used.empty()) {
-            const std::string & mp = params.model.path;
-            const size_t sl = mp.find_last_of("/\\");
-            std::string gpus;
-            for (ggml_backend_dev_t d : g_gpu_used) { gpus += (gpus.empty() ? "" : "+") + std::string(ggml_backend_dev_description(d)); }
-            for (char & c : gpus) { if (c == ' ' || c == '=') { c = '_'; } }
-            g_place_sec = "place " + (sl == std::string::npos ? mp : mp.substr(sl + 1));
-            g_place_key = gpus + ".cache";
-            g_place_one = false;
-            place_fusions_pick();
-        }
+        // the expert cache's fusions (Qwen3.8 IQ4_XS 12k/4k on two cards, 2026-11-25: fusions on 15.23-15.37 o/s, off 15.84)
+        if (!g_gpu_used.empty()) { place_fusions_pick(); }
         auto & tbo = params.tensor_buft_overrides;
         tbo.insert(std::find_if(tbo.begin(), tbo.end(), [](const auto & o) { return o.pattern == nullptr; }), llm_ffn_exps_cpu_override());
         params.no_extra_bufts    = true;
