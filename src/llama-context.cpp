@@ -3,6 +3,7 @@
 #include "llama-backend-fork.h"
 #include "llama-kvtier-fork.h"
 #include "llama-opoffload-fork.h"
+#include "llama-hostroom-fork.h"
 void llama_moe_set_opt(const char * key, const char * value);
 #include <fstream>
 #include <filesystem>
@@ -8739,12 +8740,30 @@ int32_t llama_encode(
     return ret;
 }
 
+// fork: a host allocation that fails inside a call (std::bad_alloc: on Windows the commit limit, RAM + page file) ends this call with an error, not the process
+// ("uncaught exception: bad allocation" at the warmup decode, Inkling 2 Mini on W10 with the page file unable to grow, 2026-11-26); the commit numbers say why
+template <typename B> static int decode_guarded(llama_context * ctx, const B & batch) {
+    try {
+        return ctx->decode(batch);
+    } catch (const std::bad_alloc &) {
+#if defined(_WIN32)
+        size_t phys = 0, commit = 0;
+        host_room_fork(&phys, &commit);
+        LLAMA_LOG_ERROR("%s: a host allocation failed: %.2f GiB of commit left, %.2f GiB of RAM free, %.2f GiB under the job's limit (-1: none): the call fails, the server goes on\n",
+                __func__, commit / 1073741824.0, phys / 1073741824.0, host_job_room_fork() == SIZE_MAX ? -1.0 : host_job_room_fork() / 1073741824.0);
+#else
+        LLAMA_LOG_ERROR("%s: a host allocation failed: the call fails, the server goes on\n", __func__);
+#endif
+        return -3;
+    }
+}
+
 int32_t llama_decode(
         llama_context * ctx,
           llama_batch   batch) {
     const int64_t t_us = ggml_time_us();
-    int ret = ctx->decode(batch);
-    for (int t = 0; ret == 1 && t < 8 && g_oom_retry.exchange(0); ++t) { ret = ctx->decode(batch); }   // fork: taken back after a CUDA out-of-memory (g_oom_tc)
+    int ret = decode_guarded(ctx, batch);
+    for (int t = 0; ret == 1 && t < 8 && g_oom_retry.exchange(0); ++t) { ret = decode_guarded(ctx, batch); }   // fork: taken back after a CUDA out-of-memory (g_oom_tc)
     if (ret == 0) {
         const double ms = (ggml_time_us() - t_us) / 1000.0;
         if (batch.n_tokens == 1) { llama_moe_token_time_fork(ms); } else { llama_moe_prompt_done_fork((uint32_t) batch.n_tokens, ms); }
@@ -8871,11 +8890,11 @@ int32_t llama_process(llama_context * ctx, llama_process_type type, llama_batch_
             if (dbg >= 4) { llama_synchronize(ctx); }
             if (dbg >= 3 && other) { llama_synchronize(other); }
             if (dbg >= 1) { LLAMA_LOG_WARN("procdbg: %s decode begin\n", other ? "draft" : "target"); }
-            int ret = ctx->decode(*batch);
+            int ret = decode_guarded(ctx, *batch);
             if (dbg >= 2 && other) { llama_synchronize(ctx); }
             if (dbg >= 3 && other) { llama_synchronize(other); }
             if (dbg >= 1) { LLAMA_LOG_WARN("procdbg: %s decode end ret %d n %d\n", other ? "draft" : "target", ret, (int) g_decode_n_tokens); }
-            for (int t = 0; ret == 1 && t < 8 && g_oom_retry.exchange(0); ++t) { ret = ctx->decode(*batch); }   // fork: taken back after a CUDA out-of-memory (g_oom_tc)
+            for (int t = 0; ret == 1 && t < 8 && g_oom_retry.exchange(0); ++t) { ret = decode_guarded(ctx, *batch); }   // fork: taken back after a CUDA out-of-memory (g_oom_tc)
             if (ret == 0) {
                 const int32_t n = (int32_t) g_decode_n_tokens;
                 const double ms = (ggml_time_us() - t_us) / 1000.0;

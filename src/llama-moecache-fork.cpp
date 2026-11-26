@@ -6,6 +6,7 @@
 #include "../ggml/src/ggml-rampool-tune-fork.h"   // rp_start_pick, rp_grow_cap, rp_need_now
 #include "llama-moecache-fork.h"
 #include "llama-backend-fork.h"
+#include "llama-hostroom-fork.h"
 #include "llama-fork-hooks.h"
 #include "llama-gpu-probe-fork.h"
 #include "llama-moestate-fork.h"
@@ -850,9 +851,9 @@ static size_t sim_ram_held() {
 static size_t mem_available_bytes() {
     size_t b = 0;
 #ifdef _WIN32
-    MEMORYSTATUSEX st = {};   // /proc/meminfo is Linux only: on Windows this returned 0 and every pinning path (rampool, pinr, preheat) refused
-    st.dwLength = sizeof(st);
-    b = GlobalMemoryStatusEx(&st) ? (size_t) st.ullAvailPhys : 0;
+    // /proc/meminfo is Linux only: on Windows this returned 0 and every pinning path (rampool, pinr, preheat) refused. The commit left and a job's limit count
+    // too (llama-hostroom-fork.h): with the page file unable to grow (N: full, W10 2026-11-26) 22 GiB of free RAM stood beside little commit
+    b = host_room_fork();
 #else
     FILE * f = fopen("/proc/meminfo", "r");
     size_t kb = 0, cma = 0, v = 0;
@@ -7586,10 +7587,10 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
 static size_t kv_mem_available() {
     size_t b = 0;
 #ifdef _WIN32
-    MEMORYSTATUSEX ms = {}; ms.dwLength = sizeof(ms);   // (W10: the RAM tier held 0 tokens, there is no /proc/meminfo)
+    // (W10: the RAM tier held 0 tokens, there is no /proc/meminfo)
     // the commit limit counts too: W10 has no page file (32 GB virtual = 32 GB RAM) and the server's pinned weights are committed, so a free-physical reading of 20 GB left
     // 17 GB of commit and the 9-11 GiB host buffer of the RAM tier failed to allocate (2026-10-19)
-    if (GlobalMemoryStatusEx(&ms)) { b = (size_t) std::min<unsigned long long>(ms.ullAvailPhys, ms.ullAvailPageFile); }
+    b = host_room_fork();   // with a job's limit too (llama-hostroom-fork.h)
 #else
     size_t kb = 0;
     if (FILE * f = fopen("/proc/meminfo", "r")) {
