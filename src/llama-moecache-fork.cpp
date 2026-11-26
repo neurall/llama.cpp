@@ -16548,7 +16548,9 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
             if (!moe_opt("simlink")) { moe_state_set(sec, {{ key, format("%.3f", g) }}); }   // a simulated link is not the machine's
             LLAMA_LOG_WARN("moe-cache: machine: PCIe upload to %s %.2f GB/s (stored before: %s)\n", ggml_backend_dev_name(d), g, old.empty() ? "none" : old.c_str());
             // the memory speed of a card does not change: measured once, then stored (vram_rd_gbs: read by the shader cores; vram_gbs held the copy-queue time)
-            const std::string kv = format("vram_rd_gbs.%zu.%s", i, ggml_backend_dev_name(d));
+            // keyed by the card's PCI address: under index + name ("Vulkan0") the RTX 4060's 195 GB/s was read for the Radeon 780M when the Vulkan list
+            // order changed between builds, the 780M took the expert cache (RAM to RAM on shared memory) and ran out of device memory (W10, 2026-11-26)
+            const std::string kv = format("vram_rd_gbs.%s", dev_pci_id(d, (int) i).c_str());
             double vg = moe_state_get(sec, kv, old) ? atof(old.c_str()) : 0.0;
             const bool stored = vg > 0.0;
             if (!stored) { vg = vram_copy_gbs(d); if (vg > 0.0) { moe_state_set(sec, {{ kv, format("%.3f", vg) }}); } }
