@@ -2,6 +2,7 @@
 #include "llama-context.h"
 #include "llama-backend-fork.h"
 #include "llama-kvtier-fork.h"
+#include "llama-opoffload-fork.h"
 void llama_moe_set_opt(const char * key, const char * value);
 #include <fstream>
 #include <filesystem>
@@ -1975,27 +1976,22 @@ void llama_context::sched_reserve() {
             for (size_t i = 0; i < backend_ptrs.size(); ++i) {
                 ggml_backend_dev_t d = ggml_backend_get_device(backend_ptrs[i]);
                 if (!ggml_backend_dev_is_gpu(d) || lt[i] == 0 || lt2[i] >= lt[i]) { continue; }
-                const double per_tok = (double) (lt[i] - lt2[i]) / (n_tokens - n_tokens / 2);
-                const double fixed   = std::max(0.0, (double) lt[i] - per_tok * n_tokens);
                 size_t free_b = 0, total_b = 0;
                 ggml_backend_dev_memory(d, &free_b, &total_b);
                 size_t kv_margin = 0, kv_fixed = 0, kv_row = 0;
                 llama_moe_cache_kv_arena_shape_fork(d, &kv_margin, &kv_fixed, &kv_row);
-                const double need = fixed + std::max(llama_moe_cache_vram_margin_fork(d), kv_margin) + kv_fixed + 512 * (per_tok + kv_row);
-                if ((double) free_b < need) {
+                const opoff_plan_fork pl = opoff_plan_fork_calc(lt[i], lt2[i], n_tokens, free_b, llama_moe_cache_vram_margin_fork(d), kv_margin, kv_fixed, kv_row);
+                if (pl.off) {
                     const std::string w = format("%s: graph %.0f MiB at %u tokens, %.0f at %u: %.0f MiB fixed (op offload's weight copies) + %.3f MiB a token; free %.0f MiB < %.0f MiB for a 512-token pass",
-                                                 ggml_backend_dev_name(d), lt[i] / 1048576.0, n_tokens, lt2[i] / 1048576.0, n_tokens / 2, fixed / 1048576.0, per_tok / 1048576.0, free_b / 1048576.0, need / 1048576.0);
+                                                 ggml_backend_dev_name(d), lt[i] / 1048576.0, n_tokens, lt2[i] / 1048576.0, n_tokens / 2, pl.fixed / 1048576.0, pl.per_tok / 1048576.0, free_b / 1048576.0, pl.need / 1048576.0);
                     LLAMA_LOG_WARN("%s: op offload off for this context (%s)\n", __func__, w.c_str());
                     llama_moe_decision_fork("op offload", "off", w.c_str());
                     cparams.op_offload = false;
-                    // the pass without the copies: its graph takes at most half of what the margins leave, the KV the other half (at the configured
-                    // 8192 tokens the 3.5 GiB graph left the KV 10240 cells and an 18642-token prompt failed, "Context size has been exceeded")
-                    const double left = (double) free_b - (need - 512 * (per_tok + kv_row) - fixed);
-                    const uint32_t u_off = left > 0 ? (uint32_t) std::min<double>(n_tokens, left / 2 / per_tok) / 32 * 32 : 512;
-                    if (u_off < n_tokens) {
-                        cparams.n_ubatch = std::max<uint32_t>(512, u_off);
+                    // the pass without the copies: its graph takes at most half of what the margins leave, the KV the other half (opoff_plan_fork_calc)
+                    if (pl.ubatch > 0) {
+                        cparams.n_ubatch = pl.ubatch;
                         LLAMA_LOG_WARN("%s: micro-batch without op offload: %u tokens (configured %u; %.3f MiB a token, half of %.0f MiB left beside the margins goes to the KV)\n",
-                                       __func__, cparams.n_ubatch, n_tokens, per_tok / 1048576.0, left / 1048576.0);
+                                       __func__, cparams.n_ubatch, n_tokens, pl.per_tok / 1048576.0, pl.left / 1048576.0);
                         llama_moe_decision_fork("ubatch", std::to_string(cparams.n_ubatch).c_str(), "without op offload: the graph takes half of the VRAM beside the margins, the KV the rest");
                     }
                     sched_need_reserve = true;
