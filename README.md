@@ -48,7 +48,26 @@ Machine B (2 GPUs; Qwen 3.6 fits one), same session, 12k/1k, run 1 / run 2, stoc
 
 Where both run the same model, this fork is comparable with [Strata](https://github.com/Niko1221/Strata) and [Adamant](https://github.com/nixcat-dev/adamant) (a [Basalt](https://github.com/jesdga95/basalt) fork). The models with the biggest gains above are in none of their model lists (their READMEs, 2026-11-26): Strata 0.2.22 lists Qwen3.8-Flash-Next, Hy4-Flash, Qwen3.6-35B-A3B and Inkling 2 Mini; Basalt lists Qwen3.8-Flash-Next, DeepSeek-V4.1-Flash, Qwen3.8-27B, Hy4-Flash and Inkling 2 Mini, on Blackwell GPUs only; Adamant, its port to Ada and Ampere cards, lists Qwen3.8-Flash-Next. Of these engines, Kimi K3.1, GLM 5.3 and MiMo 2.6 run only here.
 
-A same-session table against both engines on machine B (Strata 0.2.21 with engine 0.1.60 and 0.2.20, Adamant at its defaults with MTP and without) follows in this README after the release.
+Machine B, one session (2026-11-26), 1024 tokens out, the better of two runs. This fork: release b16903. Strata: 0.2.21 with engine 0.1.60 (Qwen), 0.2.20 (Inkling), its own packs. Adamant: commit 518b317 (2026-11-10), its defaults (MTP and suffix drafting); "no MTP" = `--spec 0 --suffix-draft 0`. **Cards** = the cards the engine used: with both cards visible, Strata and Adamant ran on one.
+
+| model | engine | cards | 12k/1k i/s | 12k/1k o/s | short/1k o/s |
+|---|---|---|---|---|---|
+| Qwen 3.8 Next IQ4_XS (87 GiB) | this fork | 2 | **2603.7** | 78.72 | 80.15 |
+| | this fork + MTP draft | 2 | 2038.8 | 77.19 | 74.03 |
+| | Strata | 1 | 2533.8 | 84.10 | 85.80 |
+| | Adamant + MTP | 1 | 2154.0 | 93.20 | 96.70 |
+| | Adamant, no MTP | 1 | 2125.9 | 51.70 | 53.20 |
+| Qwen 3.8 Next IQ4_XS, one card visible | this fork | 1 | **2399.2** | 69.38 | 68.21 |
+| | this fork + MTP draft | 1 | 2073.1 | 55.55 | 56.30 |
+| | Strata | 1 | 2106.6 | 75.20 | 77.30 |
+| | Adamant + MTP | 1 | 2173.7 | **117.80** | **119.40** |
+| | Adamant, no MTP | 1 | 2153.6 | 68.40 | 73.20 |
+| Inkling 2 Mini IQ4_XS (fits one card) | this fork | 1 | **1357.4** | 69.22 | - |
+| | this fork + DSpark draft | 1 | 1296.7 | **86.35** | - |
+| | Strata + draft | 1 | 918.9 | 69.50 | - |
+| | Strata, no draft | 1 | 918.7 | 69.50 | - |
+
+This fork reads prompts fastest in every row and leads Inkling 2 Mini with its DSpark draft. On Qwen 3.8 Next, Adamant's MTP drafter decodes fastest (117.8 o/s on one card) and Strata decodes 7-13% faster than this fork without drafts; this fork's own MTP draft is slower than no draft there (the next release turns a slower draft off by itself).
 
 ## Where it wins, where it does not
 
