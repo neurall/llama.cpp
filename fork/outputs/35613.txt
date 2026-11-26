@@ -1,0 +1,23 @@
+run 35613 | mtp_bells_own_ctx | tetrisc | Inkling-2-Mini-UD-IQ4_XS.gguf | decode 80.62 o/s | prompt 106.0 i/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-26 09:39:33
+
+The user asks to generate smallest HTML Tetris game. Need provide code. Need think through minimal Tetris implementation. Need ensure final answer includes concise code. Need craft smallest HTML Tetris game. Need be careful: "smallest" likely wants compact code. We can provide a single-file HTML with inline CSS/JS. Need make it playable enough. Need include controls: arrows move, down soft drop, up/x rotate, space hard drop, P pause maybe. Need implement simple Tetris with 10x20 grid, 7 tetrominoes, colors, collision, line clear, score, game over. Need keep code small but functional. Need ensure no bugs.
+
+Let's design compact Tetris.
+
+Approach:
+- Canvas 200x400 (cell 20). Grid 10 cols x 20 rows.
+- JS: const C=10,R=20,S=20; canvas width=200 height=400.
+- board = Array(R).fill().map(()=>Array(C).fill(0)); colors array.
+- pieces: shapes as arrays of [x,y] relative. Use standard: I [[0,0],[1,0],[2,0],[3,0]], O [[0,0],[1,0],[0,1],[1,1]], T [[0,0],[1,0],[2,0],[1,1]], S [[1,0],[2,0],[0,1],[1,1]], Z [[0,0],[1,0],[1,1],[2,1]], J [[0,0],[0,1],[1,1],[2,1]], L [[2,0],[0,1],[1,1],[2,1]]. Colors 1..7.
+- current piece {shape, x,y,color}; spawn at x=3,y=0 (or y=-?); random.
+- draw: clear, draw grid? maybe no grid. draw board cells with colors, current piece.
+- collision(shape,x,y): for each [dx,dy], nx=x+dx, ny=y+dy; if nx<0||nx>=C||ny>=R return true; if ny>=0 && board[ny][nx] return true; return false. Allow ny<0 (above).
+- rotate: try rotate shape clockwise: new = shape.map(([x,y])=>[y,-x])? Need normalize. Simpler: rotate matrix. For compact, use function rot(s){return s.map(([x,y])=>[y,-x]);} then normalize by min x/y to 0. But for O fine. Need ensure rotation around piece works. Use normalize: xs=new.map(p=>p[0]), ys=...; minx=Math.min(...xs), miny=Math.min(...ys); return new.map(([x,y])=>[x-minx,y-miny]); This rotates around origin then normalizes; acceptable.
+- move(dx,dy): if !collision(shape,x+dx,y+dy){x+=dx;y+=dy;}
+- rotate(): ns=rot(shape); if !collision(ns,x,y){shape=ns;} else try x-1/x+1 maybe.
+- hard drop: while !collision(shape,x,y+1) y++; lock.
+- lock: for each cell if ny>=0 board[ny][nx]=color; else game over. clear lines: rows full -> remove, unshift empty, score += n*100*n? compact.
+- spawn: current=random piece at x=3,y=0; if collision -> game over.
+- loop: setInterval or requestAnimationFrame with drop timer. Use setInterval(drop, 500) maybe speed increases. Simpler: setInterval(()=>{ if(!paused){ if(!move(0,1)) lock(); } }, 500). But move returns bool? Need implement move returns true if moved. If not moved, lock.
+- Input: keydown: ArrowLeft move(-1,0), ArrowRight move(1,0), ArrowDown move(0,1)
+---

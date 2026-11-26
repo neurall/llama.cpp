@@ -40,6 +40,8 @@ Each row: the official stock binary (its own defaults, `-np 1`) against this for
 | Qwen 3.8 Next IQ4_XS | 3k/1k | 32.1<br>54.9 | 209<br>1339 | +71% | +542% 6.4x | 1.4101<br>1.4101 | b13842 | b11829 | [18381](fork/outputs/18381.txt)<br>[18228s](fork/outputs/18228s.txt) |
 | Qwen 3.8 Next IQ3_S | 3k/1k | 44.59<br>56.18 | 387.2<br>1777.2 | +26% | +359% 4.6x | -<br>- | b14939 | b11829 | [24122](fork/outputs/24122.txt)<br>[18270s](fork/outputs/18270s.txt) |
 | Qwen 3.8 Next IQ3_S | 12k/1k | 43.8<br>53.6 | 372<br>1477 | +22% | +297% 4.0x | 1.3927<br>1.3927 | b13586 | b11742 | [16719](fork/outputs/16719.txt)<br>[17094s](fork/outputs/17094s.txt) |
+| Inkling 2 Mini IQ4_XS (fits one card)§ | short/1k | 18.39<br>80.62 | 43.9<br>106.0 | +338% 4.4x | +141% 2.4x | -<br>- | b16902 | b12670 | [34081s](fork/outputs/34081s.txt)<br>[35613](fork/outputs/35613.txt) |
+| Inkling 2 Mini IQ4_XS + DSpark draft§ | short/1k | 18.39<br>87.10 | 43.9<br>77.4 | +374% 4.7x | +76% 1.8x | -<br>- | b16903 | b12670 | [34081s](fork/outputs/34081s.txt)<br>[35698](fork/outputs/35698.txt) |
 | MiMo 2.6F 3-bit | short/1k | 14.1<br>34.8 | -<br>- | +147% 2.5x | - | 1.8758<br>1.8758 | b13838 | b11829 | [18201](fork/outputs/18201.txt)<br>[18225s](fork/outputs/18225s.txt) |
 | Qwen 3.8 Next IQ4_XS | short/1k | 30.9<br>55.1 | -<br>- | +78% | - | 1.4101<br>1.4101 | b13586 | b11742 | [16788](fork/outputs/16788.txt)<br>[17114s](fork/outputs/17114s.txt) |
 | GLM 5.3 3-bit | short/1k | 12.7<br>21.6 | -<br>- | +69% | - | 1.7626<br>1.7578 | b13838 | b11829 | [18213](fork/outputs/18213.txt)<br>[18236s](fork/outputs/18236s.txt) |
@@ -51,6 +53,7 @@ Each row: the official stock binary (its own defaults, `-np 1`) against this for
 Rows marked **1× RTX 5090**: a rented cloud server (2× EPYC 9J14, 760 GB RAM, one RTX 5090 at PCIe 5 x16), 2026-10-21, stock and ours minutes apart. All other rows: Ryzen 7 3700X, 128 GB DDR4, 2× RTX 3090 (the second at x4).  
 \* GLM 3.5-bit (127.7 GiB) is larger than this machine's 128 GB RAM, so part of it runs from the SSD and the system swaps (up to about 4 GiB of swap in use during runs). Ours is faster than stock despite that.  
 \* DeepSeek 4.1 IQ2_XXS (232 GiB) is far larger than the 128 GB RAM: stock reads it through the page cache at about 1.5 t/s; ours keeps the hot experts in VRAM and a pinned RAM pool and reads the rest from the SSD (O_DIRECT).
+§ Inkling 2 Mini rows: 1x RTX 3090 of the Threadripper machine, 2026-11-24/26; stock b12670 at its defaults (`-c 32768 -b 512`, answer stopped at 263 tokens). Stock rows at 12k and edit follow.  
 ‡ Kimi K3.1 Pro row: Threadripper PRO 3975WX, 256 GB DDR4-3200, the same two RTX 3090 (2026-11-20; stock 2026-11-16, its answer stopped at 357 tokens). Column order as above: first line stock, second line ours.
 
 All rows, all builds: [fork/docs/perf-history.md](fork/docs/perf-history.md).

@@ -1,0 +1,4 @@
+run 34081 | stock-b12670-official | tetrisc | Inkling-2-Mini-UD-IQ4_XS.gguf | decode 18.39 o/s | prompt 43.9 i/s | 263 tokens | args: -np 1 -c 32768 -b 512 | power 280+280 W | 2026-11-24 11:11:17
+
+
+---

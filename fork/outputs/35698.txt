@@ -1,0 +1,42 @@
+run 35698 | mtp_draft_own_kv_release | tetrisc | Inkling-2-Mini-UD-IQ4_XS.gguf | decode 87.1 o/s | prompt 77.4 i/s | 1024 tokens | args: -np 1 -md /m/ink/dspark-mainline-Inkling-2-Mini-Q8_0.gguf --spec-type draft-dspark --spec-draft-n-max 2 --moe spec-depth=2 | power 280+280 W | 2026-11-26 10:58:18
+
+The user asks to generate smallest HTML Tetris game. Need provide code. Need think through minimal Tetris implementation. Need ensure final answer includes concise code. Need craft smallest HTML Tetris game. We can provide a single-file HTML with canvas, JS. Need be reasonably playable but minimal. Need consider correctness.
+
+Need design minimal Tetris: grid 10x20, canvas 200x400 maybe cell 20. Use simple shapes, rotation, gravity, collision, line clear, score. Smallest possible while functional. Need avoid overly complex. Need include controls: arrows move/rotate, down soft drop, space hard drop maybe. Need ensure code valid.
+
+Let's design compact but readable.
+
+Implementation details:
+- HTML boilerplate with canvas id c, style.
+- JS: const W=10,H=20,S=20; canvas width=200 height=400. ctx.
+- Board: 2D array H rows x W cols zeros.
+- Tetrominoes: shapes as arrays of [x,y] relative cells. Use standard: I [[0,0],[1,0],[2,0],[3,0]], O [[0,0],[1,0],[0,1],[1,1]], T [[0,0],[1,0],[2,0],[1,1]], S [[1,0],[2,0],[0,1],[1,1]], Z [[0,0],[1,0],[1,1],[2,1]], J [[0,0],[0,1],[1,1],[2,1]], L [[2,0],[0,1],[1,1],[2,1]]. Colors.
+- Piece: {shape, color, x,y}. spawn at x=3? For I maybe x=3 y=0. Use random.
+- rotate: transform cells (x,y)->(y,-x) then normalize min x/y to 0? Simpler rotate around origin and normalize. For O no need.
+- collide(cells,x,y): for each cell, nx=x+cx, ny=y+cy; if nx<0||nx>=W||ny>=H return true; if ny>=0 && board[ny][nx] return true. Allow ny<0 (above).
+- merge: for cells with ny>=0 set board[ny][nx]=color.
+- clear lines: iterate bottom up, if full remove and unshift empty row, score++.
+- game loop: setInterval or requestAnimationFrame with drop timer. Use setInterval 500ms, speed maybe. On keydown handle.
+- draw: clear, draw board cells, draw piece, score.
+- game over: if spawn collides, alert/reset.
+
+Need smallest. Could use compact code but still understandable. Need ensure no bugs.
+
+Let's write code carefully.
+
+Potential issue rotation normalization: function rot(cells){return cells.map(([x,y])=>[y,-x]);} then normalize: minX=Math.min(...cells.map(c=>c[0])), minY=...; return cells.map(([x,y])=>[x-minX,y-minY]); This rotates clockwise? (x,y)->(y,-x) is CCW? Doesn't matter.
+
+Spawn: piece = {cells: random shape, color, x:3, y:0}; For I shape width 4, x=3 gives cells x 3..6 okay. For J/L width 3 x=3 gives 3..5. Good.
+
+Key handling: ArrowLeft/Right move if !collide; ArrowDown: y++ if !collide else lock; ArrowUp rotate; Space hard drop: while !collide(y+1) y++; lock.
+
+Lock: merge, clear, spawn. If spawn collides -> game over.
+
+Draw piece: for cells, if ny>=0 fillRect.
+
+Colors: use array ['#00f0f0','#f0f000','#a000f0','#00f000','#f00000','#0000f0','#f0a000'].
+
+Need include score display maybe via ctx fillText.
+
+Need final answer maybe just code
+---
