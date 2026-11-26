@@ -5649,6 +5649,18 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
     return true;
 }
 
+// fork: a gappy source view copied as rows (one 2D copy a plane) into a compact destination. The source pitch is nb[1], except for a single row,
+// whose nb[1] can be anything: cudaMemcpy2D rejects a pitch below the row width ("invalid pitch argument", Inkling 2 + DSpark draft on 2 cards,
+// 2026-11-26), so one row uses its own width; rows that overlap (pitch below the width) are no rows copy, the scheduler copies them plainly
+static size_t ggml_cuda_rows_pitch(const ggml_tensor * src) {
+    return src->ne[1] > 1 ? src->nb[1] : ggml_row_size(src->type, src->ne[0]);
+}
+
+static bool ggml_cuda_rows_copy_ok(const ggml_tensor * src, const ggml_tensor * dst) {
+    return !ggml_are_same_layout(src, dst) && src->type == dst->type && ggml_are_same_shape(src, dst) &&
+           src->nb[0] == dst->nb[0] && ggml_is_contiguous(dst) && ggml_cuda_rows_pitch(src) >= ggml_row_size(src->type, src->ne[0]);
+}
+
 static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const ggml_tensor * src, ggml_tensor * dst) {
     ggml_backend_buffer_t buf_src = src->view_src ? src->view_src->buffer : src->buffer;
     ggml_backend_buffer_t buf_dst = dst->view_src ? dst->view_src->buffer : dst->buffer;
@@ -5677,8 +5689,7 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
 
     // fork: a gappy source view (a layer's K or V inside the token-major KV record) into a compact destination: only the rows cross, as one 2D copy
     // (the scheduler makes the destination compact; see ggml_backend_tensor_is_gappy)
-    const bool rows_copy = !ggml_are_same_layout(src, dst) && src->type == dst->type && ggml_are_same_shape(src, dst) &&
-                           src->nb[0] == dst->nb[0] && ggml_is_contiguous(dst);
+    const bool rows_copy = ggml_cuda_rows_copy_ok(src, dst);
     if (!ggml_are_same_layout(src, dst) && !rows_copy) {
         return false;
     }
@@ -5699,7 +5710,7 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
             const size_t rowb = ggml_row_size(src->type, src->ne[0]);
             for (int64_t i3 = 0; i3 < src->ne[3]; i3++) {
                 for (int64_t i2 = 0; i2 < src->ne[2]; i2++) {
-                    CUDA_CHECK(cudaMemcpy2DAsync(rows_tmp.get() + i3*dst->nb[3] + i2*dst->nb[2], rowb, (const char *) src->data + i3*src->nb[3] + i2*src->nb[2], src->nb[1], rowb, (size_t) src->ne[1], cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
+                    CUDA_CHECK(cudaMemcpy2DAsync(rows_tmp.get() + i3*dst->nb[3] + i2*dst->nb[2], rowb, (const char *) src->data + i3*src->nb[3] + i2*src->nb[2], ggml_cuda_rows_pitch(src), rowb, (size_t) src->ne[1], cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
                 }
             }
             sdata = rows_tmp.get();
@@ -5738,7 +5749,7 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
             const size_t rowb = ggml_row_size(src->type, src->ne[0]);
             for (int64_t i3 = 0; i3 < src->ne[3]; i3++) {
                 for (int64_t i2 = 0; i2 < src->ne[2]; i2++) {
-                    CUDA_CHECK(cudaMemcpy2DAsync((char *) dst->data + i3*dst->nb[3] + i2*dst->nb[2], dst->nb[1], (const char *) src->data + i3*src->nb[3] + i2*src->nb[2], src->nb[1], rowb, (size_t) src->ne[1], cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
+                    CUDA_CHECK(cudaMemcpy2DAsync((char *) dst->data + i3*dst->nb[3] + i2*dst->nb[2], dst->nb[1], (const char *) src->data + i3*src->nb[3] + i2*src->nb[2], ggml_cuda_rows_pitch(src), rowb, (size_t) src->ne[1], cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
                 }
             }
         } else {
@@ -5768,8 +5779,7 @@ static size_t ggml_backend_cuda_copy_scratch_fork(ggml_backend_t backend_src, gg
     if (cuda_ctx_src->device != buf_ctx_src->device || cuda_ctx_dst->device != buf_ctx_dst->device) {
         return 0;
     }
-    const bool rows_copy = !ggml_are_same_layout(src, dst) && src->type == dst->type && ggml_are_same_shape(src, dst) &&
-                           src->nb[0] == dst->nb[0] && ggml_is_contiguous(dst);
+    const bool rows_copy = ggml_cuda_rows_copy_ok(src, dst);
     return rows_copy ? ggml_nbytes(dst) : 0;
 }
 
