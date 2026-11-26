@@ -4296,9 +4296,11 @@ g_st_m[1] = ggml_time_us();     auto * res = get_gf_res_prev();
 
             //const auto t_start_us = ggml_time_us();
 
-            llama_moe_cache_bell_begin_fork();
+            // fork: the bells' host chains are the expert cache context's (one per process, global). A draft's graph build cleared them; the target then reused
+            // its graph and rang bells with no chain: "a bell in the graph has no host chain" (Qwen3.8 + MTP draft once its prompt catch-up ran, 2026-11-26)
+            if (cparams.moe_cache) { llama_moe_cache_bell_begin_fork(); }
             { GGML_EV_SCOPE(GGML_EV_DECODE, "build_graph", (int64_t) ubatch.n_tokens); gf = model.build_graph(gparams); }
-            llama_moe_cache_bell_expand_fork(gf);   // --moe bell=1: the bells' host chains go behind everything else
+            if (cparams.moe_cache) { llama_moe_cache_bell_expand_fork(gf); }   // --moe bell=1: the bells' host chains go behind everything else
             llama_moe_cache_graph_built_fork(this, cparams.ctx_other && !cparams.moe_cache);
 
             //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
