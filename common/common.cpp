@@ -8,6 +8,7 @@
 #include "../src/llama-sidefile-fork.h"
 #include "../src/llama-estimate-fork.h"
 #include "../src/llama-place-fork.h"
+#include "../src/llama-hostroom-fork.h"
 #include "cpu-topo-fork.h"
 
 #include "../src/llama-ext.h"
@@ -2066,6 +2067,15 @@ static void common_hog(void) {
         LOG_WRN("hog: %s holds %.0f MiB\n", ggml_backend_dev_name(dev), ggml_backend_buffer_get_size(buf) / 1048576.0);
     }
     hog_done = true;
+#if defined(_WIN32)
+    static bool cap_done = false;
+    if (const char * cc = llama_moe_get_opt("commit-cap"); cc && !cap_done) {   // --moe commit-cap=MiB (tests): the low-commit state, nothing held (llama-hostroom-fork.h)
+        cap_done = true;
+        const size_t cap = (size_t) strtoull(cc, nullptr, 10) << 20;
+        if (host_commit_cap_fork(cap)) { LOG_WRN("commit-cap: this process may commit at most %.2f GiB (job object)\n", cap / 1073741824.0); }
+        else                           { LOG_WRN("commit-cap: could not set a job limit of %.2f GiB (error %lu)\n", cap / 1073741824.0, (unsigned long) GetLastError()); }
+    }
+#endif
     if (hr && !sim_done) {   // every reader of the RAM (total and available) takes the gap off: nothing is held (it swapped PC1: user 2026-11-11 "no need to allocate them")
         const size_t keep = (size_t) (atof(hr) * 1048576.0), avail = common_ram_available();
         if (avail > keep) {
