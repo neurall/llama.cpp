@@ -1804,7 +1804,7 @@ static std::string sampler_sig_fork(const std::map<llama_seq_id, llama_sampler *
 
 // fork: does the decode team compute every token? Then it spins through the token (OpenMP's KMP_BLOCKTIME, 200 ms, ggml-cpu.c) beside the bell pool's
 // workers, and the pool sizes itself beside it (src/llama-bellsize-fork.h). A CPU node of the decode graph that ggml-cpu runs on more than one thread starts
-// the team; ggml_get_n_tasks runs views, SCALE, SET, CLAMP, DIAG, a one-row SOFT_MAX and a gather of few rows (under 256 indices or a float table) on one.
+// the team; ggml_get_n_tasks runs views, SCALE, SET, CLAMP, DIAG, a copy up to 64 KiB, a one-row SOFT_MAX and a gather of few rows (under 256 indices or a float table) on one.
 // Hy4-Flash: 12 lightning indexers a token; a model whose CPU nodes are the token gather alone (Qwen3.8, GLM): the team waits.
 // Read from an allocated graph: the nodes' backends are set by ggml_backend_sched_alloc_graph (a reserve resets them). The first node that starts the
 // team, nullptr: none; *known false: no node has a backend (not allocated: nothing to say yet)
@@ -1816,10 +1816,11 @@ static const ggml_tensor * decode_graph_team_node(ggml_backend_sched_t sched, gg
         ggml_backend_t b = ggml_backend_sched_get_tensor_backend(sched, t);
         if (!b) { continue; }
         *known = true;
-        if (b != cpu) { continue; }
+        if (b != cpu || !(t->flags & GGML_TENSOR_FLAG_COMPUTE)) { continue; }   // a branch ggml_build_forward_select did not pick never computes (the mixed-batch DUP)
         switch (t->op) {
             case GGML_OP_NONE: case GGML_OP_VIEW: case GGML_OP_RESHAPE: case GGML_OP_PERMUTE: case GGML_OP_TRANSPOSE:
             case GGML_OP_SCALE: case GGML_OP_SET: case GGML_OP_CLAMP: case GGML_OP_DIAG: continue;
+            case GGML_OP_CPY: case GGML_OP_DUP: case GGML_OP_CONT: if (ggml_nbytes(t) <= 64*1024) { continue; } break;   // ggml_get_n_tasks: a small copy runs on one thread
             case GGML_OP_GET_ROWS: if (!(ggml_is_quantized(t->src[0]->type) && ggml_nelements(t->src[1]) >= 256)) { continue; } break;
             case GGML_OP_SOFT_MAX: if (ggml_nrows(t->src[0]) < 2) { continue; } break;
             default: break;
