@@ -1,5 +1,6 @@
 // Unit tests of the prompt planner's strategy estimators (src/llama-estimate-fork.h): each strategy's time from hand-made metrics. CPU only, no model.
 #include "../src/llama-estimate-fork.h"
+#include "../src/llama-place-fork.h"
 #include "../src/llama-passplan-fork.h"
 #include "../common/cpu-topo-fork.h"
 
@@ -584,6 +585,44 @@ int main() {
         printf("%s\n", wl.c_str());
         check("place estimate: the wrong line carries the inputs", wl.find("host_bytes 0 used_share 0.06250 ram_gbs 111.92 link_gbs 26.61 pass_tokens 2048 passes_per_call 2 n_cards 2") != std::string::npos);
         check("place estimate: the cold line says why", place_pick_line(true, false, -1, -1, false, -1, -1, 0, 0, place_estimate_why(ek, 18642, 1024)).why.find("decode +") != std::string::npos);
+    }
+    {   // place start: this start's estimate decides, records earlier starts wrote never do (2026-11-26). Release b16903 (e9f67c1135) ran Inkling 2 Mini
+        // UD-IQ4_XS on two 3090s by layers at 41 o/s (runs.db 35922/35923, list gainers, ink2m-i 18642/1024, 1134-1141 i/s) where one card runs 1357 i/s
+        // 69 o/s (35897/35898). Its line: "layer split (measured) (... one card 157.6 s (244 i/s, 12.6 o/s), layer split 149.6 s (266 i/s, 12.9 o/s))":
+        // both records came from the 100 W night power cap (pl 100+100): one card 4.09439 / 79.35675 ms = row 34395 (place_measured, 11-24 21:50), the
+        // split's .nofuse arm = row 34489 (equal_prompt_passes, 11-25 03:00); the file's .split = row 34403 (11-24 22:09) is 1.6% faster decode than one card.
+        const double GiB = 1073741824.0;
+        auto check = [&](const char * what, bool ok) { printf("%s %s\n", ok ? "ok  " : "FAIL", what); g_fail += !ok; };
+        const double p1 = 4.09439, g1 = 79.35675;                                       // .one, row 34395
+        const double p2 = 1000 / 266.3301818214236, g2 = 1000 / 12.870527612748244;    // .split.nofuse at 15:33, row 34489
+        const double p2f = 4.10831, g2f = 78.05235;                                     // .split, row 34403
+        // old rule: the records' totals, the smaller wins (place_one_card_pick), as the release read them
+        check("place start: old rule on the 100 W records picks the split", !place_one_card_pick(true, p1, g1, true, p2, g2, 18642, 1024, true));
+        const place_line ol = place_pick_line(false, true, p1, g1, true, p2, g2, 18642, 1024, "");
+        printf("old line: %s (%s)\n", ol.label.c_str(), ol.why.c_str());
+        check("place start: old line is the release's", ol.why.find("one card 157.6 s (244 i/s, 12.6 o/s), layer split 149.6 s (266 i/s, 12.9 o/s)") != std::string::npos);
+        check("place start: old rule on the file's .one / .split (split decode 1.6% faster) picks the split", g1 / g2f > 1.016 && !place_one_card_pick(true, p1, g1, true, p2f, g2f, 18642, 1024, true));
+        double t1 = 0, t2 = 0;
+        place_totals(p1, g1, p2, g2, 18642, 1024, t1, t2);
+        // a 5% margin over noise (place_estimate_wrong's bar) keeps the split too: the split arm is 5.3% faster on these records
+        check("place start: a 5% margin rule still overrides one card", place_estimate_wrong(true, t1, t2));
+        // the file as it is after today's cells: .split.nofuse 0.96738 / 19.71136 from 4781-token draft cells (rows 35931, 35933) beside the 100 W .one:
+        // np averages 18642 and 4781, the split wins 4x, past any margin
+        place_totals(p1, g1, 0.96738, 19.71136, (18642 + 4781) / 2.0, 1024, t1, t2);
+        check("place start: the file now: old rule and a 5% margin pick the split", !place_one_card_pick(true, p1, g1, true, 0.96738, 19.71136, (18642 + 4781) / 2.0, 1024, true) && place_estimate_wrong(true, t1, t2));
+        // new rule: this start's inputs (server log 15:33: the split's fitter leaves 6.7 - 0.5 GiB of weights in RAM, 8 of 128 experts used, RAM read
+        // 106.48 GB/s, uploads 26.58 / 26.67 GB/s, split passes of 2048 in calls of 4096), a server start without -p (6000 / 600) and the cell's request
+        place_est_in ink; ink.host_bytes = 6.2 * GiB; ink.used_share = 8.0 / 128; ink.ram_gbs = 106.48; ink.link_gbs = 26.58; ink.pass_tokens = 2048; ink.passes_per_call = 2;
+        const place_start ns = place_start_pick(ink, 6000, 600);
+        printf("new line: %s (%s)\n", ns.label.c_str(), ns.why.c_str());
+        check("place start: new rule keeps one card (server start)", ns.one && ns.label == "one card (estimated)");
+        check("place start: new rule keeps one card (18642 / 1024, 64 / 1024)", place_start_pick(ink, 18642, 1024).one && place_start_pick(ink, 64, 1024).one);
+        check("place start: no record word in the new line", (ns.label + ns.why).find("measured") == std::string::npos && ns.why.find("next start") == std::string::npos);
+        // the real result agrees: one card 1357.2 i/s 69.3 o/s (35897), split 1134.3 i/s 40.6 o/s (35922), both phases faster on one card
+        check("place start: one card faster in both measured phases", 1357.18 > 1134.34 && 69.34 > 40.56);
+        // Qwen3.6 keeps the split (relgate1k: one card cold lost 31% prompt): no weights in RAM, the tie keeps the stock split
+        place_est_in q; q.used_share = 8.0 / 256; q.ram_gbs = 112.21; q.link_gbs = 26.61; q.pass_tokens = 4096; q.passes_per_call = 2;
+        check("place start: Qwen3.6 keeps the split", !place_start_pick(q, 6000, 600).one && !place_start_pick(q, 13744, 1024).one);
     }
     {   // prompt pass hill-climb
         uint32_t b = 2048;
