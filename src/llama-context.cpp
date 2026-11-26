@@ -1481,20 +1481,55 @@ void llama_context::apply_moe_alias() {
     }
 }
 
-// fork: a draft's graphs get an area at the start of the target's pool on each card (llama_moe_cache_draft_area_fork), sized by a measure-only reserve of
-// its worst-case graphs; before, its compute buffers were made after the pool took the cards' memory: outside it (Qwen3.8 MTP: 349 MiB on CUDA0)
-void llama_context::draft_area_fork(uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx) {
-    std::vector<size_t> pp(backend_ptrs.size(), 0), tg(backend_ptrs.size(), 0);
-    graph_reserve(n_tokens, n_seqs, n_outputs, mctx, true, pp.data());
-    graph_reserve(n_seqs, n_seqs, n_seqs, mctx, true, tg.data());
+// fork: the largest call a draft makes while answering, registered by the speculative layer before the draft's context is made (common/speculative.cpp):
+// MTP the catch-up after a verify (n_max + 1 rows, a draft step is 1 row), a block draft its block, the DSV4 prompt ring its window and a block
+static std::mutex g_draft_shape_mtx;
+static std::map<const llama_model *, std::pair<uint32_t, uint32_t>> g_draft_shape;   // model -> (tokens, outputs)
+void llama_draft_decode_shape_fork(const llama_model * model, uint32_t n_tok, uint32_t n_out) {
+    std::lock_guard<std::mutex> lk(g_draft_shape_mtx);
+    g_draft_shape[model] = { n_tok, n_out };
+}
+static std::set<const void *> g_draft_chunked;   // drafts whose micro-batch was cut to their area once (no second cut from a second measure)
+
+// fork: a draft's graphs get an area at the start of the target's pool on each card (llama_moe_cache_draft_area_fork), a static range taken from the
+// left of the pool (user 2026-11-26: the same memory that worked outside the pool, through the pool's allocator so it can be reclaimed). The area is
+// sized by the draft's decode calls (user 2026-11-26: "size draft area from decode graphs, not prompt ubatch"): sized at its prompt micro-batch it
+// took 349 MiB on CUDA0 (one card) and 1265 MiB on CUDA1 (two cards) for Qwen3.8's MTP draft. Its prompt catch-up then goes in chunks that fit the
+// area: the largest micro-batch whose graph does, from two measures (fixed part + bytes a token). Returns that micro-batch (n_tokens: no cut).
+uint32_t llama_context::draft_area_fork(uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx) {
+    uint32_t dt = n_seqs, dout = n_seqs;
+    {
+        std::lock_guard<std::mutex> lk(g_draft_shape_mtx);
+        if (auto it = g_draft_shape.find(&model); it != g_draft_shape.end()) { dt = it->second.first; dout = it->second.second; }
+    }
+    dt   = std::max(n_seqs, std::min(dt, n_tokens));
+    dout = std::max<uint32_t>(1, std::min({ dout, dt, n_outputs }));
+    std::vector<size_t> tg(backend_ptrs.size(), 0), a(backend_ptrs.size(), 0), b(backend_ptrs.size(), 0);
+    graph_reserve(dt, n_seqs, dout, mctx, true, tg.data());   // the decode calls: what the area holds
+    const bool cut = n_tokens > dt && !g_draft_chunked.count(this);
+    if (cut) {
+        graph_reserve(n_tokens,     n_seqs, std::min(dout, n_tokens),     mctx, true, a.data());
+        graph_reserve(n_tokens / 2, n_seqs, std::min(dout, n_tokens / 2), mctx, true, b.data());
+    }
     cparams.ctx_other->synchronize();   // the area's blocks are taken from the target's pool: its graphs are done with them
+    uint32_t chunk = n_tokens;
     for (size_t bi = 0; bi < backend_ptrs.size(); ++bi) {
         ggml_backend_dev_t dev = ggml_backend_get_device(backend_ptrs[bi]);
         if (!ggml_backend_dev_is_gpu(dev)) { continue; }
         ggml_backend_buffer_t buf = nullptr;
-        const size_t c = llama_moe_cache_draft_area_fork(dev, std::max(pp[bi], tg[bi]), &buf);
+        const size_t c = llama_moe_cache_draft_area_fork(dev, tg[bi], &buf);
         if (c > 0 && buf) { ggml_backend_sched_set_external_buffer(sched.get(), backend_ptrs[bi], buf, 0, c); }
+        if (!cut || c == 0 || a[bi] <= c || b[bi] >= a[bi]) { continue; }
+        const double per_tok = (double) (a[bi] - b[bi]) / (n_tokens - n_tokens / 2);
+        const double fixed   = std::max(0.0, (double) a[bi] - per_tok * n_tokens);
+        const double fit     = (double) c > fixed ? ((double) c - fixed) / per_tok : 0.0;
+        chunk = std::min(chunk, std::max(dt, (uint32_t) std::min<double>(n_tokens, fit) / 32 * 32));
+        LLAMA_LOG_WARN("%s: draft area on %s: %.1f MiB for its decode calls (%u tokens, %u outputs); its %u-token graph takes %.1f MiB (%.1f fixed + %.3f MiB a token): "
+                       "prompt catch-up in passes of %u tokens\n", __func__, ggml_backend_dev_name(dev), c / 1048576.0, dt, dout, n_tokens, a[bi] / 1048576.0,
+                       fixed / 1048576.0, per_tok / 1048576.0, chunk);
     }
+    if (chunk < n_tokens) { g_draft_chunked.insert(this); }
+    return chunk;
 }
 
 // fork: the target sizes its pool: this draft's compute buffers go back to the card first (the pool takes that memory; draft_area_fork lends it back)
@@ -2120,7 +2155,14 @@ void llama_context::sched_reserve() {
 
     // fork: a draft's graphs go into its area of the target's pool
     if (cparams.ctx_other && !cparams.moe_cache && !model.no_alloc() && !llama_moe_cache_alias_buffers_fork().empty()) {   // only with a pool to lend from
-        draft_area_fork(n_tokens, n_seqs, n_outputs_pp, mctx.get());
+        const uint32_t ch = draft_area_fork(n_tokens, n_seqs, n_outputs_pp, mctx.get());
+        if (ch < n_tokens) {
+            llama_moe_decision_fork("draft ubatch", std::to_string(ch).c_str(), "the draft's area holds its decode calls; its prompt catch-up goes in passes that fit it");
+            cparams.n_ubatch = ch;
+            sched_need_reserve = true;
+            sched_reserve();
+            return;
+        }
     }
 
     // reserve pp (prompt processing) graph first so that buffers are only allocated once
@@ -7999,6 +8041,7 @@ void llama_free(llama_context * ctx) {
     llama_moe_cache_context_live_fork(ctx, nullptr, false);
     { std::lock_guard<std::mutex> lk(g_live_ctx_mtx); g_live_ctx.erase(ctx); }
     llama_moe_cache_graph_forget_fork(ctx);
+    g_draft_chunked.erase(ctx);   // a new context may get the same address
     delete ctx;
 }
 

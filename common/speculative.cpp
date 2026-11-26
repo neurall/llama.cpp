@@ -3422,6 +3422,23 @@ common_params common_base_params_to_speculative(const common_params & params) {
     return result;
 }
 
+// fork: the largest call the draft makes while answering; the draft's area in the target's pool is sized for it (src/llama-context.cpp draft_area_fork)
+void llama_draft_decode_shape_fork(const llama_model * model, uint32_t n_tok, uint32_t n_out);   // src/llama-context.cpp (no header edit)
+static void common_speculative_decode_shape(const llama_model * model_dft, const common_params & params, const llama_context_params & cparams, bool block_draft) {
+    const uint32_t n_max = (uint32_t) std::max(1, params.speculative.draft.n_max);
+    uint32_t n_tok = n_max + 1;   // MTP: the catch-up after a verify (n_max + 1 rows); a draft step is 1 row
+    char buf[32] = {};
+    if (block_draft) {
+        const int bs = llama_model_meta_val_str(model_dft, "dflash.block_size", buf, sizeof(buf)) >= 0 ? std::atoi(buf) : 16;   // the impl's own default
+        n_tok = std::max<uint32_t>(n_tok, (uint32_t) std::max(1, bs));   // a block draft decodes its whole block in one pass
+    }
+    if (llama_model_meta_val_str(model_dft, "dflash.hyper_connection.count", buf, sizeof(buf)) >= 0 && std::atoi(buf) > 0) {
+        n_tok = std::max<uint32_t>(n_tok, (uint32_t) llama_model_n_swa(model_dft) + 64);   // DSV4 prompt ring: its window and a block when the answer starts
+    }
+    n_tok *= (uint32_t) std::max(1, params.n_parallel);
+    llama_draft_decode_shape_fork(model_dft, n_tok, std::max<uint32_t>(1, cparams.n_outputs_max));
+}
+
 struct common_speculative_init_result::impl {
     impl() = default;
     ~impl() = default;
@@ -3482,6 +3499,13 @@ common_speculative_init_result::common_speculative_init_result(
             }
         }
 
+        {
+            const bool block_draft = std::any_of(params.speculative.types.begin(), params.speculative.types.end(), [](common_speculative_type t) {
+                return t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH || t == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK ||
+                       t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH2 || t == COMMON_SPECULATIVE_TYPE_DRAFT_LILICORR;
+            });
+            common_speculative_decode_shape(model_dft, params, cparams, block_draft);
+        }
         llama_context * ctx_dft = llama_init_from_model(model_dft, cparams);
         if (ctx_dft == nullptr) {
             LOG_ERR("%s: failed to create MTP context\n", __func__);
@@ -3494,6 +3518,7 @@ common_speculative_init_result::common_speculative_init_result(
 
         LOG_INF("%s: creating MTP draft context against the target model '%s'\n", __func__, model_path.c_str());
 
+        common_speculative_decode_shape(model_tgt, params, cparams, false);
         llama_context * ctx_dft = llama_init_from_model(model_tgt, cparams);
         if (ctx_dft == nullptr) {
             LOG_ERR("%s: failed to create MTP context\n", __func__);
