@@ -21255,6 +21255,10 @@ static void bell_free_all() {
     g_bell_n_graphs = g_bell_n_layers = g_bell_n_wait = g_bell_n_miss = g_bell_n_skip = 0;
 }
 
+void llama_moe_cache_graph_forget_fork(const void * ctx) {   // a freed context: its key goes (a new context may get the same address)
+    std::lock_guard<std::mutex> lk(g_ctx_epoch_mtx);
+    g_ctx_epoch_built.erase(ctx);
+}
 void llama_moe_cache_graph_built_fork(const void * ctx, bool other) {
     {
         std::lock_guard<std::mutex> lk(g_ctx_epoch_mtx);

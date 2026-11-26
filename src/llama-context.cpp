@@ -4039,7 +4039,7 @@ g_st_m[1] = ggml_time_us();     auto * res = get_gf_res_prev();
     const bool ctl_changed = ubatch.n_tokens >= 32 && llama_split_ctl_poll_fork((int64_t) model.hparams.n_expert, (int64_t) model.hparams.n_embd);
     const int64_t t_graph0 = ggml_time_us(); g_st_m[2] = ggml_time_us();
     bool graph_rebuilt = false;
-    bool reuse = [&] { st_piece sp(4); return !graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork(this, !cparams.moe_cache) && !ds_changed && !ctl_changed; }();
+    bool reuse = [&] { st_piece sp(4); return !graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork(this, cparams.ctx_other && !cparams.moe_cache) && !ds_changed && !ctl_changed; }();
     // fork (--moe dynhot): the pass that ends a prompt (its last token has the output) copies the key rows out; a reused graph without the copies is built again
     const bool want_key = cparams.moe_cache_started && !cparams.ctx_other && ubatch.output != nullptr && ubatch.output[ubatch.n_tokens - 1] &&
                           llama_moe_topic_key_wanted_fork();
@@ -4093,7 +4093,7 @@ g_st_m[1] = ggml_time_us();     auto * res = get_gf_res_prev();
             llama_moe_cache_bell_begin_fork();
             { GGML_EV_SCOPE(GGML_EV_DECODE, "build_graph", (int64_t) ubatch.n_tokens); gf = model.build_graph(gparams); }
             llama_moe_cache_bell_expand_fork(gf);   // --moe bell=1: the bells' host chains go behind everything else
-            llama_moe_cache_graph_built_fork(this, !cparams.moe_cache);
+            llama_moe_cache_graph_built_fork(this, cparams.ctx_other && !cparams.moe_cache);
 
             //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
 
@@ -7953,6 +7953,7 @@ llama_context * llama_init_from_model(
 void llama_free(llama_context * ctx) {
     llama_moe_cache_context_live_fork(ctx, nullptr, false);
     { std::lock_guard<std::mutex> lk(g_live_ctx_mtx); g_live_ctx.erase(ctx); }
+    llama_moe_cache_graph_forget_fork(ctx);
     delete ctx;
 }
 

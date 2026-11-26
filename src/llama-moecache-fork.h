@@ -257,6 +257,7 @@ bool llama_moe_cache_pred_train_now_fork();
 // per context (a draft's build must not mark the target's old graph as built after a move, nor the other way round)
 bool llama_moe_cache_graph_reusable_fork(const void * ctx = nullptr, bool other = false);
 void llama_moe_cache_graph_built_fork(const void * ctx = nullptr, bool other = false);
+void llama_moe_cache_graph_forget_fork(const void * ctx);
 
 // --moe bell=1: the decode bell (ggml/src/ggml-bell-fork.h, fork/docs/decode-doorbell-plan-2026-11-18.md). A decode token's cache layers meet the host through
 // a block of mapped memory per layer instead of two host steps of the scheduler, so a card's layers are one graph.
