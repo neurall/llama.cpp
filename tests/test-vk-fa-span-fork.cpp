@@ -63,7 +63,7 @@ static void check(ggml_backend_t vk, ggml_backend_t cpu, ggml_type type, double 
     ggml_tensor * k  = ggml_view_3d(vctx, record, D, n_kv, H, rec, headb, 0);
     ggml_tensor * v  = ggml_view_3d(vctx, record, D, n_kv, H, rec, headb, rowb);
     ggml_tensor * o  = ggml_flash_attn_ext(vctx, q, k, v, m, scale, 0.0f, 0.0f);
-    ggml_flash_attn_ext_set_prec(o, GGML_PREC_F32);
+    ggml_prec_set_acc(o, GGML_PREC_F32);
     ggml_cgraph * gf = ggml_new_graph(vctx);
     ggml_build_forward_expand(gf, o);
     ggml_backend_buffer_t vbuf = ggml_backend_alloc_ctx_tensors(vctx, vk);
@@ -89,7 +89,7 @@ static void check(ggml_backend_t vk, ggml_backend_t cpu, ggml_type type, double 
     ggml_tensor * ck = ggml_new_tensor_3d(cctx, type, D, n_kv, H);
     ggml_tensor * cv = ggml_new_tensor_3d(cctx, type, D, n_kv, H);
     ggml_tensor * co = ggml_flash_attn_ext(cctx, cq, ck, cv, cm, scale, 0.0f, 0.0f);
-    ggml_flash_attn_ext_set_prec(co, GGML_PREC_F32);
+    ggml_prec_set_acc(co, GGML_PREC_F32);
     ggml_cgraph * cg = ggml_new_graph(cctx);
     ggml_build_forward_expand(cg, co);
     ggml_backend_buffer_t cbuf = ggml_backend_alloc_ctx_tensors(cctx, cpu);

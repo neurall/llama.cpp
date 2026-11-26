@@ -1,3 +1,4 @@
+#include "ggml-evlog-fork.h"
 #include "ggml.h"
 #include "ggml-impl.h"
 #include "ggml-backend.h"
@@ -564,6 +565,14 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         if (scalar_only && ret.axis >= 0 && ret.axis < GGML_MAX_DIMS) {
             ret = {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, {1}, 1};
         }
+        if (ret.axis == GGML_BACKEND_SPLIT_AXIS_UNKNOWN) {
+            // name the op and its sources' split axes: an arch's own ops need a rule, this says which
+            GGML_LOG_ERROR("%s: no split rule for %s '%s':", __func__, ggml_op_desc(tensor), tensor->name);
+            for (size_t i = 0; i < GGML_MAX_SRC; i++) {
+                if (tensor->src[i]) { GGML_LOG_ERROR(" src%zu '%s' axis %d", i, tensor->src[i]->name, (int) src_ss[i].axis); }
+            }
+            GGML_LOG_ERROR("\n");
+        }
         GGML_ASSERT(ret.axis != GGML_BACKEND_SPLIT_AXIS_UNKNOWN);
         return ret;
     };
@@ -939,7 +948,6 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             case GGML_OP_ADD_ID: {
                 split_state = handle_bin_bcast(src_ss);
             } break;
-            case GGML_OP_ADD1:
             case GGML_OP_ACC: {
                 split_state = handle_generic(src_ss, /*scalar_only =*/ true);
             } break;
@@ -972,7 +980,8 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             case GGML_OP_CONCAT: {
                 split_state = handle_concat(src_ss);
             } break;
-            case GGML_OP_SILU_BACK: {
+            case GGML_OP_SILU_BACK:
+            case GGML_OP_SIGMOID_BACK: {
                 split_state = handle_generic(src_ss, /*scalar_only =*/ false);
             } break;
             case GGML_OP_NORM:
@@ -1020,9 +1029,7 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             case GGML_OP_SET_ROWS: {
                 split_state = handle_set_rows(src_ss);
             } break;
-            case GGML_OP_DIAG:
-            case GGML_OP_DIAG_MASK_INF:
-            case GGML_OP_DIAG_MASK_ZERO: {
+            case GGML_OP_DIAG: {
                 split_state = handle_generic(src_ss, /*scalar_only =*/ true);
             } break;
             case GGML_OP_SOFT_MAX:
@@ -1126,6 +1133,7 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             } break;
             case GGML_OP_OPT_STEP_ADAMW:
             case GGML_OP_OPT_STEP_SGD:
+            case GGML_OP_REL_BIAS_MASK:   // fork (Inkling 2): the mask follows its sources (mirrored with the attention, split with the heads)
             case GGML_OP_GLU: {
                 split_state = handle_generic(src_ss, /*scalar_only =*/ false);
             } break;
@@ -2157,8 +2165,28 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                     }
                 };
 
-                skip_unrelated();
-                if (id + 1 >= cgraph->n_nodes) {
+                // Chain of MULs with MIRRORED src[1], returns false at the end of the graph
+                auto absorb_muls = [&]() -> bool {
+                    while (true) {
+                        skip_unrelated();
+                        if (id + 1 >= cgraph->n_nodes) {
+                            return false;
+                        }
+                        ggml_tensor * next = cgraph->nodes[id+1];
+                        if (next->op == GGML_OP_MUL && next->src[0] == node &&
+                                ggml_backend_meta_get_split_state(next->src[1], false).axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
+                            node = next;
+                            id++;
+                            idr = id;
+                            n_used = ggml_node_get_use_count(cgraph, id);
+                        } else {
+                            return true;
+                        }
+                    }
+                };
+
+                // MULs before the PARTIAL bias (e.g. a per-expert weight scale): sum_j(s*p_j + b/n) == s*sum_j(p_j) + b
+                if (!absorb_muls()) {
                     return idr;
                 }
                 {
@@ -2172,22 +2200,8 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                         n_used = ggml_node_get_use_count(cgraph, id);
                     }
                 }
-                // Chain of MULs with MIRRORED src[1]
-                while (true) {
-                    skip_unrelated();
-                    if (id + 1 >= cgraph->n_nodes) {
-                        return idr;
-                    }
-                    ggml_tensor * next = cgraph->nodes[id+1];
-                    if (next->op == GGML_OP_MUL && next->src[0] == node &&
-                            ggml_backend_meta_get_split_state(next->src[1], false).axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
-                        node = next;
-                        id++;
-                        idr = id;
-                        n_used = ggml_node_get_use_count(cgraph, id);
-                    } else {
-                        break;
-                    }
+                if (!absorb_muls()) {
+                    return idr;
                 }
 
                 if (n_used != node->ne[1] || id + 2*n_used-1 >= cgraph->n_nodes) {
@@ -2551,11 +2565,13 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                     ggml_cgraph * cgraph_ij = bcj.cgraphs[i].cgraph_main;
                     nodes.push_back(cgraph_ij->nodes[cgraph_ij->n_nodes-1]);
                 }
-                backend_allreduce_success = backend_ctx->comm_allreduce(backend_ctx->comm_ctx, nodes.data());
+                { GGML_EV_SCOPE(GGML_EV_SCHED, "meta allreduce comm"); backend_allreduce_success = backend_ctx->comm_allreduce(backend_ctx->comm_ctx, nodes.data()); }
             }
 
             if (!backend_allreduce_success) {
+                const uint64_t ev_t0 = GGML_EV_ON(GGML_EV_SCHED) ? ggml_evlog_now() : 0;
                 const ggml_status status = allreduce_fallback(i);
+                if (ev_t0) { ggml_evlog_rec(GGML_EV_SCHED, "meta allreduce", ev_t0, ggml_evlog_now(), (int64_t) i, 0); }
                 if (status != GGML_STATUS_SUCCESS) {
                     return status;
                 }

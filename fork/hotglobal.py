@@ -13,11 +13,11 @@ counts the server stored are read back, and while the map is not settled it is r
 build, starts from the same counts. --hot-settle repeats a cell until its map is settled. Nothing here needs engine support: the hot.<layer> lines are the
 state file's own, old builds and releases read them too.
 
-Files: <RUN_HOT_DIR or /p/bw/data/hot-global>/<model file>/<test>.ini, line 1 "# meta <json>" (runs, changes, settled, the state section's name), then
+Files: <RUN_HOT_DIR or /p/bw/data/hot>/<model file>/<test>.ini, line 1 "# meta <json>" (runs, changes, settled, the state section's name), then
 the hot.<layer> lines. Delete a file to learn its map again.  Self-check: python3 fork/hotglobal.py --selftest"""
 import os, re, json, time, math
 
-DIR = os.environ.get("RUN_HOT_DIR", "/p/bw/data/hot-global")
+DIR = os.environ.get("RUN_HOT_DIR", "/p/bw/data/hot")
 SETTLE = float(os.environ.get("RUN_HOT_SETTLE_AT", "0.005"))   # share of the uses the last map's hottest experts may miss against the new map's own
 CUTS = (0.10, 0.35)
 

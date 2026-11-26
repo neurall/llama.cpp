@@ -1,6 +1,7 @@
 // Self-check of the planner's estimator (src/llama-rls-fork.h): one RLS per path, Thompson draws, residual-driven drift.
 // Synthetic two-path cost series, no GPU, no model.  build: cmake --build <dir> --target test-rls-fork;  run: ctest -R test-rls-fork
 #include "../src/llama-rls-fork.h"
+#include "../src/llama-estimate-fork.h"   // the placement pick, for the second simulator
 
 #include <cstdio>
 #include <random>
@@ -183,6 +184,14 @@ int main() {
         check("GLM 12k Vulkan request 1 at 1.05, hand-offs block: one card, no trial", g1b.choice == 0 && !g1b.trial, g1b.am[1] / s);
         g1.ratio = 1.0; g1.blocks = false;
         check("the same at 1 in stream order: the split as a trial", dsf_pick({ g1p }, g1).trial, dsf_pick({ g1p }, g1).am[1] / s);
+        // DeepSeek 4.1 13571 tokens, fresh state (equal_prompt_passes relgate 2026-11-25): no token-range graph (deepseek41 is no mirror arch), so its "split" shortens
+        // no compute; the plan's ratio 0.56 priced it at 54.69 s against one card 97.18 +- 34.99 (upload 4.18): the split ran 90.6 s, one card runs 86.6 and was never tried
+        dsf_call ds; ds.ratio = 0.56;
+        const dsf_arm_pass dsp = pass(13571, 4.18, 97.18, 34.99, false, 0);
+        check("DeepSeek 13571 fresh at the plan's 0.56: the split (the miss)", dsf_pick({ dsp }, ds).choice == 1, dsf_pick({ dsp }, ds).am[1] / s);
+        ds.ratio = dsf_prior_ratio(0.56, 1.0, false, false); ds.ranges = false;
+        const dsf_pick_out dso = dsf_pick({ dsp }, ds);
+        check("DeepSeek 13571 fresh, no token ranges: ratio 1, one card, no trial", ds.ratio == 1.0 && dso.choice == 0 && !dso.trial, dso.am[1] / s);
         // MiMo 11k on two CUDA cards, request 1: upload 3.36 s, one card 4.00 +- 1.44, fill 0.10; at ratio 0.84 the split is bound by its upload and its mean
         // (3.46 with the fill) is the lower: the upload rule forbids a trial of the split, not the split where it is ahead (it refused it at 0.84, took it at 0.87)
         dsf_call m1; m1.ratio = 0.84; m1.f_mu = 0.10 * s; m1.f_v = 0.10 * 0.10 * s * s;
@@ -193,6 +202,91 @@ int main() {
         check("INV phi: the prompt's passes taught the arm, its end's average is no sample", !rls_report_phi_off(1536.0, 9472.0 / 6.0, 4, true), 9472.0 / 6.0);
         check("INV phi: no pass taught it, the end would teach 43 tokens off its features", rls_report_phi_off(1536.0, 9472.0 / 6.0, 0, true), 9472.0 / 6.0);
         check("INV phi: passes of the planned size", !rls_report_phi_off(1536.0, 3072.0 / 2.0, 0, true), 1536.0);
+    }
+    {   // closed-loop pick simulator (user 2026-11-25: "use simulator to see how our curr code would behave without need for real run"): a fake machine with the
+        // measured one-card and split times of a logged miss (fork/docs/bug-log.md), a cold start, six requests of the same size; dsf_pick decides each, the arm
+        // that ran feeds its model (one card: the measured mean, known from 2 samples; the split: its RLS, the fill paid once). Pass: at most one losing request
+        // (the trial) and the last three on the faster arm. Only cases a real OLMoE run (restricted VRAM, power limit) cannot make: an arch without token ranges, Vulkan
+        // hand-offs that block; the rest are real rows (user 2026-11-25: "real thing is always better").
+        struct sim_case { const char * name; double T, U, one, split, prior1, sd1, ratio, fill; bool blocks, ranges, old = false; };   // old: the inputs before the fix, must lose
+        const sim_case cases[] = {
+            { "DeepSeek 4.1 13571, no token ranges (bug-log 2026-11-25)", 13571, 4.18, 86.6,  90.6, 97.18, 34.99, 0.56, 0.0,  false, false },
+            { "old: DeepSeek priced as if it had token ranges (the miss)", 13571, 4.18, 86.6,  90.6, 97.18, 34.99, 0.56, 0.0,  false, true, true },
+            { "GLM 12k two Vulkan cards, hand-offs block (2026-11-17)",   12434, 3.95, 26.5,  29.7, 11.68, 4.20,  1.40, 1.94, true,  true  },
+            { "MiMo 11k two Vulkan cards, hand-offs block (#375)",        11011, 3.40, 11.0,  15.5, 11.0,  3.00,  1.24, 0.0,  true,  true  },
+        };
+        const double s = 1e6;
+        for (const auto & k : cases) {
+            dsf_rls split; const double c = k.prior1 * s / k.T * k.ratio, th0[4] = { 0, c, 1, 1 }, fl[4] = { 64 * c, 0, 0, 0 }; rls_init(split, 4, th0, fl);
+            std::vector<double> one_runs; bool fill_owed = k.fill > 0;
+            int lost = 0, last_bad = 0, n_split = 0; std::string seq;
+            for (int r = 0; r < 6; ++r) {
+                dsf_arm_pass q; q.T = k.T; q.U = k.U * s;
+                if (one_runs.empty()) { q.mu1 = k.prior1 * s; q.v1 = k.sd1 * k.sd1 * s * s; }
+                else { double m = 0; for (double x : one_runs) { m += x; } m /= one_runs.size(); q.mu1 = m; q.v1 = 0.03 * 0.03 * m * m; q.kn1 = one_runs.size() >= 2; q.n1 = (int) one_runs.size(); }
+                const double sphi[4] = { 1, k.T, 0, k.U * s };
+                q.mu2 = rls_pred(split, sphi, &q.v2);
+                if (!one_runs.empty()) { q.m1 = k.one * s; q.nm1 = (int) one_runs.size(); }   // the passes measured at this size (dsf_plan's B.us_tok)
+                if (n_split > 0)       { q.m2 = k.split * s; q.nm2 = n_split; }
+                dsf_call dc; dc.ratio = dsf_prior_ratio(k.ratio, 1.0, k.blocks, k.ranges); dc.blocks = k.blocks; dc.ranges = k.ranges; dc.split_prior = split.n == 0; dc.split = &split; dc.seen_before = r;   // the ratio as dsf_plan forms it
+                if (fill_owed) { dc.f_mu = k.fill * s; dc.f_v = 0.4 * 0.4 * k.fill * k.fill * s * s; }
+                const int ch = dsf_pick({ q }, dc).choice;
+                const bool bad = ch == 1 ? k.split > k.one : k.one > k.split;
+                lost += bad; last_bad += bad && r >= 3; seq += ch ? 'S' : '1';
+                if (ch == 1) { rls_update(split, sphi, k.split * s); fill_owed = false; n_split++; } else { one_runs.push_back(k.one * s); }
+            }
+            char what[200]; snprintf(what, sizeof what, "sim %s: %s", k.name, seq.c_str());
+            check(what, (lost <= 1 && last_bad == 0) != k.old, lost);
+        }
+    }
+    {   // the same closed loop for the other one-vs-two pick: one card or the layer split for a model that fits one card (place_one_card_pick). The loop
+        // above missed its bad pick (relgate1k 2026-11-25: Qwen3.6 ran one card cold, -31% prompt) because it never calls it: dsf_pick splits a prompt pass
+        // inside a loaded server, where both arms run in one process and each case starts from priors. The placement is fixed before the load, one start
+        // runs one arm, and a -cs cell is a cold first start, which none of those cases is. Here: a cold state (as -cs gives), then six server starts that
+        // each read the records the starts before them wrote and run one request; chat prompts under 1024 tokens leave the prompt untimed. The rates are the
+        // request totals the records keep, from the server logs of 2026-11-25 (Qwen3.6 two 3090s: one card passes of 1718 tokens at 5.7-7.1k i/s, request
+        // 5810.5 i/s 152.5 o/s; layer split passes of 1728 at 9.9-11.9k i/s, request 8207.5 i/s 162.0 o/s) and 2026-11-23 (Inkling 2 Mini 12k chat: one card
+        // 1372 i/s 56.9 o/s, split 1074 i/s 33.9 o/s). Pass: start 1 runs the split and at most one start runs the slower arm, so the split wins from start 3
+        // and a faster one card from start 2 (until 2026-11-25; now the first start is the estimate's pick); no decision line says "measured" before both arms have a record.
+        struct req { double n_p, n_g; };
+        const req chat = { 700, 400 }, gate = { 13744, 1024 }, decode_bound = { 300, 4096 };
+        // Since 2026-11-25 the first start runs the estimate's pick (place_estimate) from the inputs the decision has: the split's weights left in RAM by
+        // the fitter (Inkling 6.2 GiB, Qwen3.6 none), the experts' used share, RAM read and upload rates, the split's passes. The second start tries the
+        // other arm once, then the measured totals decide.
+        const double GiB = 1073741824.0;
+        struct place_sim { const char * name; double one_i, one_o, spl_i, spl_o; req odd, even; double host, used, pass; };
+        const place_sim cases[] = {
+            { "Qwen3.6 cold, chat and 12k starts",                  5810.5, 152.5, 8207.5, 162.0, chat, gate, 0, 8.0 / 256, 4096 },
+            { "Qwen3.6 cold, 12k gate starts (relgate1k)",          5810.5, 152.5, 8207.5, 162.0, gate, gate, 0, 8.0 / 256, 4096 },
+            { "Inkling 2 Mini cold, chat and 12k starts (one card)", 1372,  56.9,  1074,   33.9,  chat, gate, 6.2 * GiB, 8.0 / 128, 2048 },
+            { "Inkling 2 Mini cold, decode-bound starts (one card)", 1372,  56.9,  1074,   33.9,  decode_bound, decode_bound, 6.2 * GiB, 8.0 / 128, 2048 },
+        };
+        for (const auto & k : cases) {
+            double rec[2][4] = { { -1, -1, 0, 0 }, { -1, -1, 0, 0 } };   // [one card, split]: p, g (ms a token, -1: not timed), n_p, n_g as the state keeps them
+            std::string seq, bad_line;
+            int lost = 0;
+            place_est_in ei; ei.host_bytes = k.host; ei.used_share = k.used; ei.ram_gbs = 111.92; ei.link_gbs = 26.61; ei.pass_tokens = k.pass; ei.passes_per_call = 2;
+            const bool est_one = place_estimate_pick(place_estimate(ei, k.odd.n_p), k.odd.n_p, k.odd.n_g);
+            const bool want_one = k.odd.n_p / k.one_i + k.odd.n_g / k.one_o < k.odd.n_p / k.spl_i + k.odd.n_g / k.spl_o;
+            for (int st = 0; st < 6; ++st) {
+                const req q = st % 2 ? k.even : k.odd;
+                const bool h1 = place_record_counts(rec[0][0], rec[0][1]), h2 = place_record_counts(rec[1][0], rec[1][1]);
+                const double np = h1 && h2 ? (rec[0][2] + rec[1][2]) / 2 : 0, ng = h1 && h2 ? (rec[0][3] + rec[1][3]) / 2 : 0;   // as common.cpp weighs them
+                const bool one = place_one_card_pick(h1, rec[0][0], rec[0][1], h2, rec[1][0], rec[1][1], np, ng, est_one);
+                const place_line pl = place_pick_line(one, h1, rec[0][0], rec[0][1], h2, rec[1][0], rec[1][1], np, ng, "estimate");
+                if (!(h1 && h2) && (pl.label + pl.why).find("measured") != std::string::npos && bad_line.empty()) { bad_line = pl.label + " (" + pl.why + ")"; }
+                const double t1 = q.n_p / k.one_i + q.n_g / k.one_o, t2 = q.n_p / k.spl_i + q.n_g / k.spl_o;
+                lost += one ? t1 > t2 : t2 > t1;
+                seq += one ? '1' : 'S';
+                double * r = rec[one ? 0 : 1];
+                place_record_update(r[0], r[1], r[2], r[3], 1000.0 / (one ? k.one_i : k.spl_i), (int) q.n_p, 1000.0 / (one ? k.one_o : k.spl_o), (int) q.n_g);
+            }
+            char what[512];
+            snprintf(what, sizeof what, "place sim %s: %s (1 = one card, S = split)", k.name, seq.c_str());
+            check(what, (seq[0] == '1') == want_one && seq[1] != seq[0] && lost <= 1, lost);   // first the faster arm by the estimate, then the other once
+            snprintf(what, sizeof what, "place sim %s: no line says measured before both are timed%s%s", k.name, bad_line.empty() ? "" : ": ", bad_line.c_str());
+            check(what, bad_line.empty(), 0);
+        }
     }
     printf("%s\n", n_failed ? "FAILED" : "all passed");
     return n_failed ? 1 : 0;

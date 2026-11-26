@@ -95,6 +95,10 @@ struct llama_memory_context_i {
 
     // get the status of the memory context - used for error handling and checking if any updates would be applied
     virtual llama_memory_status get_status() const = 0;
+
+    // fork (layer-major prompt, fork/docs/layer-major-prompt.md): back to ubatch i, which was applied before; the next apply() gives the view its first apply
+    // gave (what its graph reads) and leaves the memory alone. false: ubatch i was not applied, or this memory cannot (its calls run as passes)
+    virtual bool replay_fork(uint32_t /* i */) { return false; }
 };
 
 using llama_memory_context_ptr = std::unique_ptr<llama_memory_context_i>;

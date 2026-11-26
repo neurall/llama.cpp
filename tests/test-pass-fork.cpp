@@ -216,6 +216,8 @@ static void test_passes() {
     }
     report("one pass size for the prompt: <= ub, as few passes as full ones, no stranded tail", bad == 0, first);
     report("a prompt of 1500 with ub 1024 and max batch 31 runs two equal passes (750)", ppx_equal_pass(1500, 1024, 31) == 750);
+    report("Qwen3.6 split call of 6912 with ub 2048, no cache path: 4 equal passes (1728), not 3x2048 + 768", ppx_equal_pass(6912, 2048, 0) == 1728);
+    report("a call that is a multiple of ub keeps full passes", ppx_equal_pass(4096, 2048, 0) == 2048);
     report("a tail the cache path takes (1030 with ub 1024, mb 31) keeps full passes", ppx_equal_pass(1030, 1024, 31) == 1024);
 }
 

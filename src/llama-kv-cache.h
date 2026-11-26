@@ -4,6 +4,7 @@
 #include "llama-graph.h"
 #include "llama-kv-cells.h"
 #include "llama-memory.h"
+#include "llama-layermajor-fork.h"   // lm_views: the replay of a chunk (layer-major prompt)
 
 #include <unordered_map>
 #include <vector>
@@ -226,6 +227,9 @@ public:
     // fork: the first cell the attention mask of this ubatch has to cover: every cell before it is visible to all its tokens
     uint32_t kq_mask_k0(const slot_info & sinfo, uint32_t n_kv) const;
 
+    ggml_tensor * get_k_scale(int32_t il) const;
+    ggml_tensor * get_v_scale(int32_t il) const;
+
     // store k_cur and v_cur in the cache based on the provided head location
     ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo, uint32_t part = 0) const;
     ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, const slot_info & sinfo, uint32_t part = 0) const;
@@ -265,6 +269,8 @@ public:
 
     void set_input_attn_mask (const llm_attn_mask & attn_mask, const llama_ubatch * ubatch, bool causal_attn, uint32_t k0 = 0) const;   // fork: k0 = first cell of a dense mask (kq_mask_k0)
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+    void set_input_relative_pos(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t extent) const;
+    void set_input_kv_pos(ggml_tensor * dst, const llama_ubatch * ubatch) const;   // fork: each cell's position, INT32_MAX for an empty one (one stream)
 
     // true if llama_kv_cell_ext holds information that has to survive a state save/restore
     bool has_cell_ext() const;
@@ -288,6 +294,9 @@ private:
 
         ggml_tensor * k;
         ggml_tensor * v;
+
+        ggml_tensor * k_scale;
+        ggml_tensor * v_scale;
 
         std::vector<ggml_tensor *> k_stream;
         std::vector<ggml_tensor *> v_stream;
@@ -445,6 +454,8 @@ public:
     llama_memory_status  get_status() const override;
     const llama_ubatch & get_ubatch() const override;
 
+    bool replay_fork(uint32_t i) override;   // fork: layer-major prompt
+
     //
     // llama_kv_cache_context specific API
     //
@@ -465,6 +476,9 @@ public:
 
     // The full K storage tensor of the layer, spanning all streams.
     ggml_tensor * get_k_storage(int32_t il) const;
+
+    ggml_tensor * get_k_scale(int32_t il) const;
+    ggml_tensor * get_v_scale(int32_t il) const;
 
     // store k_cur and v_cur in the cache based on the provided head location
     // note: the heads in k_cur and v_cur should be laid out contiguously in memory
@@ -490,6 +504,8 @@ public:
     void set_input_k_shift   (ggml_tensor * dst) const;
     void set_input_attn_mask (const llm_attn_mask & attn_mask, const llama_ubatch * ubatch, bool causal_attn) const;
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+    void set_input_relative_pos(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t extent) const;
+    void set_input_kv_pos(ggml_tensor * dst, const llama_ubatch * ubatch) const;   // fork: each cell's position, INT32_MAX for an empty one (one stream)
 
     // see llama_kv_cache::get_prev_tokens()
     void get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, std::vector<llama_token> & res) const;
@@ -529,6 +545,9 @@ private:
 
     // see llama_kv_cache::get_n_kv_rows
     uint32_t n_kv_rows = 0;
+
+    // fork (layer-major prompt): n_kv and n_kv_rows of every ubatch applied so far, from its first apply (replay_fork goes back to one)
+    lm_views<std::pair<uint32_t, uint32_t>> views_fork;
 };
 
 // fork: threads the attention-mask fill of the next ubatch may use (the batch compute thread count)

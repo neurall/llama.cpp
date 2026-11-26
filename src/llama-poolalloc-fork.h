@@ -19,6 +19,7 @@
 #include <mutex>
 #include <numeric>
 #include <thread>
+#include <utility>
 #include <vector>
 
 static inline size_t poolx_up(size_t x, size_t a) { return (x + a - 1) / a * a; }
@@ -234,6 +235,21 @@ template <class S> static int32_t poolx_lend_blocks(const S & sg, size_t need_b)
     const size_t cov = need_b > sg.base ? need_b - sg.base : 0;
     return sg.B == 0 ? 0 : (int32_t) std::min<size_t>((size_t) sg.n, (cov + sg.B - 1) / sg.B);
 }
+
+// ---- the speculative draft's compute area ----------------------------------------------------------------------------------------------------
+// (user 2026-10-26/27 and 2026-11-25: the draft lives in the pool, no VRAM beside it.) A draft context's compute graphs (its own scheduler) get [0, draft_c) of its
+// card's pool. The size is what a measure-only reserve of the draft's worst-case graphs needs, on whole blocks (a lend's own rounding), never smaller than before
+// (a graph planned for the old size still fits). 0: the area would take more than half of what the pool lends (the target's graphs and the KV need the rest).
+// Qwen3.8 + its MTP draft (2026-11-25): the draft's buffer came after the pool and took 349 MiB on CUDA0 (1265 MiB on CUDA1 with two cards) beside it.
+template <class P> static size_t poolx_draft_area(const P & ap, size_t need, size_t lendable) {
+    if (need == 0) { return ap.draft_c; }
+    const size_t c = std::max(ap.draft_c, poolx_lend_round(ap, need));
+    return c <= lendable / 2 ? c : 0;
+}
+// where the target's graph starts in the pool buffer: behind the draft's area, and behind the dense split's copies too when the graph splits (they sit behind the area)
+static inline size_t poolx_graph_start(size_t draft_c, size_t copies) { return draft_c + copies; }
+// the blocks of a class the lend keeps at a release: what the last graph needed, and never fewer than the draft's area covers (it stays lent while the draft lives)
+template <class S> static int32_t poolx_release_keep(const S & sg, size_t want_b, size_t draft_c) { return poolx_lend_blocks(sg, std::max(want_b, draft_c)); }
 
 // ---- owner ledger -----------------------------------------------------------------------------------------------------------------------------
 // ps: { std::vector<int32_t> owner, free; int32_t home_lo, home_hi; }. The caller holds the cache's mutex. evict(layer, block) takes an expert out of a block it owned (the caller's bookkeeping).
@@ -577,6 +593,33 @@ static poolx_pick poolx_pick_slot(const PS & ps, int32_t n_active, Busy busy, Ex
     return p;
 }
 
+// Moves that keep the experts of blocks [from, to) in VRAM when that range leaves the cache (a prompt's lend from the front, CUDA's room from the top).
+// owner[b]: >= 0 a layer, -1 free, < -1 not the cache's (lent, KV zone, CUDA's room, another class's bytes). score[b] for an owned block: >= 0 the expert's score
+// (movable), -1 empty, NaN busy (upload in flight, streamed). Sources: owned, movable blocks in the range, hottest first. Destinations: blocks of [0, n_active)
+// outside the range, free or empty first, then the coldest; a move is made only while the source scores above the block it overwrites, so the range keeps
+// only experts colder than everything else and none is lost while a free block exists. Returns (source, destination) pairs.
+// (Until 2026-11-25 the destinations were only the blocks behind the range: CUDA's room at the pool's top had none, and evicted the 241 hottest experts
+// of Qwen3.6 with 15214 of 25698 blocks free.)
+static std::vector<std::pair<int32_t, int32_t>> poolx_move_plan(const std::vector<int32_t> & owner, const std::vector<double> & score, int32_t n_active, int32_t from, int32_t to) {
+    struct ent { double sc; int32_t b; };
+    std::vector<ent> hot, cold;
+    const int32_t nb = std::min<int32_t>(n_active, (int32_t) owner.size());
+    for (int32_t b = std::max(0, from); b < std::min<int32_t>(to, (int32_t) owner.size()); ++b) {
+        if (owner[b] >= 0 && score[b] >= 0) { hot.push_back({ score[b], b }); }   // NaN and -1 fail the test
+    }
+    for (int32_t b = 0; b < nb; ++b) {
+        if (b >= from && b < to) { continue; }
+        if (owner[b] == -1) { cold.push_back({ -1.0, b }); continue; }
+        if (owner[b] < -1 || score[b] != score[b]) { continue; }   // not the cache's, or busy
+        cold.push_back({ score[b] < 0 ? -1.0 : score[b], b });
+    }
+    std::stable_sort(hot.begin(),  hot.end(),  [](const ent & a, const ent & b) { return a.sc > b.sc; });
+    std::stable_sort(cold.begin(), cold.end(), [](const ent & a, const ent & b) { return a.sc < b.sc; });
+    std::vector<std::pair<int32_t, int32_t>> mv;
+    for (size_t i = 0; i < hot.size() && i < cold.size() && hot[i].sc > cold[i].sc; ++i) { mv.push_back({ hot[i].b, cold[i].b }); }
+    return mv;
+}
+
 // The picks of one step from one scan. poolx_pick_slot scans every block of the class for each pick: a decode step of Qwen3.8 made 9 to 21 picks of about 40 us
 // each (335 to 854 us a token on the thread the card waits for, 2026-11-19). Between the picks of a step only the picked blocks change (their upload is in
 // flight, or they left the free stack) and the ranks of the others stay, so the order of one scan answers every pick as a scan of its own would: a free block of the
@@ -649,4 +692,45 @@ static void poolx_chain_scan(const PS & ps, bool grid, Fn fn) {
         const int32_t o = ps.owner[b];
         if (o >= -1 || (grid && o == -4)) { fn(b, o); }
     }
+}
+
+// user 2026-11-22: classes stay (exact sizes, no padding) and stay gapless: a class is n blocks [0, n) of one size; the KV, the working blocks and a
+// neighbour class grow by taking blocks off its tail. poolx_tail_give: the k tail blocks leave the class; a tail expert hotter than the coldest expert
+// left inside moves onto it (that one leaves the card), the rest of the tail leaves. heat < 0: an empty block; pinned blocks neither move nor are moved over.
+// Returns the moves (from, to) and the evicted blocks; give.n_left = n - k. A pinned tail block stops the give at it (n_left > n - k).
+struct poolx_give { std::vector<std::pair<int32_t, int32_t>> moves; std::vector<int32_t> evict; int32_t n_left = 0; };
+static inline poolx_give poolx_tail_give(const std::vector<double> & heat, const std::vector<uint8_t> & pin, int32_t k) {
+    poolx_give g;
+    const int32_t n = (int32_t) heat.size();
+    int32_t cut = std::max(0, n - k);
+    for (int32_t b = n - 1; b >= cut; --b) { if (pin[(size_t) b]) { cut = b + 1; break; } }   // never past a pinned block
+    g.n_left = cut;
+    std::vector<int32_t> in;   // destinations inside: unpinned, coldest (empty first) first
+    for (int32_t b = 0; b < cut; ++b) { if (!pin[(size_t) b]) { in.push_back(b); } }
+    std::stable_sort(in.begin(), in.end(), [&](int32_t x, int32_t y) { return heat[(size_t) x] < heat[(size_t) y]; });
+    std::vector<int32_t> out;   // the tail's experts, hottest first
+    for (int32_t b = cut; b < n; ++b) { if (heat[(size_t) b] >= 0) { out.push_back(b); } }
+    std::stable_sort(out.begin(), out.end(), [&](int32_t x, int32_t y) { return heat[(size_t) x] > heat[(size_t) y]; });
+    size_t j = 0;
+    for (int32_t b : out) {
+        if (j < in.size() && heat[(size_t) b] > heat[(size_t) in[j]]) {
+            if (heat[(size_t) in[j]] >= 0) { g.evict.push_back(in[j]); }
+            g.moves.push_back({ b, in[j++] });
+        } else {
+            g.evict.push_back(b);
+        }
+    }
+    return g;
+}
+// which class gives the next bytes: the one whose coldest unpinned expert has the least heat per byte (an empty block: 0, given first); -1: none can give
+static inline int poolx_class_gives(const std::vector<std::vector<double>> & heat, const std::vector<std::vector<uint8_t>> & pin, const std::vector<size_t> & B) {
+    int best = -1; double bv = 0;
+    for (size_t c = 0; c < heat.size(); ++c) {
+        for (size_t b = 0; b < heat[c].size(); ++b) {
+            if (pin[c][b]) { continue; }
+            const double v = std::max(0.0, heat[c][b]) / (double) B[c];
+            if (best < 0 || v < bv) { best = (int) c; bv = v; }
+        }
+    }
+    return best;
 }

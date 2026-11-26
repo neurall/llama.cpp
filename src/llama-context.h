@@ -74,6 +74,11 @@ struct llama_context {
     bool swap_layers_fork(int a, int b);
     // fork: --moe alias=1: put the GPUs' compute graphs into the expert pool buffers of moe_alias_bufs (after every scheduler creation)
     void apply_moe_alias();
+    // fork: a speculative draft's graphs in an area at the start of the target's pool (llama_moe_cache_draft_area_fork); its own buffers released when the pool is sized
+    uint32_t draft_area_fork(uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx);   // its decode calls set aside; returns n_tokens
+    bool     draft_area_grow_fork(ggml_cgraph * gf);   // a draft graph bigger than its area: the area grows to it
+    void     draft_area_shrink_fork();                 // the answer starts: the area back to the decode calls
+    void pool_release_fork();
     bool moe_alias_shrink_fork(bool graph_fits, bool stage_fits, size_t need, size_t cap);
     void moe_probe_costs_fork();   // --moe max-batch=auto: timed cache-path batches at the first decode
     std::vector<llama_moe_alias_buf_fork> moe_alias_bufs;
@@ -124,6 +129,7 @@ struct llama_context {
     float * get_embeddings_layer_inp(uint32_t lid);
 
     ggml_tensor * get_layer_inp_dev() const { return layer_inp_dev; }
+    ggml_tensor * get_h_nextn_dev()   const { return h_nextn_dev; }
 
     llama_token * get_sampled_tokens() const;
     llama_token   get_sampled_token_ith(int32_t idx);
@@ -165,9 +171,17 @@ struct llama_context {
 
     // whether decode accepts entries whose embd is a row of ctx_other's layer input device buffer
     bool supports_embd_row() const;
+
+    // h_nextn device buffer, see llama_set_embeddings_nextn_dev()
+    bool set_embeddings_nextn_dev(bool value);
+    bool get_h_nextn_rows(int64_t row0, int64_t n_rows, float * out);
+    bool set_h_nextn_rows(int64_t row0, int64_t n_rows, const float * data);
+
+    // state rows read from the h_nextn device buffer of ctx_src, see llama_set_ctx_state_src()
+    bool set_ctx_state_src(llama_context * ctx_src);
+    bool supports_state_row() const;
     void set_nextn_layer_offset(int32_t offset);
     void set_causal_attn(bool value);
-    void set_warmup(bool value);
 
     void set_adapters_lora(llama_adapter_lora ** adapters, size_t n_adapters, float * scales);
 
@@ -263,7 +277,7 @@ struct llama_context {
             ggml_opt_result_t                result,
             const std::vector<llama_token> & tokens,
             const std::vector<llama_token> & labels_sparse,
-            llama_batch                    & batch,
+            llama_batch_ext                & batch,
             ggml_opt_epoch_callback          callback,
             bool                             train,
             int64_t                          idata_in_loop,
@@ -291,6 +305,10 @@ private:
     // (re)allocate the device buffer for cparams.embeddings_layer_inp_dev
     void layer_inp_dev_alloc();
 
+    // (re)allocate the device buffer for cparams.embeddings_nextn_dev, false if it does not fit
+    bool h_nextn_dev_alloc();
+    bool h_nextn_front_fork();   // fork: the rows at the start of the block pool, in front of the draft's graphs
+
     ggml_backend_t backend_from_dev(ggml_backend_dev_t dev) const;
 
     //
@@ -298,7 +316,7 @@ private:
     //
 
 public:
-    uint32_t graph_max_nodes(uint32_t n_tokens) const;
+    uint32_t graph_max_nodes(uint32_t n_tokens = 0) const;   // fork: n_tokens, the pass the graph is sized for
 
     // can reuse the llm_graph_result instance of the context (for example to update a memory module)
     llm_graph_result * get_gf_res_reserve() const;
@@ -323,8 +341,22 @@ private:
 
     llm_graph_cb graph_get_cb() const;
 
-    // create a new backend scheduler for a graph of the specified size and register the callbacks below
-    void sched_new(size_t max_nodes, bool parallel);
+    // parameters defining the backend scheduler instance
+    struct sched_params {
+        size_t max_nodes  = 0;
+        bool   parallel   = false;
+        bool   op_offload = false;
+
+        // a scheduler can serve any graph of up to max_nodes nodes
+        bool can_reuse(const sched_params & other) const {
+            return parallel   == other.parallel
+                && op_offload == other.op_offload
+                && max_nodes  <= other.max_nodes;
+        }
+    };
+
+    // create a new backend scheduler with the given parameters, unless the current one can be reused
+    void sched_new(const sched_params & params);
 
     // ggml_backend_sched copy callback, copies only the experts used by MUL_MAT_ID and updates the MoE cache
     static bool sched_copy_experts(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph, void * user_data);
@@ -426,6 +458,8 @@ private:
 
     ggml_backend_sched_ptr sched;
 
+    sched_params sched_params_cur;
+
     bool sched_need_reserve = true;
     ggml_type kv_type_k = GGML_TYPE_F16, kv_type_v = GGML_TYPE_F16;   // the types the cache was built with
     ggml_type kv_type_k0 = GGML_TYPE_F16, kv_type_v0 = GGML_TYPE_F16;
@@ -497,6 +531,19 @@ private:
     ggml_backend_event_ptr ev_layer_inp_written;
     ggml_backend_event_ptr ev_layer_inp_read;
     bool ev_layer_inp_read_recorded = false;
+
+    // device buffer with the h_nextn rows, F32 [n_embd_out, n_batch + n_seq_max]:
+    // row r < n_batch is the token at batch index r of the last decode, row n_batch + s is set by the host for seq s
+    // ordered with the reader context like the layer input buffer
+    ggml_context_ptr        ctx_h_nextn_dev;
+    ggml_backend_buffer_ptr buf_h_nextn_dev;
+    ggml_tensor *           h_nextn_dev = nullptr;
+    ggml_backend_dev_t      h_nextn_dev_dev = nullptr;
+    ggml_backend_t          h_nextn_backend = nullptr;
+    ggml_backend_event_ptr  ev_h_nextn_written;
+    ggml_backend_event_ptr  ev_h_nextn_read;
+    bool ev_h_nextn_written_recorded = false;
+    bool ev_h_nextn_read_recorded    = false;
 
     // keep copies of the per-sequence memory on the device
     std::map<llama_seq_id, llama_memory_buffers> mem_storage;

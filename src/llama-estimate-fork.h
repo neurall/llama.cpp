@@ -5,8 +5,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <string>
 #include <vector>
+
+#include "llama-rls-fork.h"   // rls_voi_pick: the pick among the prompt paths (pp_pick)
 
 // ---- strategy estimators (user 2026-11-10: "all our strategy deciders implemented as properly named functions taking all key metrics and returning new estimated time per token,
 // so planner can combine more strategies working in parallel") ----
@@ -530,4 +533,276 @@ static inline bool tune_history_pick(const std::string & h, double & v) {
         if (n > best) { best = n; v = xs[i]; }
     }
     return true;
+}
+
+// A model whose weights plus the reserve fit one card's free VRAM runs on that card: the card with the most free VRAM, or -1 (one card only, or no card
+// holds it). A layer split runs the layers one card after the other at decode, so it only adds the copies between the cards (Inkling 2 Mini, two 3090s,
+// 12k chat 2026-11-23: 1074 i/s, 33.9 o/s split against 1372 i/s, 56.9 o/s on one card). The caller still probes the pass and the context on that card.
+static inline int fits_one_card_pick(size_t model, size_t reserve, const size_t * free, int n) {
+    if (n < 2) { return -1; }
+    int best = 0;
+    for (int i = 1; i < n; ++i) { if (free[i] > free[best]) { best = i; } }
+    return model + reserve <= free[best] ? best : -1;
+}
+
+// Arm A or arm B of a measured choice (p, g: ms per prompt / answer token of each arm's last long request): an arm without a record is tried
+// first (A before B); with both, the smaller total time for n_p prompt plus n_g answer tokens wins. True: A.
+static inline bool measured_ab_pick(bool have_a, double pa, double ga, bool have_b, double pb, double gb, double n_p, double n_g) {
+    if (!have_a) { return true; }
+    if (!have_b) { return false; }
+    return n_p * pa + n_g * ga <= n_p * pb + n_g * gb;
+}
+
+// Prompt pass hill-climb (llama_moe_ubadapt_next_fork): tps = measured prompt tokens/s per pass size, base = the size the climb stands on (updated here).
+// A measured size replaces the base only when > 5% faster than it. An untried neighbour is tried only when this call can measure it: a call counts for a
+// size only at 2+ of its passes. Qwen3.6 split 2026-11-24: calls of 6912 tokens never measured 4096, so 4096 stayed "untried" and ran every call
+// (1458-1588 i/s against 2048's 1597-1617). Returns the size this call runs.
+static inline uint32_t ub_climb_step(const std::map<uint32_t, double> & tps, uint32_t & base, uint32_t n_tokens, uint32_t ceil, bool more) {
+    double bt = tps.count(base) ? tps.at(base) : 0.0;
+    if (bt <= 0.0) { return base; }   // the base is measured first
+    for (const auto & kv : tps) { if (kv.first <= ceil && kv.second > bt * 1.05) { base = kv.first; bt = kv.second; } }
+    if (base * 2 <= ceil && n_tokens >= 4 * base && !tps.count(base * 2)) { return base * 2; }
+    if (more && base / 2 >= 512 && !tps.count(base / 2)) { return base / 2; }
+    return base;
+}
+
+// One request updates its placement's record (common_place_record): the prompt time from 1024 prompt tokens, the answer time from 128 answer tokens
+// (short ones are noise). An untimed phase stays -1.
+static inline void place_record_update(double & p, double & g, double & np, double & ng, double p_ms, int n_p, double g_ms, int n_g) {
+    if (n_p >= 1024 && p_ms > 0) { p = p_ms; np = n_p; }
+    if (n_g >= 128 && g_ms > 0)  { g = g_ms; ng = n_g; }
+}
+
+// A stored record (place_read) counts as that arm's measurement when either phase was timed. Until 2026-11-25 both had to be: a chat server's prompts
+// stay under 1024 tokens, so its arm never counted and every start ran the same first pick again.
+static inline bool place_record_counts(double p, double g) { return p > 0 || g > 0; }
+
+// The totals (ms) one card (t1) and the layer split (t2) are compared on for n_p prompt plus n_g answer tokens (p, g: ms per prompt / answer token,
+// 0 or less = not timed): a phase counts only when both arms timed it.
+static inline void place_totals(double p1, double g1, double p2, double g2, double n_p, double n_g, double & t1, double & t2) {
+    const double wp = p1 > 0 && p2 > 0 ? n_p : 0, wg = g1 > 0 && g2 > 0 ? n_g : 0;
+    t1 = wp * p1 + wg * g1;
+    t2 = wp * p2 + wg * g2;
+}
+
+// One card or the layer split for a model that fits one card is measured, not guessed: the split runs prompt passes pipelined over both cards and on
+// power-capped cards each card decodes its half faster (Qwen3.6 two 3090s 12k/1k 2026-11-24: split 8400 i/s 160 o/s, one card 6200 i/s 151 o/s), while
+// Inkling 2 Mini loses on the split (above). One start runs one placement, so a cold state (every -cs gate cell, a new user's first start) cannot time
+// both: it runs the stock layer split, the release's default, and the next start tries one card once (one card first lost the gate: relgate1k 2026-11-25
+// Qwen3.6 13744/1024 cold on one card 5810 i/s 152.5 o/s against the release's split 8133 i/s 159.7 o/s). With both, the smaller total (place_totals)
+// wins and a tie keeps the split. True: one card.
+// est_one: the estimator's pick (place_estimate_pick), which a cold state runs first since 2026-11-25 (before: always the split, and Inkling 2 Mini lost
+// 40% decode on its first start).
+static inline bool place_one_card_pick(bool have_one, double p1, double g1, bool have_split, double p2, double g2, double n_p, double n_g, bool est_one) {
+    if (!have_one && !have_split) { return est_one; }   // nothing measured: the estimate's pick runs first
+    if (!have_split) { return false; }   // one card measured only: the split's one try
+    if (!have_one) { return true; }      // the split measured, one card not: one card's one try
+    double t1 = 0, t2 = 0;
+    place_totals(p1, g1, p2, g2, n_p, n_g, t1, t2);
+    return t1 < t2;
+}
+
+// The estimate behind a cold start's placement (place_one_card_pick's est_one), from what is known before the model loads. What the layer split costs or
+// saves against one card, found from the server logs of 2026-11-25 (two 3090s):
+//   - Inkling 2 Mini 12k/1k: the split's arm was not a clean split. The fitter left 6.2 GiB of expert weights in RAM (rule=ts 11/37, tensor overrides 1,
+//     host weights read 6.7 GiB against 0.5 on one card), so every prompt pass uploaded them (+0.15 ms a prompt token) and every answer token read the
+//     used experts of those layers on the CPU (+11.2 ms a token, 25.5 against 14.3). CUDA graphs ran in both arms (graphs reused 1021 each).
+//   - Qwen3.6 35B-A3B: nothing in RAM, so the stock pipeline runs the prompt passes of a call on both cards at once (8195 against 5810 i/s at 13744
+//     tokens); one hop of a token's activations between the cards is a few KB, not weighed; decode within 5% either way.
+// in.host_bytes: weight bytes the fitter leaves in RAM for the split (0: every weight on the cards; one card's arm fits by the fits_one_card_pick check).
+// in.used_share: share of those bytes one answer token reads (experts used / experts, 1 for a dense model). in.ram_gbs, in.link_gbs: the machine probes
+// (RAM read, slowest card's upload). in.pass_tokens, in.passes_per_call: the split's micro-batch and n_batch / n_ubatch. p1, g1, p2, g2: measured ms a
+// token of an arm, -1 when not measured; the other arm is derived from it.
+struct place_est_in {
+    double host_bytes = 0, used_share = 1, ram_gbs = 0, link_gbs = 0, pass_tokens = 512, passes_per_call = 1;
+    int    n_cards = 2;
+    double p1 = -1, g1 = -1, p2 = -1, g2 = -1;
+};
+// The estimate: split prompt = one card's * f + sp, split decode = one card's + sg (ms a token). f: the pipeline's share of the time, P passes of a call
+// over n cards take (P + n - 1) / n pass times against P; the stock pipeline is off when weights stay in RAM (tensor overrides), so f = 1 then.
+// sp: each pass uploads the RAM weights once. sg: each answer token reads its share of them at RAM speed (a floor: the CPU's own compute and the
+// per-layer hand-off are left out, Inkling measured 11.2 ms against 3.7 estimated). p1/g1 unknown (-1) when neither arm was measured.
+struct place_est { double f = 1, sp = 0, sg = 0, p1 = -1, g1 = -1, p2 = -1, g2 = -1; };
+static inline place_est place_estimate(const place_est_in & in, double n_p) {
+    place_est e;
+    const bool pipe = in.host_bytes <= 0 && in.n_cards > 1;
+    const double P = std::max(1.0, std::min(in.passes_per_call, std::ceil(std::max(1.0, n_p) / std::max(1.0, in.pass_tokens))));
+    e.f  = pipe ? (P + in.n_cards - 1) / (in.n_cards * P) : 1.0;
+    e.sp = in.host_bytes > 0 && in.link_gbs > 0 ? in.host_bytes / (in.link_gbs * 1e6) / std::max(1.0, in.pass_tokens) : 0.0;
+    e.sg = in.host_bytes > 0 && in.ram_gbs > 0 ? in.host_bytes * in.used_share / (in.ram_gbs * 1e6) : 0.0;
+    e.p1 = in.p1 > 0 ? in.p1 : in.p2 > 0 ? (in.p2 - e.sp) / e.f : -1;
+    e.g1 = in.g1 > 0 ? in.g1 : in.g2 > 0 ? in.g2 - e.sg : -1;
+    e.p2 = in.p2 > 0 ? in.p2 : e.p1 > 0 ? e.p1 * e.f + e.sp : -1;
+    e.g2 = in.g2 > 0 ? in.g2 : e.g1 > 0 ? e.g1 + e.sg : -1;
+    return e;
+}
+// The split's estimated total minus one card's (ms) for n_p prompt and n_g answer tokens. An unknown base prompt time counts only the RAM uploads: the
+// pipeline's saving is then left out, it only ever favours the split, which a tie keeps.
+static inline double place_estimate_gap(const place_est & e, double n_p, double n_g) {
+    return n_p * ((e.p1 > 0 ? e.p1 * (e.f - 1) : 0.0) + e.sp) + n_g * e.sg;
+}
+// True: the estimate picks one card (the split is slower); a tie keeps the stock layer split.
+static inline bool place_estimate_pick(const place_est & e, double n_p, double n_g) { return place_estimate_gap(e, n_p, n_g) > 0; }
+
+// The estimate's reason in plain words: both arms' estimated ms a token (one card's unknown before a run: then the split's as one card's plus the cost).
+static inline std::string place_estimate_why(const place_est & e, double n_p, double n_g) {
+    char b[400];
+    const double gap = place_estimate_gap(e, n_p, n_g);
+    if (e.p1 > 0 && e.g1 > 0) {
+        snprintf(b, sizeof b, "estimated for %.0f prompt + %.0f answer tokens: one card %.3f ms a prompt token, %.2f ms an answer token (%.1f s), layer split "
+            "%.3f / %.2f ms (%.1f s)", n_p, n_g, e.p1, e.g1, (n_p * e.p1 + n_g * e.g1) / 1000, e.p2, e.g2, (n_p * e.p2 + n_g * e.g2) / 1000);
+    } else {
+        snprintf(b, sizeof b, "estimated for %.0f prompt + %.0f answer tokens: layer split = one card's prompt x %.3f + %.4f ms a token (weights in RAM "
+            "uploaded per pass), decode + %.2f ms a token (their used share read from RAM): split %+.1f s against one card%s", n_p, n_g, e.f, e.sp, e.sg,
+            gap / 1000, gap > 0 ? "" : " (a tie keeps the stock split)");
+    }
+    return b;
+}
+
+// The estimate was wrong when the measured totals (t1 one card, t2 split, ms) pick the other arm by more than the noise: 5%, the floor the moe placement's
+// measured pick uses (moe_auto_pick), since one record per arm gives no spread.
+static inline bool place_estimate_wrong(bool est_one, double t1, double t2) {
+    const double bar = 0.05 * std::max(1e-9, std::min(t1, t2));
+    return est_one ? t2 + bar < t1 : t1 + bar < t2;
+}
+// The plain line for a wrong estimate, with every input, so the case becomes a unit test (tests/test-estimate-fork.cpp, "place estimate").
+static inline std::string place_estimate_wrong_line(const place_est_in & in, const place_est & e, double n_p, double n_g, double t1, double t2) {
+    char b[640];
+    snprintf(b, sizeof b, "placement estimate was wrong: it picked %s, predicted split minus one card %+.2f s for %.0f prompt + %.0f answer tokens "
+        "(split prompt = one card x %.3f + %.4f ms, decode + %.2f ms), measured one card %.2f s, split %.2f s; inputs: host_bytes %.0f used_share %.5f "
+        "ram_gbs %.2f link_gbs %.2f pass_tokens %.0f passes_per_call %.0f n_cards %d", place_estimate_pick(e, n_p, n_g) ? "one card" : "the layer split",
+        place_estimate_gap(e, n_p, n_g) / 1000, n_p, n_g, e.f, e.sp, e.sg, t1 / 1000, t2 / 1000, in.host_bytes, in.used_share, in.ram_gbs, in.link_gbs,
+        in.pass_tokens, in.passes_per_call, in.n_cards);
+    return b;
+}
+
+// The placement decision line (decide_fork "placement") for pick `one` on these records. It says "measured" only when both arms have a record; one arm's
+// record is "timed", and a phase it lacks is "not timed". The cold start's line in the relgate1k miss (2026-11-25) said "one card vs layer split is
+// measured" with nothing timed. common.cpp puts the card and the model's fit in front of a one-card reason.
+struct place_line { std::string label, why; };
+// est_why: the estimate's reason (place_estimate_why), the reason of a cold start.
+static inline place_line place_pick_line(bool one, bool have_one, double p1, double g1, bool have_split, double p2, double g2, double n_p, double n_g, const std::string & est_why) {
+    auto rates = [](double p, double g) {
+        char b[48];
+        std::string s = "prompt not timed";
+        if (p > 0) { snprintf(b, sizeof b, "%.0f i/s", 1000 / p); s = b; }
+        if (g > 0) { snprintf(b, sizeof b, ", %.1f o/s", 1000 / g); s += b; } else { s += ", answer not timed"; }
+        return s;
+    };
+    place_line r;
+    r.label = std::string(one ? "one card" : "layer split") + (have_one && have_split ? " (measured)" : have_one || have_split ? " (tried once)" : " (estimated)");
+    if (!have_one && !have_split) {
+        r.why = "nothing timed yet: " + est_why + "; the other placement is tried on the next start";
+    } else if (!have_one) {
+        r.why = "layer split timed (" + rates(p2, g2) + "), one card not yet: tried once";
+    } else if (!have_split) {
+        r.why = "one card timed (" + rates(p1, g1) + "), the layer split not yet: tried once";
+    } else {
+        double t1 = 0, t2 = 0;
+        place_totals(p1, g1, p2, g2, n_p, n_g, t1, t2);
+        char b[160];
+        snprintf(b, sizeof b, "for %.0f prompt + %.0f answer tokens (a phase counts when both timed it): one card %.1f s", n_p, n_g, t1 / 1000);
+        r.why = b + (" (" + rates(p1, g1) + "), layer split ");
+        snprintf(b, sizeof b, "%.1f s", t2 / 1000);
+        r.why += b + (" (" + rates(p2, g2) + ")");
+    }
+    return r;
+}
+
+// The stream variant (ring, mix, layer parallel) a dense split pass runs inside: a split pass teaches only the split planner, so the one-card arms' draws
+// never learn which variant the split runs best with (GLM 3.5 2026-11-25: mix and layer parallel both n=0, drawn every call). took[i] = the split pass
+// time measured with variant i at this size (0 = never ran), ok[i] = allowed this call. An untried allowed variant first (in order), else the fastest; -1 none.
+// shortcut: one sample per variant decides (the last pass of the size); upgrade to the posterior per variant if split passes prove noisy.
+static inline int split_variant_pick(const double * took, const bool * ok, int n) {
+    int best = -1;
+    for (int i = 0; i < n; ++i) {
+        if (!ok[i]) { continue; }
+        if (took[i] <= 0.0) { return i; }
+        if (best < 0 || took[i] < took[best]) { best = i; }
+    }
+    return best;
+}
+
+// The prompt paths of the moe-cache planner (llama_moe_cache_pp_decide_fork), here so its rules and its pick are pure functions (tests/test-crossover-fork.cpp).
+// PP_RING: the stream, every expert staged on the fastest link's card. PP_MIX: the stream with the prompt mix. PP_DEC: the decode chain. PP_K + i: the stream with predicted staging, q2 up to 2^i x a token's picks.
+// PP_LP: the stream layer parallel, each card its own layers' experts (staging=0 only).
+enum { PP_RING = 0, PP_MIX = 1, PP_CHAIN = 2, PP_DENSE = 3, PP_DEC = 4, PP_K = 5, PP_KN = 8, PP_LP = PP_K + PP_KN, PP_PATHS = PP_LP + 1 };
+static constexpr double PP_MIX_COLD = 4096.0;   // below it the prompt mix competes on its mean from the first request, above it only a trial (shortcut: a fixed size, the data has wins to 4.5k and losses at 12k; compute it from the cross-card traffic when 5-10k is measured)
+static constexpr double PP_MIN_BATCH = 32.0;   // GGML_OP_OFFLOAD_MIN_BATCH's default: under it a pass's experts run on the CPU, whichever path was planned
+
+// The planner's rules over the paths of a prompt call of n tokens, before the engine's own strike-outs (staging=0, the pool's refusals, the router switch).
+// ok: the candidates in, the paths left out. mu: the means; kn: rls_known per path; runs: the passes each path's model learned from; xo: R1's crossover (the measured
+// max-batch, the calculated chain crossover up to 256 tokens above it); chain_sw: the router switch decides the prompt chain (pp_switch_pick); busy: uploads
+// under way. Out: known (ran at comparable features: the arms a trial is weighed against) and tonly (a trial only, never a mean pick), rls_voi_pick's inputs.
+static inline void pp_path_rules(double n, double xo, bool chain_sw, bool busy, const double * mu, const int * runs, const bool * kn, bool * ok, bool * known, bool * tonly) {
+    // a call under the GPU's smallest expert batch (GGML_OP_OFFLOAD_MIN_BATCH, 32 tokens) streams nothing: its expert matmuls run on the CPU, each expert read from the pool or the SSD. The prompt's
+    // 4-token tail (2026-11-08) took 1.1 s on GLM 3.5 and 1.7 s on DeepSeek that way, 0.5 and 0.3 s on the decode chain: about 10% of a 3k prompt. A chain whenever one can run.
+    if (n < PP_MIN_BATCH && (ok[PP_CHAIN] || ok[PP_DEC])) {
+        for (int p = 0; p < PP_PATHS; ++p) { if (p != PP_CHAIN && p != PP_DEC) { ok[p] = false; } }
+    }
+    for (int p = 0; p < PP_PATHS; ++p) { known[p] = ok[p] && kn[p]; }
+    // R1 (fork/docs/planner-crossovers.md): above the MEASURED CPU crossover g_mb_auto (the release's max-batch, experts / picks) the chains are no
+    // cold pick - no logged class on Qwen3.6/3.8, GLM, MiMo has a chain win there (-97% to -308%), DeepSeek only below 3k. There they are a trial
+    // against an arm known here, and a chain measured here (known) competes on its mean. (a448602c58 had dropped this as a ballpark; the
+    // ballpark was the calculated dec_max, this is the measured one.)
+    for (const int p : { PP_CHAIN, PP_DEC }) {
+        // the router path has no CPU side to run away with (the 1170 s below was the decode chain): with the switch on, time per token decides it at any size
+        // (Qwen3.8-Flash-Next IQ4_XS, 512-token passes: router 2.9-3.0 ms per token against the stream's 3.6-3.8, never tried past 256 under this rule)
+        if (p == PP_CHAIN && chain_sw) { continue; }
+        if (ok[p] && n > xo && !known[p]) { ok[p] = false; }   // no trial past the crossover: MiMo 64k warm, a 16384-token decode chain trial calculated 8.6 s took 1170 s (the stream known, so the old test let it run)
+    }
+    // R1's mirror: at or below that crossover the chains are the cold pick, so an arm that streams and never ran here is no trial there, while a chain can
+    // run. DeepSeek 117 tokens (2026-11-10, third start of two builds): two decode chain samples of 3.7 s left a mean of 14.2 s (the first sample's error
+    // went to the coefficient of the calculated time, which then read 4.4 s instead of 1.1), an unknown stream, k x1 drew 3.5 s and took 29.5 s (49 GB
+    // read from the SSD). A stream measured here competes on its mean at any size.
+    if (ok[PP_DEC] || ok[PP_CHAIN]) {
+        for (int p = 0; p < PP_PATHS; ++p) { if (p != PP_CHAIN && p != PP_DEC && ok[p] && !known[p] && n <= xo) { ok[p] = false; } }
+    }
+    // The predictions compete on their calculated upload (user 2026-11-08: "if we are not trying it prior full stream than it is bug"), the lowest k first: it stages the least,
+    // a higher k only after it ran. The mix competes on its mean up to PP_MIX_COLD (2026-11-08 auto rows: MiMo 418 tokens 3018 ms against the stream's 3834, 1016 tokens 3187
+    // against 3907; Qwen3.8 IQ3 1.5-4.5k +18-47%, GLM 3.5 2.3k +10%); past it a mix that never ran here is a trial only, never a mean pick: its prior is the stream's (means
+    // equal to noise, rampool12 rows 23784-23789) and the cross-card traffic grows with the tokens (MiMo 12k 495 against 933 t/s, DS 12k 304 against 530)
+    for (int p = 0; p < PP_PATHS; ++p) { tonly[p] = p == PP_MIX && runs[p] == 0 && n > PP_MIX_COLD; }
+    // The mix's freeze drops the uploads not started yet (llama_moe_cache_pp_freeze_fork, pp_settle), as the prompt chain's graph does: right after a start that is the hot set on its
+    // way, and the fast card stays cold for the session (2026-11-08 forced mix cells, Qwen3.8: 24% of the asked experts found on it against 44%, every pass slower than the stream).
+    // So no try of a mix not known here while uploads run; a known one keeps its mean.
+    if (busy && ok[PP_MIX] && !known[PP_MIX]) { ok[PP_MIX] = false; }
+    // a higher k only after the one below ran, and held up: a never-run rung above a rung whose mean is over the best known here is no better bet (its
+    // price is the stream's posterior with the stream's spread, so each rung stayed a wide unknown and paid its trial as the calls of the size grew: the
+    // Qwen3.8 IQ4_XS 13782 closed loop ran k x1, x2, x4, x8, x16 in five requests, each 14% slower than the stream). A rung that ran keeps its mean.
+    double best = -1.0;
+    for (int p = 0; p < PP_PATHS; ++p) { if (ok[p] && known[p] && (best < 0.0 || mu[p] < best)) { best = mu[p]; } }
+    for (int p = PP_K + 1; p < PP_K + PP_KN; ++p) {
+        if (ok[p] && (runs[p - 1] == 0 || (runs[p] == 0 && best >= 0.0 && mu[p - 1] > best))) { ok[p] = false; }
+    }
+}
+
+// The pick among the paths left: deterministic, the lowest mean among the paths known here, a trial only where its stake pays over the R calls of this
+// size so far (rls_voi_pick over the means mu and variances var; planner-simple/learned, replacing the Thompson draws that lost rows 23768/23769).
+// split_took: the dense split's passes of this size per stream variant (ring, mix, layer parallel), nullptr while the split did not run this size.
+// drawn: the path the split's own passes replaced (-1: none); why: the decision line's reason.
+struct pp_pick_out { int pick = -1; bool trial = false; int best_mu = -1; int drawn = -1; const char * why = ""; };
+static inline pp_pick_out pp_pick(const double * mu, const double * var, const bool * ok, const bool * known, const bool * tonly, double R, const double * split_took) {
+    pp_pick_out o;
+    o.pick    = rls_voi_pick(mu, var, ok, PP_PATHS, R, &o.trial, known, tonly);
+    o.best_mu = rls_argmin(mu, ok, PP_PATHS);
+    // the dense split ran this size: its pass teaches no one-card arm, so a stream variant drawn here is never answered (GLM 3.5 2026-11-25: mix and layer
+    // parallel drawn at n=0 on every call, layer parallel 61.6 s against mix 59.9). The variant comes from the split passes measured per variant instead.
+    if (split_took && (o.pick == PP_RING || o.pick == PP_MIX || o.pick == PP_LP)) {
+        const int vp[3] = { PP_RING, PP_MIX, PP_LP };
+        const bool vok[3] = { ok[PP_RING], ok[PP_MIX], ok[PP_LP] };
+        const int v = split_variant_pick(split_took, vok, 3);
+        if (v >= 0 && vp[v] != o.pick) {   // the split's own passes decide, not the means: the reason said "lowest mean among the paths known here" (Qwen3.6 1280, 2026-11-25)
+            o.drawn = o.pick; o.pick = vp[v]; o.trial = false;
+            o.why = split_took[v] <= 0.0 ? "the dense split's stream variant not run at this size yet, tried first" : "the dense split's fastest stream variant at this size";
+            return o;
+        }
+    }
+    // with no path known here the pick is the lowest mean outside the trial-only paths (rls_voi_pick), and the lower mean a trial-only one's: the
+    // reason said "among the paths known here" (Qwen3.8 IQ4_XS 13782 cold, 2026-11-25: layer parallel 22640 ms, the mix 22639, nothing ran)
+    bool any_known = false;
+    for (int p = 0; p < PP_PATHS; ++p) { any_known = any_known || (ok[p] && known[p]); }
+    o.why = o.trial ? "trial: its expected gain over the calls of this size beats its expected loss" : o.pick == o.best_mu ? "lowest mean"
+          : any_known ? "lowest mean among the paths known here" : "lowest mean outside the trial-only paths: no path is known at this size yet";
+    return o;
 }

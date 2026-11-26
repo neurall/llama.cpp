@@ -493,6 +493,25 @@ void llama_dsplit_mirror_invalidate_fork(const llama_model & model, ggml_backend
     }
 }
 
+// the speculative draft's compute area took the first `front` bytes of dev's pool (llama_moe_cache_draft_area_fork): the copies there move behind it, filled again
+// before the next split
+void llama_dsplit_mirror_shift_fork(ggml_backend_dev_t dev, size_t front) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    for (auto & st : g_sets) {
+        auto ct = st.second.copies.find(dev);
+        if (ct == st.second.copies.end() || !ct->second.pooled) {
+            continue;
+        }
+        dsplit_copies & c = ct->second;
+        for (size_t i = 0; i < c.pairs.size(); ++i) {
+            ggml_tensor * t = c.pairs[i].second;
+            t->data = (uint8_t *) ggml_backend_buffer_get_base(t->buffer) + front + c.off[i];
+        }
+        c.valid = false;
+        dsplit_update_fill(st.second);
+    }
+}
+
 ggml_tensor * llama_dsplit_mirror_fork(const llama_model & model, ggml_tensor * t, ggml_backend_dev_t dev) {
     if (t == nullptr) { return nullptr; }
     std::lock_guard<std::mutex> lk(g_mu);
@@ -2183,33 +2202,13 @@ static void dsplit_expert_trial_impl(dsplit_bal & B, int64_t T) {
         if (g_xt.exp_cm >= 0.0 && g_dsf_ps.pos0 >= 0) { g_xt.ref_v += g_dsf_ps.att * (g_xt.exp_cm - ((double) g_dsf_ps.pos0 + 0.5 * (double) g_dsf_ps.T)); }
         std::vector<double> fi = g_xt.exp_f;
         fi.resize(x, 0.0);
-        const bool better = g_xt.exp_v > 0.0 && g_xt.exp_v < g_xt.ref_v * 0.99;
-        double tot = 0.0;
-        if (better) {
-            // more while the helper idled in the EXPERTS pass (this pass is the dense split alone, where a helper always waits: read here, every faster pair
-            // grew the share to 100% and the trial never settled), up to its even share
-            const std::vector<double> ev = even_shares();
-            bool idle = false;
-            for (size_t i = 0; i < x; ++i) {
-                const double cap = ev[i] > 0.0 ? ev[i] : 1.0;
-                if (fi[i] > 0.0 && fi[i] < cap && i < g_xt.exp_idle.size() && g_xt.exp_idle[i] > 0.10) { fi[i] = std::min(cap, fi[i] * 1.5); idle = true; }
-            }
-            g_xt.phase = idle ? 1 : 3;
-            if (!idle) { g_xt.wait = 8; }
-            why = format("pair: experts %.1f against the dense split alone %.1f us/token, faster%s", g_xt.exp_v, g_xt.ref_v, idle ? ": more" : ": settled");
-        } else {
-            for (size_t i = 0; i < x; ++i) { fi[i] *= 0.5; }
-            g_xt.phase = 1;
-            why = format("pair: experts %.1f against the dense split alone %.1f us/token, not faster: half", g_xt.exp_v, g_xt.ref_v);
-        }
-        for (double v : fi) { tot += v; }
-        if (tot < 0.02) {
-            std::fill(fi.begin(), fi.end(), 0.0);
-            g_xt.phase = 2; g_xt.wait = 8;
-            why += ": abandoned, the dense split alone, a new try in 8 passes";
-        }
-        set_f(fi);
-        LLAMA_LOG_WARN("split experts: %s; helpers now %.0f%% of the experts\n", why.c_str(), 100.0 * tot);
+        const dsplit_xverdict vd = dsplit_xtrial_verdict(g_xt.exp_v, g_xt.ref_v, fi, g_xt.exp_idle, even_shares);   // llama-splitplan-fork.h
+        g_xt.phase = vd.phase;
+        if (vd.wait >= 0) { g_xt.wait = vd.wait; }
+        why = format("pair: experts %.1f against the dense split alone %.1f us/token, %s", g_xt.exp_v, g_xt.ref_v, vd.better ? vd.more ? "faster: more" : "faster: settled" : "not faster: half");
+        if (vd.abandoned) { why += ": abandoned, the dense split alone, a new try in 8 passes"; }
+        set_f(vd.f);
+        LLAMA_LOG_WARN("split experts: %s; helpers now %.0f%% of the experts\n", why.c_str(), 100.0 * vd.tot);
         return;
     }
     if (fh <= 0.0) {   // measured: the dense split alone
@@ -2238,9 +2237,8 @@ static void dsplit_expert_trial_impl(dsplit_bal & B, int64_t T) {
             const double upl  = B.gb_up[x] / link * 1e3;                     // ms: all of the expert card's expert uploads over card i's link
             const double hand = B.hop[i] * (double) (T - B.tok[i]) / 1e3;    // ms: the other cards' tokens crossing to card i
             const double extra = std::max(comp, upl) + hand;
-            fi[i] = extra > 0.0 ? std::min(1.0, 0.5 * B.xw[i] / extra) : 0.0;
-            const bool capped = ev[i] > 0.0 && fi[i] > ev[i];
-            if (capped) { fi[i] = ev[i]; }
+            bool capped = false;
+            fi[i] = dsplit_xtrial_start(B.xw[i], extra, ev[i], &capped);   // llama-splitplan-fork.h
             calc += format("%s%s idle %.0f ms, all experts would add %.0f ms (compute %.0f, upload %.0f, hand-offs %.0f): start %.0f%%%s", calc.empty() ? "" : "; ",
                     ggml_backend_dev_name(B.dev[i]), B.xw[i], extra, comp, upl, hand, 100.0 * fi[i], capped ? " (its even share: the cards' expert chains end together)" : "");
             any = any || fi[i] >= 0.02;
@@ -2918,13 +2916,15 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     double c_prior = -1.0, c_one = -1.0;
     static double ratio_bench = -1.0;   // the plan's split / one-card compute ratio (matmul bench, link probe): trusted for the ratio, never for the size (rule 41b)
     double c_one_bench = 0.0;   // the bench's one-card compute per token for this size: the cap of an unmeasured one-card prior (below)
+    bool ranges = false;        // token-range copies exist (mirror archs): else the split runs no dense part off the expert card (dsf_prior_ratio)
+    { auto it = g_sets.find(&model); ranges = it != g_sets.end() && !it->second.copies.empty(); }   // the caller holds g_mu (std::mutex: a second lock here deadlocks)
     {
         const llama_dsplit_plan_fork plan = llama_dsplit_plan_get_fork(model, n_tokens);
         c_one_bench = plan.valid && plan.t_one_ms > 0.0 ? plan.t_one_ms * 1e3 / (double) n_tokens : 0.0;
         if (g_rls_split.k == 0 || g_rls_one.k == 0) {
             c_prior = plan.valid && plan.t_raw_ms > 0.0 ? plan.t_raw_ms * 1e3 / (double) n_tokens : 0.0;
             c_one   = c_one_bench;
-            if (c_prior > 0.0 && c_one > 0.0) { ratio_bench = dsf_prior_ratio(c_prior, c_one, g_xb_a > 0.0 || g_xb_b > 0.0); }
+            if ((c_prior > 0.0 && c_one > 0.0) || !ranges) { ratio_bench = dsf_prior_ratio(c_prior, c_one, g_xb_a > 0.0 || g_xb_b > 0.0, ranges); }
         }
     }
     std::lock_guard<llama_checked_mutex> dl(g_dsf_mu);
@@ -2998,7 +2998,7 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     int seen_before = 0;
     if (pos0 != seen_pos0) { seen_pos0 = pos0; seen_before = seen[size_class]++; } else { seen_before = seen[size_class] - 1; }
     dsf_call call;
-    call.blocks = g_xb_a > 0.0 || g_xb_b > 0.0;
+    call.blocks = g_xb_a > 0.0 || g_xb_b > 0.0; call.ranges = ranges;
     call.c_one_bench = c_one_bench; call.ratio = ratio; call.split_prior = split_prior; call.split = &g_rls_split; call.f_mu = f_mu; call.f_v = f_v; call.seen_before = seen_before;
     const dsf_pick_out pk = dsf_pick(passes, call);
     const int choice = pk.choice, np = pk.np;

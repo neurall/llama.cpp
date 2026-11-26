@@ -161,7 +161,7 @@ if (NOT WIN32)
         NAME test-tokenizers-ggml-vocabs
         LABEL behavior
         WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
-        ARGS https://huggingface.co/ggml-org/vocabs ${PROJECT_SOURCE_DIR}/models/ggml-vocabs
+        ARGS https://huggingface.co/ggml-org-dev/vocabs ${PROJECT_SOURCE_DIR}/models/ggml-vocabs
     )
 endif()
 
@@ -185,17 +185,29 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # these tests are disabled on Windows because they use internal functions not exported with LLAMA_API (when building with shared libraries)
     # the fork's expert pool rules (header-only, no GPU, no model): src/llama-poolalloc-fork.h, src/llama-kvzone-fork.h
     llama_build_and_test(test-pool-fork.cpp)
+    llama_build_and_test(test-poolv2-fork.cpp)    # pool v2: one byte heap in heat order, no size classes (src/llama-poolv2-fork.h); --sim replays recorded heat
+    llama_build_and_test(test-mapsync-fork.cpp)   # pool v2: expert-table entries to the card through a mapped ring (src/llama-mapsync-fork.h)
+    llama_build_and_test(test-classtail-fork.cpp) # gapless classes: tail blocks given to KV, work, a neighbour class (src/llama-poolalloc-fork.h)
+    llama_build_and_test(test-classpick-fork.cpp) # class set and block size picks by padding (src/llama-classpick-fork.h)
+    llama_build_and_test(test-poolmap-cuda-fork.cpp)   # pool v2: the card's pool-map alloc kernel against pv2_alloc_do (skips without CUDA)
     llama_build_and_test(test-rowread-fork.cpp)   # lazy row tables: a pass's rows from the read-ahead (src/llama-rowread-fork.h), no GPU
     llama_build_and_test(test-hist-fork.cpp)      # three last-10 histories + admission, thrash sim (ggml/src/ggml-hist-fork.h), no GPU
     llama_build_and_test(test-rampool-fork.cpp)   # the RAM pool's resize between requests (ggml/src/ggml-rampool-fork.cpp), no GPU
+    llama_build_and_test(test-fit-retry-fork.cpp)   # fit's retry of a draft's memory measure against a dry target (common/fit-retry-fork.h), no GPU
+    llama_build_and_test(test-draft-ubatch-fork.cpp)   # the draft context's ubatch, shared by the runtime and fit (common/draft-ubatch-fork.h), no GPU
+    llama_build_and_test(test-vk-staging-split-fork.cpp) # Vulkan host copies land in a staging buffer of at most 32 MiB (ggml/src/ggml-vulkan/vk-staging-split-fork.h), no GPU
+    llama_build_and_test(test-rows-copy-fork.cpp)       # the CUDA rows copy pitch of a single-row view (ggml/src/ggml-cuda/rows-copy-fork.h), no GPU
+    llama_build_and_test(test-opoffload-fork.cpp)       # op offload off when the graph's fixed part does not fit, the micro-batch without it (src/llama-opoffload-fork.h), no GPU
     llama_build_and_test(test-moetopic-fork.cpp)
     llama_build_and_test(test-pass-fork.cpp)
+    llama_build_and_test(test-layermajor-fork.cpp)   # the layer-major prompt plan: groups, chunks, time against the passes (src/llama-layermajor-fork.h), no GPU
     llama_build_and_test(test-read-fork.cpp)   # the read wrapper's several drives (--multissd): holders, issue order as a schedule, no I/O
     llama_build_and_test(test-gpu-fork.cpp LINK llama)
     llama_build_and_test(test-split-fork.cpp)
     llama_build_and_test(test-rls-fork.cpp)   # the planner's estimator (src/llama-rls-fork.h)
     llama_build_and_test(test-planner-replay-fork.cpp)   # the planner's replay gate (built-in GLM 12k medians; fork/planner_events.py for the logs)
     llama_build_and_test(test-estimate-fork.cpp)         # the planner's strategy estimators, each alone (src/llama-estimate-fork.h)
+    llama_build_and_test(test-crossover-fork.cpp)        # the planner's crossover picks in closed loop on measured times (fork/docs/planner-crossovers.md X2-X5), no GPU
     if (NOT GGML_BACKEND_DL)   # it calls the CPU backend's ggml_graph_plan/compute directly: no such symbols to link when the CPU backends load at run time (release recipe)
         llama_build_and_test(test-cpuplan-fork.cpp)      # the CPU plan of a decode layer's host steps: no thread team when nothing is computed (ggml-cpu.c)
     endif()
@@ -232,6 +244,8 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-grammar-integration.cpp  LABEL behavior)
     llama_build_and_test(test-llama-grammar.cpp  LABEL behavior  LINK llama)
     llama_build_and_test(test-batch-alloc.cpp  LABEL behavior  LINK llama)
+    llama_build_and_test(test-kv-cache.cpp LABEL behavior)
+    target_include_directories(test-kv-cache PRIVATE ${PROJECT_SOURCE_DIR}/src)
     llama_build_and_test(test-chat.cpp  LABEL behavior  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
     target_include_directories(test-chat PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     target_link_libraries(test-chat PRIVATE server-context)
@@ -279,7 +293,9 @@ if (GGML_CPU AND (NOT WIN32 OR NOT BUILD_SHARED_LIBS))
     set_tests_properties(test-generate-fp8-models PROPERTIES FIXTURES_SETUP fp8-models)
     llama_test(test-fp8 NAME test-fp8-requantize LABEL "main behavior backend"
         ARGS --models "${FP8_MODEL_DIR}")
-    set_tests_properties(test-fp8-requantize PROPERTIES FIXTURES_REQUIRED fp8-models)
+    llama_test(test-fp8 NAME test-fp8-kv LABEL "main behavior backend"
+        ARGS --models "${FP8_MODEL_DIR}" --kv)
+    set_tests_properties(test-fp8-requantize test-fp8-kv PROPERTIES FIXTURES_REQUIRED fp8-models)
 endif()
 
 set(MODEL_DIR "${CMAKE_CURRENT_BINARY_DIR}/test-models/")
@@ -338,6 +354,12 @@ llama_test_cmd(python3
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
     ARGS -m unittest discover -s tests -p test_conversion_fp8.py -v
 )
+llama_test_cmd(python3
+    NAME test-kv-cache-scales
+    LABEL "python behavior"
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    ARGS -m unittest discover -s tests -p test_kv_cache_scales.py -v
+)
 llama_build_and_test(test-json-schema.cpp  LABEL behavior)
 llama_build_and_test(test-chat-auto-parser.cpp  LABEL behavior  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 llama_build_and_test(test-chat-template.cpp  LABEL behavior)
@@ -357,15 +379,16 @@ llama_build_and_test(
 )
 
 if (NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "s390x")
-    set(MODEL_NAME "tinyllamas/stories15M-q4_0.gguf")
+    set(MODEL_NAME "stories15M-q4_0.gguf")
     set(MODEL_HASH "SHA256=66967fbece6dbe97886593fdbb73589584927e29119ec31f08090732d1861739")
 else()
-    set(MODEL_NAME "tinyllamas/stories15M-be.Q4_0.gguf")
+    set(MODEL_NAME "stories15M-be.Q4_0.gguf")
     set(MODEL_HASH "SHA256=9aec857937849d976f30397e97eb1cabb53eb9dcb1ce4611ba8247fb5f44c65d")
 endif()
 set(MODEL_DEST "${CMAKE_BINARY_DIR}/${MODEL_NAME}")
 
 add_test(NAME test-download-model COMMAND ${CMAKE_COMMAND}
+    -DREPO=ggml-org-dev/stories15M
     -DDEST=${MODEL_DEST}
     -DNAME=${MODEL_NAME}
     -DHASH=${MODEL_HASH}
@@ -398,6 +421,15 @@ endif()
 llama_build(test-backend-ops.cpp LINK ggml Threads::Threads)
 
 llama_build_and_test(test-backend-tensor.cpp LINK ggml)
+llama_build_and_test(test-sleep.cpp LINK ggml)
+llama_build_and_test(test-backend-sched.cpp LINK ggml)
+
+if (BUILD_SHARED_LIBS)
+    llama_build_and_test(test-llama-mmap.cpp ${PROJECT_SOURCE_DIR}/src/llama-impl.cpp ${PROJECT_SOURCE_DIR}/src/llama-mmap.cpp LABEL behavior)
+    target_compile_definitions(test-llama-mmap PRIVATE LLAMA_BUILD)
+else()
+    llama_build_and_test(test-llama-mmap.cpp LABEL behavior)
+endif()
 
 llama_build_and_test(test-tiled-mulmat.cpp  LABEL "main behavior backend"  LINK ggml)
 llama_build_and_test(test-model-load-cancel.cpp LABEL "model behavior")
@@ -423,7 +455,7 @@ endif()
 # libmtmd
 llama_build_and_test(test-mtmd-c-api.c  LABEL behavior  LINK mtmd)
 
-llama_build_and_test(test-mtmd-impl.cpp  LABEL behavior  LINK mtmd)
+llama_build_and_test(test-mtmd-impl.cpp  LABEL behavior  LINK mtmd llama-common)
 
 # GGUF model data fetcher library for tests that need real model metadata
 # Only compile when cpp-httplib has SSL support (CPPHTTPLIB_OPENSSL_SUPPORT)

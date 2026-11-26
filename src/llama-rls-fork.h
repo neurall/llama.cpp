@@ -294,6 +294,7 @@ struct dsf_call {
     double f_mu = 0.0, f_v = 0.0;         // the fill owed (us, us^2); 0: the copies are in place
     int seen_before = 0;                  // calls of one pass in this size class (dsf_size_class) decided before in this process
     bool blocks = false;                  // the hand-offs block the host (the start's copy probe): the ratio is a measured cost, above 1 too (dsf_prior_ratio)
+    bool ranges = true;                   // the model has a token-range graph (mirror copies): without it the split shortens no compute and is never a trial
 };
 struct dsf_pick_out {
     int choice = 0, np = 0;               // 0 one card, 1 the split; the passes priced
@@ -305,7 +306,9 @@ struct dsf_pick_out {
 // Where the hand-offs block (the start's copy probe, dsplit_xcopy_probe) the plan prices what they cost, their bytes and the expert uploads they hold back
 // (dsxn_layer_us), and a ratio above 1 is a measured cost, not a model error: it stands (user 2026-11-17: "there will be no second chance on same prompt. the
 // first planner choice must be best one"; GLM 12k on two Vulkan cards: capped at 1 the split was tried on request 1, 31.6 s against one card's 26.5)
-static inline double dsf_prior_ratio(double c_split, double c_one, bool blocks) {
+// Without a token-range graph (DeepSeek 4.1, 2026-11-25) the split runs every layer's dense part on one card: ratio 1, whatever the plan modelled (it said 0.56)
+static inline double dsf_prior_ratio(double c_split, double c_one, bool blocks, bool ranges = true) {
+    if (!ranges) { return 1.0; }
     if (!(c_split > 0.0 && c_one > 0.0)) { return -1.0; }
     return blocks ? c_split / c_one : std::min(1.0, c_split / c_one);
 }
@@ -362,7 +365,7 @@ static inline dsf_pick_out dsf_pick(const std::vector<dsf_arm_pass> & passes, co
     // against it (user 2026-11-17: "there will be no second chance on same prompt. the first planner choice must be best one"; GLM 12k on two Vulkan cards,
     // plan 1.05: the trial ran the split 31.6 s against one card's 26.5). Both rules forbid a trial of the split, not the split where its mean is the lower:
     // MiMo 11k on two CUDA cards (upload 3.36 s, one card 4.00, the split 3.46 with its fill) was refused at ratio 0.84 and taken at 0.87.
-    const bool no_gain = c.split_prior && c.blocks && c.ratio >= 1.0;
+    const bool no_gain = c.split_prior && (c.blocks || !c.ranges) && c.ratio >= 1.0;
     const bool aok[2] = { true, !((o.upload_bound || no_gain) && o.am[1] >= o.am[0]) }, akn[2] = { o.known1, o.known2 };
     // the trial's stake: the passes left in this call. The count of passes of this size seen so far grew with every pass and forced a trial of the
     // never-known one-card arm once per request (GLM 3.5 64k, 2026-11-08: a 25.9 s one-card pass at 36k cells against 11.9 s split, 10% of the prompt);

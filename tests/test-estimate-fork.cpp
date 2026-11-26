@@ -507,6 +507,116 @@ int main() {
         check("thread start: no core count found keeps every thread", common_thread_start_fork(true, 0, 64) == 64);
     }
 
+    {   // a model that fits one card runs on it (Inkling 2 Mini UD-IQ4_XS 14.6 GiB, two 3090s, 12k chat prompt 2026-11-23: two cards by layers 1074 i/s
+        // prompt, 33.9 o/s decode, one card 1372 i/s, 56.9 o/s: the split's host-bounced copies of the attention-residual blocks, 193 a token)
+        const size_t G = (size_t) 1 << 30;
+        const size_t two[2] = { 23 * G, 23 * G }, uneven[2] = { 10 * G, 22 * G };
+        if (fits_one_card_pick(15 * G, G, two, 2) != 0)    { printf("FAIL one card: 15 GiB on 2x23 should pick card 0\n"); g_fail++; }
+        if (fits_one_card_pick(15 * G, G, uneven, 2) != 1) { printf("FAIL one card: 15 GiB on 10+22 should pick card 1\n"); g_fail++; }
+        if (fits_one_card_pick(23 * G, G, two, 2) != -1)   { printf("FAIL one card: 23 GiB + 1 reserve on 2x23 does not fit one card\n"); g_fail++; }
+        if (fits_one_card_pick(5 * G, G, two, 1) != -1)    { printf("FAIL one card: a single card needs no pick\n"); g_fail++; }
+    }
+    {   // one card or the layer split, from measured ms per token (Qwen3.6 two 3090s 12k/1k 2026-11-24: split 8400 i/s 160 o/s, one card 6200 i/s 151 o/s)
+        const double q_one_p = 1000.0 / 6200, q_one_g = 1000.0 / 151, q_spl_p = 1000.0 / 8400, q_spl_g = 1000.0 / 160;
+        if (place_one_card_pick(false, 0, 0, false, 0, 0, 12000, 1024, false)) { printf("FAIL place: nothing measured runs the estimate's pick (split)\n"); g_fail++; }
+        if (!place_one_card_pick(false, 0, 0, false, 0, 0, 12000, 1024, true)) { printf("FAIL place: nothing measured runs the estimate's pick (one card)\n"); g_fail++; }
+        if (place_one_card_pick(true, q_one_p, q_one_g, false, 0, 0, 12000, 1024, true)) { printf("FAIL place: one card measured, split not: should try the split\n"); g_fail++; }
+        if (!place_one_card_pick(false, 0, 0, true, q_spl_p, q_spl_g, 12000, 1024, true)) { printf("FAIL place: split measured, one card not: should try one card\n"); g_fail++; }
+        if (place_one_card_pick(true, q_one_p, q_one_g, true, q_spl_p, q_spl_g, 12000, 1024, true)) { printf("FAIL place: Qwen3.6 numbers should keep the split\n"); g_fail++; }
+        // Inkling 2 Mini two 3090s 12k chat 2026-11-23: split 1074 i/s 33.9 o/s, one card 1372 i/s 56.9 o/s
+        if (!place_one_card_pick(true, 1000.0 / 1372, 1000.0 / 56.9, true, 1000.0 / 1074, 1000.0 / 33.9, 12000, 1024, true)) { printf("FAIL place: Inkling numbers should keep one card\n"); g_fail++; }
+        // by total time: faster prompt, slower decode; a long answer decides for decode
+        if (!place_one_card_pick(true, 0.20, 10.0, true, 0.10, 12.0, 1000, 4096, true)) { printf("FAIL place: long answers should pick the faster decode\n"); g_fail++; }
+        if (place_one_card_pick(true, 0.20, 10.0, true, 0.10, 12.0, 60000, 16, true)) { printf("FAIL place: long prompts should pick the faster prompt\n"); g_fail++; }
+        if (place_one_card_pick(true, 0.10, 10.0, true, 0.10, 10.0, 12000, 1024, true)) { printf("FAIL place: equal totals keep the stock layer split\n"); g_fail++; }
+        // a phase only one arm timed is not weighed (-1: the record never timed it, prompts under 1024 tokens): the split's untimed prompt counted as -1 ms a token
+        if (!place_one_card_pick(true, 0.20, 10.0, true, -1, 12.0, 60000, 16, true)) { printf("FAIL place: a prompt only one card timed must not decide\n"); g_fail++; }
+    }
+    {   // place estimate: the first start's pick, from each past bad first pick's real inputs (server logs, two 3090s, 2026-11-25). Today's rule before it ran
+        // the stock layer split on every cold start (one card first lost the relgate1k gate on Qwen3.6, the split first lost Inkling's 40% decode).
+        const double GiB = 1073741824.0;
+        auto in_of = [](double host, double used, double ram, double link, double pass, double ppc) {
+            place_est_in in; in.host_bytes = host; in.used_share = used; in.ram_gbs = ram; in.link_gbs = link; in.pass_tokens = pass; in.passes_per_call = ppc; return in;
+        };
+        auto check = [&](const char * what, bool ok) { printf("%s %s\n", ok ? "ok  " : "FAIL", what); g_fail += !ok; };
+        // the cold pick of today's rule before the estimate: the stock split for every model (place_one_card_pick with nothing measured)
+        auto old_rule = [](bool want_one) { const bool one = false; return one == want_one; };
+        // Inkling 2 Mini UD-IQ4_XS 18642/1024 (cold_split_first_tested-inkling-12k-2gpu): the split's fitter left 6.7 - 0.5 GiB of weights in RAM (host weights
+        // read, against one card's), 8 of 128 experts used, RAM read 111.92 GB/s, uploads 26.66 / 26.61 GB/s, split passes of 2048 in calls of 4096.
+        // Measured: one card 0.73 / 14.31 ms a token (1367 i/s 69.9 o/s), split 0.88 / 25.55 (1137 i/s 39.1 o/s): one card.
+        const place_est_in ink = in_of(6.2 * GiB, 8.0 / 128, 111.92, 26.61, 2048, 2);
+        const place_est ek = place_estimate(ink, 18642);
+        printf("place estimate Inkling 12k: today's rule %s, the estimate %s\n", old_rule(true) ? "right" : "WRONG (split)", place_estimate_pick(ek, 18642, 1024) ? "right (one card)" : "WRONG");
+        check("place estimate Inkling 12k: one card", place_estimate_pick(ek, 18642, 1024));
+        check("place estimate Inkling: no pipeline with weights in RAM", ek.f == 1.0);
+        place_est_in ink1 = ink; ink1.p1 = 0.73; ink1.g1 = 14.31;   // the second start knows one card: the split derived from it
+        const place_est ek1 = place_estimate(ink1, 18642);
+        printf("place estimate Inkling from one card measured: split %.3f ms (measured 0.88), %.2f ms (measured 25.55)\n", ek1.p2, ek1.g2);
+        check("place estimate Inkling: split prompt within 20% of measured", std::fabs(ek1.p2 - 0.88) < 0.2 * 0.88);
+        check("place estimate Inkling: split decode slower than one card", ek1.g2 > ek1.g1);
+        check("place estimate Inkling: measured agrees, no wrong line", !place_estimate_wrong(true, 18642 * 0.73 + 1024 * 14.31, 18642 * 0.88 + 1024 * 25.55));
+        // Inkling tetris 64/1k cold: one card 81.5 o/s, split 41.2: a short prompt, decode decides
+        check("place estimate Inkling tetris: one card", place_estimate_pick(place_estimate(ink, 64), 64, 1024));
+        // Qwen3.6 35B-A3B 13744/1024 (cold_start_runs_layer_split_first-q35, relgate1k): no weights in RAM on either arm (0.9 GiB host both, tensor
+        // overrides 0, pipeline parallelism on), passes of 4096 in calls of 8192. Measured: one card 5810 i/s 152.5 o/s, split 8133-8195 i/s 159.7-162.2 o/s.
+        const place_est_in q = in_of(0, 8.0 / 256, 112.21, 26.61, 4096, 2);
+        const place_est eq = place_estimate(q, 13744);
+        printf("place estimate Qwen3.6 13744: today's rule %s, the estimate %s\n", old_rule(false) ? "right (split)" : "WRONG", !place_estimate_pick(eq, 13744, 1024) ? "right (split)" : "WRONG");
+        check("place estimate Qwen3.6 13744: the split", !place_estimate_pick(eq, 13744, 1024));
+        place_est_in q1 = q; q1.p1 = 1000.0 / 5810; q1.g1 = 1000.0 / 152.5;
+        const place_est eq1 = place_estimate(q1, 13744);
+        printf("place estimate Qwen3.6 13744 from one card measured: split %.0f i/s (measured 8133-8195)\n", 1000 / eq1.p2);
+        check("place estimate Qwen3.6 13744: split faster prompt", eq1.p2 < eq1.p1 && !place_estimate_pick(eq1, 13744, 1024));
+        // Qwen3.6 2404/1024 (2026-11-25 2k/1k): one card 6029 i/s 164 o/s, split 6084 i/s 171 o/s, a near tie (0.26 s of 6.6): one pass, nothing to
+        // pipeline. Either pick; the estimated gap must stay inside the measured one, and the 4% is no wrong estimate.
+        place_est_in q2 = q; q2.p1 = 1000.0 / 6029; q2.g1 = 1000.0 / 164;
+        const place_est eq2 = place_estimate(q2, 2404);
+        const double m1 = 2404 * 1000.0 / 6029 + 1024 * 1000.0 / 164, m2 = 2404 * 1000.0 / 6084 + 1024 * 1000.0 / 171;
+        check("place estimate Qwen3.6 2k: estimated gap within the measured gap", std::fabs(place_estimate_gap(eq2, 2404, 1024)) <= std::fabs(m1 - m2));
+        check("place estimate Qwen3.6 2k: the 4% is noise, no wrong line", !place_estimate_wrong(place_estimate_pick(eq2, 2404, 1024), m1, m2));
+        // a wrong estimate: Inkling's inputs with the spill missed (host 0) pick the split, the measured one card wins by 33%: one line with the inputs
+        const place_est_in miss = in_of(0, 8.0 / 128, 111.92, 26.61, 2048, 2);
+        const place_est em = place_estimate(miss, 18642);
+        const double t1 = 18642 * 0.73 + 1024 * 14.31, t2 = 18642 * 0.88 + 1024 * 25.55;
+        check("place estimate: a missed spill picks the split", !place_estimate_pick(em, 18642, 1024));
+        check("place estimate: measured contradicts it", place_estimate_wrong(false, t1, t2));
+        const std::string wl = place_estimate_wrong_line(miss, em, 18642, 1024, t1, t2);
+        printf("%s\n", wl.c_str());
+        check("place estimate: the wrong line carries the inputs", wl.find("host_bytes 0 used_share 0.06250 ram_gbs 111.92 link_gbs 26.61 pass_tokens 2048 passes_per_call 2 n_cards 2") != std::string::npos);
+        check("place estimate: the cold line says why", place_pick_line(true, false, -1, -1, false, -1, -1, 0, 0, place_estimate_why(ek, 18642, 1024)).why.find("decode +") != std::string::npos);
+    }
+    {   // prompt pass hill-climb
+        uint32_t b = 2048;
+        if (ub_climb_step({}, b, 13744, 4096, false) != 2048) { printf("FAIL ub: the base is measured first\n"); g_fail++; }
+        b = 2048;
+        if (ub_climb_step({ { 2048, 1859.0 } }, b, 6912, 4096, false) != 2048) { printf("FAIL ub: 6912-token calls cannot measure 4096, must not try it\n"); g_fail++; }
+        b = 2048;
+        if (ub_climb_step({ { 2048, 1859.0 } }, b, 13744, 4096, false) != 4096) { printf("FAIL ub: a call of 2+ passes of 4096 tries it\n"); g_fail++; }
+        b = 2048;
+        if (ub_climb_step({ { 2048, 1859.0 }, { 4096, 1750.0 } }, b, 13744, 4096, false) != 2048 || b != 2048) { printf("FAIL ub: slower trial must not win\n"); g_fail++; }
+        b = 2048;
+        if (ub_climb_step({ { 2048, 1859.0 }, { 4096, 1900.0 } }, b, 13744, 4096, false) != 2048) { printf("FAIL ub: 2%% faster is noise, base stays\n"); g_fail++; }
+        b = 2048;
+        if (ub_climb_step({ { 2048, 1000.0 }, { 4096, 1200.0 } }, b, 20000, 8192, false) != 8192 || b != 4096) { printf("FAIL ub: faster trial becomes base, climb goes on\n"); g_fail++; }
+    }
+    {   // decode fusions (EW_CHAIN, MM_MULTI, NORM_Q8) on or off, per placement: Qwen3.6 layer split two 3090s 100 W 12k/512 2026-11-24:
+        // on 1555 i/s 33.3 o/s, off 1599 i/s 35.2 o/s (fewer kernels, no faster, and they lose the side-stream overlap)
+        if (measured_ab_pick(true, 1000.0 / 1555, 1000.0 / 33.3, true, 1000.0 / 1599, 1000.0 / 35.2, 13744, 512)) { printf("FAIL fuse: Qwen3.6 split should turn the fusions off\n"); g_fail++; }
+        if (!measured_ab_pick(true, 1000.0 / 1599, 1000.0 / 35.2, true, 1000.0 / 1555, 1000.0 / 33.3, 13744, 512)) { printf("FAIL fuse: the faster arm A should stay\n"); g_fail++; }
+    }
+
+    {   // the stream variant inside a dense split pass: picked by split passes measured per variant, never a draw that no pass can answer
+        // (GLM 3.5 two 3090s 12k 2026-11-25: one-card arms mix and layer parallel both n=0, drawn every call; split passes: mix 59.9 s, layer parallel 61.6 s)
+        const bool ok3[3] = { true, true, true };
+        const double none[3] = { 0, 0, 0 }, mix_only[3] = { 0, 59.9, 0 }, both[3] = { 0, 59.9, 61.6 }, all3[3] = { 63.0, 59.9, 61.6 };
+        if (split_variant_pick(none, ok3, 3) != 0)     { printf("FAIL split variant: nothing measured should try the first allowed\n"); g_fail++; }
+        if (split_variant_pick(mix_only, ok3, 3) != 0) { printf("FAIL split variant: an untried variant goes first\n"); g_fail++; }
+        if (split_variant_pick(all3, ok3, 3) != 1)     { printf("FAIL split variant: all measured should keep the fastest (mix)\n"); g_fail++; }
+        const bool no_ring[3] = { false, true, true };
+        if (split_variant_pick(both, no_ring, 3) != 1) { printf("FAIL split variant: a struck variant is never picked\n"); g_fail++; }
+        const bool none_ok[3] = { false, false, false };
+        if (split_variant_pick(both, none_ok, 3) != -1) { printf("FAIL split variant: nothing allowed is -1\n"); g_fail++; }
+    }
     printf(g_fail ? "%d failed\n" : "estimators: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

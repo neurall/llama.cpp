@@ -59,7 +59,7 @@ endfunction()
 # Determines which FlashAttention vector kernel template instances to compile, returns them in OUT_SRCS.
 # Also appends the matching quantized-KV tile kernel instances (fattn-tile-instance-*.cu).
 function(ggml_cuda_fattn_vec_instances DIR OUT_SRCS)
-    set(FA_TYPES q4_0 q4_1 q5_0 q5_1 q8_0 bf16 f16)
+    set(FA_TYPES q4_0 q4_1 q5_0 q5_1 q8_0 bf16 f16 f8_e4m3)
 
     string(TOLOWER "${GGML_CUDA_FA_QUANTS}" FA_QUANTS)
     string(STRIP   "${FA_QUANTS}" FA_QUANTS)
@@ -123,7 +123,8 @@ function(ggml_cuda_fattn_vec_instances DIR OUT_SRCS)
             message(FATAL_ERROR "FlashAttention template instance \"${SRC}\" does not exist")
         endif()
         list(APPEND SRCS "${SRC}")
-        if (NOT COMBINATION STREQUAL "f16-f16")
+        # fork: the native-KV tile kernel has no F8 path (ggml_cuda_fattn_tile_use_native_kv refuses it)
+        if (NOT COMBINATION STREQUAL "f16-f16" AND NOT COMBINATION MATCHES "f8_e4m3")
             set(TILE_SRC "${DIR}/template-instances/fattn-tile-instance-${COMBINATION}.cu")
             if (NOT EXISTS "${TILE_SRC}")
                 message(FATAL_ERROR "FlashAttention template instance \"${TILE_SRC}\" does not exist")
