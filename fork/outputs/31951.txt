@@ -1,0 +1,25 @@
+run 31951 | side_room_only_split_graphs | pf13k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 2.74 t/s | prompt 86.0 t/s | 1024 tokens | args: -np 1 --multissd /m2/k | power 280+280 W | 2026-11-20 15:56:36
+
+I need respond to user "Do a code review of following source file." User pasted huge content: first common/json-schema-to-grammar.cpp complete-ish, then // file common/arg.cpp and truncated at static bool spec_types_is_default... Should review likely focus source file? User calls following source file singular but includes two files, second truncated. Should provide code review findings, prioritize bugs, not generic. Should inspect carefully. Should identify concrete issues in json-schema-to-grammar.cpp and perhaps arg.cpp visible. Should not overdo speculative. Should understand code deeply. I have ample token budget. Should analyze all functions for correctness, safety, standards. Should produce findings with line references approximate (no line numbers given; can use function names and snippets). Should mention truncated arg.cpp cannot complete review. Should probably have code review expected output like bugs with severity. Should find real bugs.
+
+I'll parse json-schema-to-grammar.cpp.
+
+Includes: uses std::function but no <functional> include; std::runtime_error, invalid_argument but no <stdexcept>; std::stoll/stoi etc included string. uint? int64_t needs <cstdint>. fprintf needs <cstdio>. regex_replace unqualified in _add_rule: std::regex_replace? They call regex_replace(name, INVALID_RULE_CHARS_RE, "-"); likely common.h using namespace? Could be custom? In _resolve_ref uses std::regex_replace. Potential compile depending transitive includes. Review can note missing direct includes but low.
+
+build_repetition:
+auto has_max = max_items != INT_MAX.
+if max_items==0 return "";
+if min=0 max=1 item?.
+if separator empty:
+ min=1 no max item+
+ min=0 no max item*
+ return item{min,max}
+with separator:
+result = item + " " + build_repetition("(" + separator + " " + item + ")", min==0 ?0:min-1, has_max?max-1:max);
+if min=0 result=(result)?
+return.
+Potential invalid ranges min > max, negative min etc not checked. For arrays schema min_items int likely nonnegative. max=0 and min>0 returns "" silently, producing "\"[\" space  space \"]\""? Actually if max=0 min=1, build_repetition returns "", array rule allows empty only, not invalid. Could be okay schema invalid should error. For min=0 max=0 returns "" correct empty array. For min>max e.g. min=2 max=1 returns item + repetition with min=1 max=0 -> "" => item only, wrong. Should validate. Also max_items INT_MAX and min_items INT_MAX? min==max==INT_MAX: has_max false, min==1? no, returns item{2147483647,} perhaps huge but valid. Separator case min=0 max=INT_MAX: recursive build with min=0 max=INT_MAX (has_max false) on "(sep item)" -> "*" then result item (sep item)* wrapped optional. This allows zero or one+ fine. min=1 max=INT_MAX: item + build repetition(... min=0 max=INT_MAX) => item (sep item)* good. min=0 max=1 handled early returns item? even with separator, correct. min=1 max=1 separator: recursive min=0 max=0 returns "", result item + " " + "" => trailing space in grammar string, harmless. min=2 max=2: item + repetition group min=1 max=1 => group{1,1}; okay. min=0 max=2: item + repetition group min=0 max=1 => group? then whole (item group?)? allows 0,1,2. Good.
+
+build_min_max_int complex. Should inspect for bugs e.g. INT64_MIN negation overflow. has_min = min != INT64_MIN, has_max = max != INT64_MAX. If has_min&&has_max:
+ if min<0 && max<0: build(-max,-min). If min=INT64_MIN? has_min false so not here. If max=-? -max safe unless max=INT64_MIN but has_max true? max=INT64_MIN, min maybe INT64_MIN? has_min false, has_max true. In has_max branch max<0: build_min_max_int(-max_value,...): -INT64_MIN overflow. Also if min<0 and max<0 with min maybe INT64_MIN? has_min false no. If min = -INT64_MAX? safe. If max negative and min positive impossible invalid. If min<0: build(0,-min) safe because has_min means min != INT64_MIN. Good.
+ has_min only min<0: build(INT64_MIN, -min) safe since min != INT64_MIN. Then out ") | [0] | [1-9] " more_digits(0, decimals_left-1). This grammar for min negative no max: negative branch builds
