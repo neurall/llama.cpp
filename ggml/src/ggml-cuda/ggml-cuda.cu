@@ -5881,7 +5881,13 @@ static size_t ggml_cuda_stream_node_max_fork(const ggml_tensor * const * nodes, 
 
 // fork: the streams for a card's part of a decode graph (ggml-streams-fork.h): GGML_CUDA_STREAMS=2..4, 4 unless set.
 static int ggml_cuda_streams_fork() {
+#if defined(GGML_USE_HIP)
+    // HIP: off unless asked. Radeon 780M on Windows (ROCm): Inkling 2 Mini's decode stopped after 2 tokens with the side streams (40 waits a chunk) and ran
+    // with GGML_CUDA_STREAMS=0 (2026-11-26); not checked on other AMD cards
+    static const int n = [] { const char * e = getenv("GGML_CUDA_STREAMS"); return e ? atoi(e) : 0; }();
+#else
     static const int n = [] { const char * e = getenv("GGML_CUDA_STREAMS"); return e ? atoi(e) : 4; }();   // on by default (2026-11-19), GGML_CUDA_STREAMS=0 turns it off
+#endif
     return n >= 2 ? std::min(n, GGML_STREAMS_MAX) : 0;   // the main stream and n - 1 beside it
 }
 
