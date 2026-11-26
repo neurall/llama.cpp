@@ -156,7 +156,7 @@ bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(const int cc, const ggml_
     // fork: the length from which the gather beats the masked dense pass, measured by llama at load for the model's attention on this machine
     // (ggml_flash_attn_ext_set_sparse_min; 0: the rule below). GLM-5.3-Flash 3.0 on an RTX 3090, prompt passes: 1302 us per token at 24-33k cells on the
     // dense path, 924 at 33-42k on the gather - the rule below switched at ~33k.
-    const int32_t n_kv_min = ggml_get_op_params_i32(dst, 5);
+    const int32_t n_kv_min = ggml_get_op_params_i32(dst, 6);
 
     // the dense kernel handles up to 64/ncols2 queries per K/V pass, the single-query gather has to beat that
     const int64_t n_gather = (ncols1 == 1 ? std::min<int64_t>(Q->ne[1], 64/ncols2) : ncols1) * (int64_t) n_kv_max;
