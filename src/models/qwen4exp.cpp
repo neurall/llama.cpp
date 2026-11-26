@@ -1277,6 +1277,10 @@ llama_model_qwen4exp::llm_graph_input_kpool * llama_model_qwen4exp::graph::build
     ggml_set_input(inp->new_pool_rep);
     inp->new_pool_pos = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, 4*inp->n_new);
     ggml_set_input(inp->new_pool_pos);
+    // fork: set_input_kpool fills these too: kept allocated when no op reads them (the MTP draft's few-token graph)
+    ggml_build_forward_expand(gf, inp->new_pool_idxs);
+    ggml_build_forward_expand(gf, inp->new_pool_rep);
+    ggml_build_forward_expand(gf, inp->new_pool_pos);
 
     return (llm_graph_input_kpool *) res->add_input(std::move(inp));
 }

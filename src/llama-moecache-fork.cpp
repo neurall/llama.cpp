@@ -8593,6 +8593,31 @@ size_t llama_moe_cache_draft_area_fork(ggml_backend_dev_t dev, size_t need, ggml
     return c;
 }
 
+// The draft's area set to `need` (whole blocks): it grows when a draft graph needs more (a prompt catch-up of a long batch: the take above) and shrinks back
+// to the draft's decode calls when the answer starts (user 2026-11-26: "make sure we are not preallocating but growing only as much as we are using"). The
+// blocks a shrink leaves stay lent until the next release gives them back to the experts (alias_release keeps what the target's last graph needed). The
+// caller has synchronized both contexts. Returns the area's bytes and its buffer in *buf (0: no pool on dev, or the pool cannot hold it).
+size_t llama_moe_cache_draft_area_set_fork(ggml_backend_dev_t dev, size_t need, ggml_backend_buffer_t * buf) {
+    moe_cache * mc = g_cache;
+    if (!mc || !alias_on()) { return 0; }
+    moe_cache::alias_pool * ap = nullptr;
+    for (auto & a : mc->alias) { if (a.dev == dev) { ap = &a; } }
+    if (!ap) { return 0; }
+    const size_t c = need ? poolx_lend_round(*ap, need) : 0;
+    if (c >= ap->draft_c) { return need ? llama_moe_cache_draft_area_fork(dev, need, buf) : ap->draft_c; }
+    if (buf) { *buf = ap->buf; }
+    const size_t was = ap->draft_c;
+    {
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        ap->draft_c = c;
+    }
+    llama_dsplit_mirror_shift_fork(dev, c);
+    g_lend_epoch++;   // the target's graphs move to the new start: built again
+    LLAMA_LOG_WARN("moe-cache: draft: its area on %s %.1f -> %.1f MiB (its decode calls); the rest goes back to the experts at the next release\n",
+            ggml_backend_dev_name(dev), was / 1048576.0, c / 1048576.0);
+    return c;
+}
+
 // After a prompt: fill the blocks it borrowed.
 // The passes of a prompt take pool blocks for their graph, the backend's scratch and the staging slots (llama_moe_cache_alias_fork) and drop the experts
 // that sat in them; the blocks come back free at the first decode steps (alias_release). Left alone they fill slowly: a missed expert takes even a free

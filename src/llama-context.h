@@ -75,7 +75,9 @@ struct llama_context {
     // fork: --moe alias=1: put the GPUs' compute graphs into the expert pool buffers of moe_alias_bufs (after every scheduler creation)
     void apply_moe_alias();
     // fork: a speculative draft's graphs in an area at the start of the target's pool (llama_moe_cache_draft_area_fork); its own buffers released when the pool is sized
-    uint32_t draft_area_fork(uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx);   // returns the draft micro-batch that fits its area
+    uint32_t draft_area_fork(uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx);   // its decode calls set aside; returns n_tokens
+    bool     draft_area_grow_fork(ggml_cgraph * gf);   // a draft graph bigger than its area: the area grows to it
+    void     draft_area_shrink_fork();                 // the answer starts: the area back to the decode calls
     void pool_release_fork();
     bool moe_alias_shrink_fork(bool graph_fits, bool stage_fits, size_t need, size_t cap);
     void moe_probe_costs_fork();   // --moe max-batch=auto: timed cache-path batches at the first decode

@@ -11,6 +11,7 @@
 #include "sampling.h"
 #include "../src/llama-ext.h" // fork: llama_set_embeddings_layer_inp_last (DSpark prompt ring)
 #include "draft-ubatch-fork.h"
+void llama_draft_area_shrink_fork(llama_context * ctx);   // src/llama-context.cpp (no header edit): the draft's area back to its decode calls
 
 #include <algorithm>
 #include <cassert>
@@ -1238,6 +1239,7 @@ public:
         if (!inject_kept(seq_id)) {
             LOG_WRN("%s: the kept prompt rows could not be injected: drafts may degrade\n", __func__);
         }
+        llama_draft_area_shrink_fork(params.ctx_dft);   // fork: the answer starts: the prompt's growth of the draft's area goes back to the experts
 
         const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(params.ctx_dft), seq_id);
         if (pos_max < N - 1) {
@@ -2311,6 +2313,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             if (!inject_kept_rows(seq_id, N)) {
                 SPC_WRN("%s", "the kept prompt rows could not go into the draft: drafts may degrade\n");
             }
+            llama_draft_area_shrink_fork(ctx_dft);   // the answer starts: what the inject grew goes back to the experts
             return;   // the draft holds the prompt's last rows only (by design, no pos_max check)
         }
         const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(ctx_dft), seq_id);
@@ -2322,6 +2325,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     "Drafts may degrade.\n",
                     (int) pos_max, N - 1);
         }
+        llama_draft_area_shrink_fork(ctx_dft);   // fork: the answer starts: the prompt catch-up's growth goes back to the experts
     }
 
     // fork, --moe draft-prompt-rows: a prompt pass keeps its last rows and runs no draft (an answer step and vision rows take the old path)

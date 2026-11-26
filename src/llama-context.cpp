@@ -1490,13 +1490,15 @@ void llama_draft_decode_shape_fork(const llama_model * model, uint32_t n_tok, ui
     std::lock_guard<std::mutex> lk(g_draft_shape_mtx);
     g_draft_shape[model] = { n_tok, n_out };
 }
-static std::set<const void *> g_draft_chunked;   // drafts whose micro-batch was cut to their area once (no second cut from a second measure)
+size_t llama_moe_cache_draft_area_set_fork(ggml_backend_dev_t dev, size_t need, ggml_backend_buffer_t * buf);   // src/llama-moecache-fork.cpp (no header edit)
+static std::mutex g_draft_need_mtx;
+static std::map<const void *, std::map<ggml_backend_dev_t, size_t>> g_draft_decode_need;   // draft context -> card -> bytes of its decode calls
 
 // fork: a draft's graphs get an area at the start of the target's pool on each card (llama_moe_cache_draft_area_fork), a static range taken from the
-// left of the pool (user 2026-11-26: the same memory that worked outside the pool, through the pool's allocator so it can be reclaimed). The area is
-// sized by the draft's decode calls (user 2026-11-26: "size draft area from decode graphs, not prompt ubatch"): sized at its prompt micro-batch it
-// took 349 MiB on CUDA0 (one card) and 1265 MiB on CUDA1 (two cards) for Qwen3.8's MTP draft. Its prompt catch-up then goes in chunks that fit the
-// area: the largest micro-batch whose graph does, from two measures (fixed part + bytes a token). Returns that micro-batch (n_tokens: no cut).
+// left of the pool (user 2026-11-26: the same memory that worked outside the pool, through the pool's allocator so it can be reclaimed). Only its decode
+// calls are set aside here (a few MiB: "unless its small enough to not bother"); a bigger graph (the prompt catch-up of a long batch) grows the area when it
+// runs (process_ubatch) and the area shrinks back to the decode calls when the answer starts (llama_draft_area_shrink_fork). Sized at its prompt micro-batch
+// it took 349 MiB on CUDA0 (one card) and 1265 MiB on CUDA1 (two cards) for Qwen3.8's MTP draft. Returns n_tokens (the micro-batch is not cut).
 uint32_t llama_context::draft_area_fork(uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx) {
     uint32_t dt = n_seqs, dout = n_seqs;
     {
@@ -1505,32 +1507,71 @@ uint32_t llama_context::draft_area_fork(uint32_t n_tokens, uint32_t n_seqs, uint
     }
     dt   = std::max(n_seqs, std::min(dt, n_tokens));
     dout = std::max<uint32_t>(1, std::min({ dout, dt, n_outputs }));
-    std::vector<size_t> tg(backend_ptrs.size(), 0), a(backend_ptrs.size(), 0), b(backend_ptrs.size(), 0);
-    graph_reserve(dt, n_seqs, dout, mctx, true, tg.data());   // the decode calls: what the area holds
-    const bool cut = n_tokens > dt && !g_draft_chunked.count(this);
-    if (cut) {
-        graph_reserve(n_tokens,     n_seqs, std::min(dout, n_tokens),     mctx, true, a.data());
-        graph_reserve(n_tokens / 2, n_seqs, std::min(dout, n_tokens / 2), mctx, true, b.data());
-    }
+    std::vector<size_t> tg(backend_ptrs.size(), 0);
+    graph_reserve(dt, n_seqs, dout, mctx, true, tg.data());   // the decode calls: what the area holds from the start
     cparams.ctx_other->synchronize();   // the area's blocks are taken from the target's pool: its graphs are done with them
-    uint32_t chunk = n_tokens;
+    std::lock_guard<std::mutex> lk(g_draft_need_mtx);
+    auto & need = g_draft_decode_need[this];
     for (size_t bi = 0; bi < backend_ptrs.size(); ++bi) {
         ggml_backend_dev_t dev = ggml_backend_get_device(backend_ptrs[bi]);
         if (!ggml_backend_dev_is_gpu(dev)) { continue; }
+        need[dev] = tg[bi];
         ggml_backend_buffer_t buf = nullptr;
         const size_t c = llama_moe_cache_draft_area_fork(dev, tg[bi], &buf);
         if (c > 0 && buf) { ggml_backend_sched_set_external_buffer(sched.get(), backend_ptrs[bi], buf, 0, c); }
-        if (!cut || c == 0 || a[bi] <= c || b[bi] >= a[bi]) { continue; }
-        const double per_tok = (double) (a[bi] - b[bi]) / (n_tokens - n_tokens / 2);
-        const double fixed   = std::max(0.0, (double) a[bi] - per_tok * n_tokens);
-        const double fit     = (double) c > fixed ? ((double) c - fixed) / per_tok : 0.0;
-        chunk = std::min(chunk, std::max(dt, (uint32_t) std::min<double>(n_tokens, fit) / 32 * 32));
-        LLAMA_LOG_WARN("%s: draft area on %s: %.1f MiB for its decode calls (%u tokens, %u outputs); its %u-token graph takes %.1f MiB (%.1f fixed + %.3f MiB a token): "
-                       "prompt catch-up in passes of %u tokens\n", __func__, ggml_backend_dev_name(dev), c / 1048576.0, dt, dout, n_tokens, a[bi] / 1048576.0,
-                       fixed / 1048576.0, per_tok / 1048576.0, chunk);
+        LLAMA_LOG_WARN("%s: draft area on %s: %.1f MiB for its decode calls (%u tokens, %u outputs); a bigger graph grows it while it runs\n", __func__,
+                       ggml_backend_dev_name(dev), c / 1048576.0, dt, dout);
     }
-    if (chunk < n_tokens) { g_draft_chunked.insert(this); }
-    return chunk;
+    return n_tokens;
+}
+
+// fork: a draft graph that does not fit its area takes a bigger one (exactly its size on each card), placed again by the caller. false: no area to grow
+bool llama_context::draft_area_grow_fork(ggml_cgraph * gf) {
+    if (!cparams.ctx_other || cparams.moe_cache || llama_moe_cache_alias_buffers_fork().empty()) { return false; }
+    std::vector<size_t> sz(backend_ptrs.size(), 0);
+    ggml_backend_sched_reserve_size(sched.get(), gf, sz.data());
+    cparams.ctx_other->synchronize();
+    bool grew = false;
+    for (size_t bi = 0; bi < backend_ptrs.size(); ++bi) {
+        ggml_backend_dev_t dev = ggml_backend_get_device(backend_ptrs[bi]);
+        if (!ggml_backend_dev_is_gpu(dev) || sz[bi] == 0) { continue; }
+        // in larger steps (user 2026-11-26): at least twice the area it has, so a prompt whose passes keep growing moves the pool's layout (the target's
+        // graph start, the dense split's copies, the KV zone behind them) a few times, not at every pass; the pool refuses more than half of what it lends
+        const size_t cur = llama_moe_cache_draft_area_fork(dev, 0, nullptr);
+        ggml_backend_buffer_t buf = nullptr;
+        size_t c = llama_moe_cache_draft_area_set_fork(dev, std::max(sz[bi], 2 * cur), &buf);
+        if (c < sz[bi]) { c = llama_moe_cache_draft_area_set_fork(dev, sz[bi], &buf); }
+        if (c >= sz[bi] && buf) {
+            ggml_backend_sched_set_external_buffer(sched.get(), backend_ptrs[bi], buf, 0, c);
+            grew = true;
+        }
+    }
+    return grew;
+}
+
+// fork: the answer starts: the draft's area goes back to its decode calls on every card (the prompt catch-up's growth is given back to the experts)
+void llama_draft_area_shrink_fork(llama_context * ctx) {
+    if (ctx) { ctx->draft_area_shrink_fork(); }
+}
+void llama_context::draft_area_shrink_fork() {
+    std::map<ggml_backend_dev_t, size_t> need;
+    {
+        std::lock_guard<std::mutex> lk(g_draft_need_mtx);
+        auto it = g_draft_decode_need.find(this);
+        if (it == g_draft_decode_need.end()) { return; }
+        need = it->second;
+    }
+    synchronize();
+    if (cparams.ctx_other) { cparams.ctx_other->synchronize(); }
+    for (size_t bi = 0; bi < backend_ptrs.size(); ++bi) {
+        ggml_backend_dev_t dev = ggml_backend_get_device(backend_ptrs[bi]);
+        auto it = need.find(dev);
+        if (it == need.end()) { continue; }
+        ggml_backend_buffer_t buf = nullptr;
+        const size_t c = llama_moe_cache_draft_area_set_fork(dev, it->second, &buf);
+        if (c > 0 && buf) { ggml_backend_sched_set_external_buffer(sched.get(), backend_ptrs[bi], buf, 0, c); }
+    }
+    gf_res_prev_active = nullptr;
 }
 
 // fork: the target sizes its pool: this draft's compute buffers go back to the card first (the pool takes that memory; draft_area_fork lends it back)
@@ -2151,23 +2192,18 @@ void llama_context::sched_reserve() {
 
     // fork: a draft's graphs go into its area of the target's pool
     if (cparams.ctx_other && !cparams.moe_cache && !model.no_alloc() && !llama_moe_cache_alias_buffers_fork().empty()) {   // only with a pool to lend from
-        const uint32_t ch = draft_area_fork(n_tokens, n_seqs, n_outputs_pp, mctx.get());
-        if (ch < n_tokens) {
-            llama_moe_decision_fork("draft ubatch", std::to_string(ch).c_str(), "the draft's area holds its decode calls; its prompt catch-up goes in passes that fit it");
-            cparams.n_ubatch = ch;
-            sched_need_reserve = true;
-            sched_reserve();
-            return;
-        }
+        (void) draft_area_fork(n_tokens, n_seqs, n_outputs_pp, mctx.get());
     }
+    const bool draft_in_area = cparams.ctx_other && !cparams.moe_cache && !model.no_alloc() && !llama_moe_cache_alias_buffers_fork().empty();
 
     // reserve pp (prompt processing) graph first so that buffers are only allocated once
     {
         // fork, --moe staging=0: the reserve is the graph the fit measured, a prompt pass's stream into the cache's blocks (a plain call's graph of that size does
         // not fit the lent blocks: the fit stepped down 32 tokens per failed reserve, from 7936 to the plain graph's 4704)
         if (!moe_alias_bufs.empty()) { llama_moe_cache_measure_stream_fork(true); }
+        // a draft in its area: the prompt reserve only measures (the area grows to a graph when it runs)
         auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(),
-                model.no_alloc(), model.no_alloc() ? backend_buf_exp_size.data() : nullptr);
+                model.no_alloc() || draft_in_area, model.no_alloc() ? backend_buf_exp_size.data() : nullptr);
         if (!gf) {
             if (cparams.pipeline_parallel) {
                 LLAMA_LOG_WARN("%s: compute buffer allocation failed, retrying without pipeline parallelism\n", __func__);
@@ -2280,10 +2316,10 @@ void llama_context::sched_reserve() {
                 // [TAG_RESERVE_DIAG_DECAY]
                 // the `inp_diag_decay` tensor size scales with `n_seq_tokens^2` which
                 // makes `n_seqs == 1` use more memory for the compute graph compared to `n_seqs > 1`
-                gf = graph_reserve(n_tokens, 1,      n_outputs_pp, mctx.get(), model.no_alloc());
+                gf = graph_reserve(n_tokens, 1,      n_outputs_pp, mctx.get(), model.no_alloc() || draft_in_area);
                 break;
             default:
-                gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(), model.no_alloc());
+                gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(), model.no_alloc() || draft_in_area);   // fork: a draft in its area measures only
         };
         llama_moe_cache_measure_stream_fork(false);
 
@@ -4230,6 +4266,11 @@ g_st_m[1] = ggml_time_us();     auto * res = get_gf_res_prev();
                     continue;
                 }
                 break;
+            }
+            // fork: a draft graph bigger than its area (a prompt catch-up of a long batch): the area grows to exactly its size, placed again
+            if (attempt < 2 && draft_area_grow_fork(gf)) {
+                res->reset();
+                continue;
             }
             // fork: a split pass with experts on the helpers that does not fit: the experts go back to the expert card (the dense split alone) and the graph is
             // built again; only a dense split alone that does not fit gives the split up for passes of this size
@@ -8037,7 +8078,7 @@ void llama_free(llama_context * ctx) {
     llama_moe_cache_context_live_fork(ctx, nullptr, false);
     { std::lock_guard<std::mutex> lk(g_live_ctx_mtx); g_live_ctx.erase(ctx); }
     llama_moe_cache_graph_forget_fork(ctx);
-    g_draft_chunked.erase(ctx);   // a new context may get the same address
+    { std::lock_guard<std::mutex> lk(g_draft_need_mtx); g_draft_decode_need.erase(ctx); }   // a new context may get the same address
     delete ctx;
 }
 
