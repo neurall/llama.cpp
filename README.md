@@ -42,6 +42,9 @@ Each row: the official stock binary (its own defaults, `-np 1`) against this for
 | Qwen 3.8 Next IQ3_S | 12k/1k | 43.8<br>53.6 | 372<br>1477 | +22% | +297% 4.0x | 1.3927<br>1.3927 | b13586 | b11742 | [16719](fork/outputs/16719.txt)<br>[17094s](fork/outputs/17094s.txt) |
 | Inkling 2 Mini IQ4_XS (fits one card)§ | short/1k | 18.39<br>80.62 | 43.9<br>106.0 | +338% 4.4x | +141% 2.4x | -<br>- | b16902 | b12670 | [34081s](fork/outputs/34081s.txt)<br>[35613](fork/outputs/35613.txt) |
 | Inkling 2 Mini IQ4_XS + DSpark draft§ | short/1k | 18.39<br>87.10 | 43.9<br>77.4 | +374% 4.7x | +76% 1.8x | -<br>- | b16903 | b12670 | [34081s](fork/outputs/34081s.txt)<br>[35698](fork/outputs/35698.txt) |
+| Inkling 2 Mini IQ4_XS (fits one card)§ | 19k/1k | 61.04<br>69.17 | 803.3<br>1353.3 | +13% | +68% 1.7x | -<br>- | b16907 | b12760 | -<br>[35977](fork/outputs/35977.txt) |
+| Hy4-Flash IQ2-AH (126 GiB) | short/1k | 26.73<br>36.46 | 55.8<br>85.1 | +36% | +53% | -<br>- | b16907 | b12760 | [35915s](fork/outputs/35915s.txt)<br>[35973](fork/outputs/35973.txt) |
+| Hy4-Flash IQ2-AH (126 GiB) | 13k/1k | 30.08<br>27.64 | 340.8<br>646.1 | -8% | +90% 1.9x | -<br>- | b16907 | b12760 | -<br>[35970](fork/outputs/35970.txt) |
 | MiMo 2.6F 3-bit | short/1k | 14.1<br>34.8 | -<br>- | +147% 2.5x | - | 1.8758<br>1.8758 | b13838 | b11829 | [18201](fork/outputs/18201.txt)<br>[18225s](fork/outputs/18225s.txt) |
 | Qwen 3.8 Next IQ4_XS | short/1k | 30.9<br>55.1 | -<br>- | +78% | - | 1.4101<br>1.4101 | b13586 | b11742 | [16788](fork/outputs/16788.txt)<br>[17114s](fork/outputs/17114s.txt) |
 | GLM 5.3 3-bit | short/1k | 12.7<br>21.6 | -<br>- | +69% | - | 1.7626<br>1.7578 | b13838 | b11829 | [18213](fork/outputs/18213.txt)<br>[18236s](fork/outputs/18236s.txt) |

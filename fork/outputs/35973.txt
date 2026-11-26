@@ -1,0 +1,39 @@
+run 35973 | relfix_hy4_place | tetrisc | Hy4-flash-IQ2_AH-00001-of-00002.gguf | decode 36.46 o/s | prompt 85.1 i/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-26 16:27:01
+
+We need answer user asks "generate smallest html tetris game." Need provide code likely single HTML file minimal tetris. Need think about constraints: "smallest" maybe concise code. Need generate playable Tetris in HTML/JS/CSS. Need maybe include keyboard controls. Need ensure correctness. Need decide final answer: provide a compact single-file HTML Tetris game. Need maybe mention controls. Need code. Need ensure code works. Need design minimal Tetris.
+
+Need create smallest HTML tetris game. We can produce compact but readable? User asks generate smallest html tetris game. We can give minimal single HTML file. Need maybe not too verbose. Need ensure game playable: grid 10x20, tetromino shapes, rotation, collision, line clearing, score, game over, drop timer. Keyboard: arrows, space, maybe R restart. Need compact code.
+
+Need write code carefully. Let's design compact Tetris.
+
+Approach:
+- HTML: canvas width 200 height 400? 10 cols x 20 rows, block=20. CSS body center black, canvas border.
+- JS:
+const c=document.querySelector('canvas'), x=c.getContext('2d'), w=10,h=20,s=20;
+let b=Array.from({length:h},()=>Array(w).fill(0)), p, score=0, over=false, tick=0, last=0;
+Shapes as arrays of 4x4? Need rotation. Use matrices:
+const T=[
+ [[1,1,1,1]], // I
+ [[1,1],[1,1]], // O
+ [[0,1,0],[1,1,1]], // T
+ [[0,1,1],[1,1,0]], // S
+ [[1,1,0],[0,1,1]], // Z
+ [[1,0,0],[1,1,1]], // J
+ [[0,0,1],[1,1,1]] // L
+];
+Colors array.
+Spawn p={m:shape, x:3, y:0, c:color}. Need for I width 4 x=3 fits; for 3 width x=3 fits. O width 2.
+Collision function:
+function hit(m,x,y){return m.some((row,dy)=>row.some((v,dx)=>v&&(x+dx<0||x+dx>=w||y+dy>=h||(y+dy>=0&&b[y+dy][x+dx]))));}
+Need y can be negative? We spawn y=0; rotation near top maybe y stays >=0. Fine.
+Move: if !hit(p.m,p.x+dx,p.y) p.x+=dx.
+Rotate: m=p.m[0].map((_,i)=>p.m.map(r=>r[i]).reverse())? Need rotate clockwise: transpose then reverse each row. For matrix m, rotated = m[0].map((_,i)=>m.map(r=>r[i]).reverse()). This returns array of columns reversed. Example [[1,0],[0,1]] -> m[0].map i0: [1,0].reverse->[0,1]; i1: [0,1].reverse->[1,0] => [[0,1],[1,0]] clockwise? okay. Need wall kick maybe try x offsets [0,-1,1,-2,2]. If no hit.
+Drop: if !hit(p.m,p.x,p.y+1) p.y++; else lock.
+Lock: for each cell v>0 b[y+dy][x+dx]=p.c. Clear lines: loop y from h-1 down; if b[y].every(v=>v) splice y,0,Array(w).fill(0), y++? Need score. Then spawn. If hit new piece game over.
+Draw: clear black; draw grid cells; draw piece cells. Need draw function with fillRect. Use color. Need draw border grid maybe optional. Need draw ghost? not necessary. Need draw next? not necessary.
+Game loop: requestAnimationFrame loop(t){ if(!over && t-last>500 maybe based level) {drop(); last=t;} draw(); requestAnimationFrame(loop);}
+Need avoid immediate multiple drops after long pause? last=0; first frame t maybe >500, drop once. Fine.
+Need speed maybe 500ms. Could accelerate with score? not necessary.
+Keyboard: document.onkeydown=e=>{...}. Need prevent default for arrows/space. e.key values. ArrowLeft/Right/Down, ArrowUp rotate, space hard drop. Hard drop: while(!hit(p.m,p.x,p.y+1))p.y++; drop(); Need if over? if over and key r restart. Need restart function.
+Need ensure game over draw
+---

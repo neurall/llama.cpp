@@ -1,0 +1,4 @@
+run 35915 | stock-b12760-official | tetrisc | Hy4-flash-IQ2_AH-00001-of-00002.gguf | decode 26.73 o/s | prompt 55.8 i/s | 835 tokens | args: -np 1 -b 512 | power 280+280 W | 2026-11-26 15:22:55
+
+
+---
