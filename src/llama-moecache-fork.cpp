@@ -52,6 +52,7 @@
 #include <unordered_set>
 #include <vector>
 #include "llama-poolalloc-fork.h"
+#include "llama-room-fork.h"   // CUDA's room before a lend's scratch plan (room_lo_before_plan)
 #include "llama-poolv2-fork.h"   // pool v2 (fork/docs/pool-v2.md): the unit of an expert's views (pv2_shape_of)
 #include "llama-mapsync-fork.h"   // pool v2: expert tables to the card through a mapped ring
 #include "llama-poolmap-fork.h"
@@ -8163,30 +8164,35 @@ static void room_apply(moe_cache * mc, ggml_backend_sched_t sched, bool synced) 
         pool_move_begin(ap, ap.room_lo_want, ap.tail_real);   // no upload runs there and none starts until the blocks are CUDA's
         kv_blocks_apply(mc, ap, ap.room_lo_want, ap.tail_real, true, false, nt, ng, ne, POOLX_ROOM);
         pool_move_end(ap);
+        size_t f0 = 0, f1 = 0, tb = 0;
+        ggml_backend_dev_memory(ap.dev, &f0, &tb);
         const size_t u = fn(ap.buf, ap.room_vsz - ap.room_lo_want);
         if (u == SIZE_MAX) { ap.room_lo_want = ap.room_lo; continue; }
         GGML_ASSERT(ap.room_vsz - u >= ap.room_lo_want && "moe-cache: CUDA's room grew with unmapped bytes below it (they would stay in the cache)");
+        ggml_backend_dev_memory(ap.dev, &f1, &tb);
         ap.room_lo = ap.room_lo_want;
         ap.room_unmapped = u;
         any = true;
         g_room_check = true;
-        LLAMA_LOG_WARN("moe-cache: CUDA's room on %s: %.0f -> %.0f MiB of the pool's tail (%zu blocks, %zu experts evicted), %.0f MiB of VRAM handed to CUDA\n",
-                ggml_backend_dev_name(ap.dev), (ap.tail_real - was) / 1048576.0, (ap.tail_real - ap.room_lo) / 1048576.0, nt, ne, u / 1048576.0);
+        LLAMA_LOG_WARN("moe-cache: CUDA's room on %s: %.0f -> %.0f MiB of the pool's tail (%zu blocks, %zu experts evicted), %.0f MiB of VRAM handed to CUDA, free %.0f -> %.0f MiB\n",
+                ggml_backend_dev_name(ap.dev), (ap.tail_real - was) / 1048576.0, (ap.tail_real - ap.room_lo) / 1048576.0, nt, ne, u / 1048576.0, f0 / 1048576.0, f1 / 1048576.0);
     }
     if (any) {
         flush_tables();   // the evicted experts are out of the device tables before the next graph reads them
         g_room_gen.fetch_add(1);
     }
 }
-// at the lend: a call of a shape class not seen yet gets the whole tail area before anything of it runs (new kernels load without failing half way, so a
-// recurrent state is never half written); the VRAM watch gives back what CUDA did not take once the class's CUDA graphs exist (poolx_room_after_call)
+// at the lend, before its scratch plan: a call of a shape class not seen yet gets the whole tail area before anything of it is planned or runs (the plan
+// already loads kernels, llama-room-fork.h; new kernels load without failing half way, so a recurrent state is never half written); the VRAM watch gives
+// back what CUDA did not take once the class's CUDA graphs exist (poolx_room_after_call)
 static void room_lend(moe_cache * mc, ggml_backend_sched_t sched, bool synced, int64_t n_tokens) {
     bool any = false;
     for (auto & ap : mc->alias) { any = any || ap.room_max > 0; }
     if (!any) { return; }
     const int64_t cls = poolx_room_class(n_tokens);
-    if (std::find(g_room_seen.begin(), g_room_seen.end(), cls) == g_room_seen.end()) {
-        for (auto & ap : mc->alias) { if (ap.room_max > 0) { ap.room_lo_want = std::min(ap.room_lo_want, room_edge_down(ap, ap.tail_real - ap.room_max)); } }
+    const bool seen = std::find(g_room_seen.begin(), g_room_seen.end(), cls) != g_room_seen.end();
+    for (auto & ap : mc->alias) { ap.room_lo_want = room_lo_before_plan(ap.room_lo_want, seen, ap.vol_lo, ap.tail_real, ap.room_max, ap.room_base, ap.room_step); }
+    if (!seen) {
         if (std::none_of(g_room_pending.begin(), g_room_pending.end(), [&](const poolx_room_lent & p) { return p.cls == cls; })) { g_room_pending.push_back({ cls, 0 }); }
         g_room_ran.push_back(cls);   // this pass counts for its own class only, after the call (llama_moe_cache_vram_watch_fork)
     }
@@ -8246,6 +8252,9 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     std::vector<pfill> pfills;   // --moe poison: applied after the scheduler sync below
     bool changed = false;   // (the KV zones were laid out for this graph before it was built: llama_moe_cache_kv_tail_prepare_fork)
     kv_tail_pad_zero(mc);   // the KV rows this graph writes first: the lend below stops in front of them (ap.span); a decode graph ends the plan of the last prompt
+    // CUDA's room grows here, before the scratch plan below loads this graph's kernels (llama-room-fork.h); the tail area lies behind the lend and the KV zone
+    const bool cls_new = std::find(g_room_seen.begin(), g_room_seen.end(), poolx_room_class(n_tokens)) == g_room_seen.end();
+    room_lend(mc, sched, false, n_tokens);
     for (auto & ap : mc->alias) {
         size_t peak = 0;
         ggml_backend_t ap_be = nullptr;   // this context's backend on the card: the only one the scratch region below serves
@@ -8277,9 +8286,18 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                             ggml_backend_dev_name(ap.dev), ap.last_n, asked, ap.last_scr, asked - ap.last_scr);
                 }
             }
+            static std::atomic<int> said_plan { 0 };
+            const bool say_plan = cls_new && ap.room_max > 0 && said_plan++ < 24;   // what the plan's kernel loads took of CUDA's room
+            size_t f0 = 0, f1 = 0, tb = 0;
+            if (say_plan) { ggml_backend_dev_memory(ap.dev, &f0, &tb); }
             scratch = alias_scratch(ap, sched);   // computed per card from its own nodes, exactly (no slack on top)
             ap.last_n   = n_tokens;
             ap.last_scr = scratch;
+            if (say_plan) {
+                ggml_backend_dev_memory(ap.dev, &f1, &tb);
+                LLAMA_LOG_WARN("moe-cache: scratch plan on %s: a %d-token graph of a shape class not seen yet, CUDA's room %.0f MiB, free %.0f -> %.0f MiB over the plan "
+                        "(the kernels it loaded)\n", ggml_backend_dev_name(ap.dev), n_tokens, (ap.tail_real - ap.room_lo) / 1048576.0, f0 / 1048576.0, f1 / 1048576.0);
+            }
         }
         // the graph's tensors start at base_off: behind the dense split's copies when the graph splits (llama_moe_cache_alias_offset_fork), else at 0
         const size_t peak_al = GGML_PAD(ap.base_off + peak, 256);
@@ -8513,7 +8531,6 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         for (const auto & f : pfills) { pool_fill(*f.ap, f.lo, f.hi, f.v); }   // --moe poison
         g_ac.sync_us += ggml_time_us() - s0; g_ac.sync_n++;
     }
-    room_lend(mc, sched, changed, n_tokens);   // CUDA's room grows here: after the sync, before this graph runs
     if (mc->v2.shadow) { std::lock_guard<std::mutex> lk(mc->mtx); pv2_shadow_held(mc); }   // pool-v2: the shadow hears the lend (and the room)
     return false;
 }
@@ -12001,9 +12018,12 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         // chunks the driver could not back at creation (VRAM taken between the sizing and the allocation) are CUDA's from the start: their blocks never
                         // enter the cache. Nothing uses the pool yet, so a shortfall past the tail area moves the area's start down instead of losing the pool
                         if (auto fn = (room_set_t) llama_fork_proc_dev(ap.dev, "ggml_backend_fork_set_room_fork")) {
-                            // the pins still to come (sz_pins, their page tables on this card) get whole blocks of the area now; what they leave goes back to the cache
-                            // at the first VRAM watch after a call. Chunks the driver could not back stay CUDA's too: the bytes left unmapped at the end
-                            const size_t u = fn(ap.buf, sz_pins ? (room_vsz - ap.tail_real) + poolx_up(sz_pins, ap.room_step) : 0);
+                            // the whole area is CUDA's now, before anything can load a kernel (nothing is seen yet: room_lo_before_plan): the startup reserves plan
+                            // graphs, which loads their kernels, and the pins still to come take their page tables (sz_area and sz_pins: the area was sized from
+                            // them). Was the pins' share only: the first call's plan loaded its kernel with what the pins left (Hy4, 2026-11-26). What CUDA does not
+                            // take goes back to the cache at the first VRAM watch after a call. Chunks the driver could not back stay CUDA's too: the bytes left unmapped at the end
+                            const size_t want0 = (room_vsz - ap.tail_real) + (ap.tail_real - room_lo_before_plan(ap.tail_real, false, ap.vol_lo, ap.tail_real, ap.room_max, ap.room_base, ap.room_step));
+                            const size_t u = fn(ap.buf, want0);
                             const pool_class & lc = pl.cls[order.back()];
                             size_t lo = u == SIZE_MAX ? ap.tail_real : poolx_room_start(room_vsz, u, ap.vol_lo, ap.tail_real, ap.room_base, ap.room_step);
                             if (lo == SIZE_MAX) {
@@ -12024,9 +12044,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                                 ap.room_lo = ap.room_lo_want = lo;
                                 ap.room_unmapped = u;
                                 ap.room_max = std::max(ap.room_max, ap.tail_real - lo);
-                                LLAMA_LOG_WARN("moe-cache: tail area on %s: CUDA's room from the start, %zu blocks (%.0f MiB unmapped: %.0f MiB of page tables for the "
-                                        "%.1f GiB the loader still pins%s)\n", ggml_backend_buft_name(buft), (size_t) ((ap.tail_real - lo) / lc.B), u / 1048576.0,
-                                        sz_pins / 1048576.0, sz_pins / 8.0 * 4096 / 1073741824.0, u > (room_vsz - ap.tail_real) + poolx_up(sz_pins, ap.room_step)
+                                LLAMA_LOG_WARN("moe-cache: tail area on %s: CUDA's room from the start, %zu blocks (%.0f MiB unmapped: every kernel of this build %.0f MiB, "
+                                        "%.0f MiB of page tables for the %.1f GiB the loader still pins%s)\n", ggml_backend_buft_name(buft), (size_t) ((ap.tail_real - lo) / lc.B),
+                                        u / 1048576.0, sz_area / 1048576.0, sz_pins / 1048576.0, sz_pins / 8.0 * 4096 / 1073741824.0, u > want0
                                         ? ", more: the driver could not back it (VRAM taken since the sizing)" : "");
                             }
                         }
