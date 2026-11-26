@@ -58,9 +58,11 @@ static inline size_t host_pagefile_growth_fork() {
         char path[MAX_PATH] = {};
         unsigned long long init_mb = 0, max_mb = 0;
         if (sscanf(e, "%259s %llu %llu", path, &init_mb, &max_mb) != 3 || max_mb == 0) { continue; }
-        WIN32_FILE_ATTRIBUTE_DATA fa = {};
-        if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fa)) { continue; }
-        const size_t cur = ((size_t) fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
+        WIN32_FIND_DATAA fd = {};   // the directory entry: GetFileAttributesExA on the open page file fails with a sharing violation (error 32, W10 2026-11-26)
+        HANDLE fh = FindFirstFileA(path, &fd);
+        if (fh == INVALID_HANDLE_VALUE) { continue; }
+        FindClose(fh);
+        const size_t cur = ((size_t) fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
         char root[4] = { path[0], ':', '\\', 0 };
         ULARGE_INTEGER fr = {};
         if (!GetDiskFreeSpaceExA(root, &fr, NULL, NULL)) { continue; }
