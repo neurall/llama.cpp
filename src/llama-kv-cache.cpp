@@ -681,7 +681,7 @@ llama_kv_cache::llama_kv_cache(
 
             // TODO: investigate if using the smallest rotation matrix is beneficial also for K (similar as for V)
             // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4141323088
-            while (n_embd_head_k_all % (2*n_rot_k) == 0) {
+            while (n_embd_head_k_all > 0 && n_embd_head_k_all % (2*n_rot_k) == 0) {   // fork: 0 (a cache with no layers, ERNIE 5.5's dsv4 halves) never ended
                 n_rot_k *= 2;
             }
         }
