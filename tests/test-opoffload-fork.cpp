@@ -30,6 +30,14 @@ int main() {
     CHECK(none.off && none.ubatch == 512);
     // a second measure that did not shrink (lt2 >= lt): no decision
     CHECK(!opoff_plan_fork_calc(4096 * MiB, 4096 * MiB, 8192, 100 * MiB, 484 * MiB, 0, 0, 0).off);
+    // W10 retry 2026-11-27: the 512-token try ("graph 7081 MiB at 544 tokens, 6887 at 272: 6692 MiB fixed") must still be checked and refused
+    CHECK(opoff_check_due_fork(true, 48, 512));          // the old rule (n_tokens > 512) skipped it: every request then failed with "Compute error"
+    CHECK(!opoff_check_due_fork(true, 0, 512));          // a CPU run keeps the old way
+    CHECK(!opoff_check_due_fork(false, 48, 512));        // no op offload: nothing to check
+    CHECK(opoff_check_due_fork(false, 48, 8192));
+    CHECK(opoff_plan_fork_calc(7040 * MiB, 6886 * MiB, 512, 5950 * MiB, 484 * MiB, 0, 1440 * MiB, 32768).off);
+    // a 256-token pass that fits is not refused for what a 512-token pass would need
+    CHECK(!opoff_plan_fork_calc(4000 * MiB, 3944 * MiB, 256, 5990 * MiB, 484 * MiB, 0, 1440 * MiB, 32768).off);
     if (g_fail) { fprintf(stderr, "test-opoffload-fork: %d failed\n", g_fail); return 1; }
     printf("test-opoffload-fork: ok\n");
     return 0;

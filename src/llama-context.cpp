@@ -2061,14 +2061,15 @@ void llama_context::sched_reserve() {
             LLAMA_LOG_WARN("%s: prompt graph of %u tokens on %s: largest tensors: %s| by op (all layers): %s%s\n", __func__, u, ggml_backend_dev_name(dv), top.c_str(), per_op.c_str(), at_peak.c_str());
         }
     };
-    if (cparams.moe_cache && !model.no_alloc() && n_tokens > 512) {   // before the first real reserve (which allocates): the list, measure-only
+    const bool opoff_due = opoff_check_due_fork(cparams.op_offload, model.n_gpu_layers(), n_tokens);
+    if (cparams.moe_cache && !model.no_alloc() && opoff_due) {   // before the first real reserve (which allocates): the list, measure-only
         list_top(graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(), true, lt.data()), n_tokens);
     }
     // The first micro-batch from free VRAM (fork/docs/crash-oom29g.md): common.cpp asks for min(ctx, 16384) blind to the cards, the first reserve of that graph
     // failed on every big model (GLM: 29.7 GiB on one card) and common.cpp bisected it with a new context per step, each step pinning 4-5 GiB of host memory
     // again (seven pins of 200-600 MB/s in one GLM 3.5 load, the memory stall of 2026-11-07). The graph's bytes are linear in tokens through the origin, so
     // the measure-only sizes above give the largest pass each card's free VRAM holds behind its margin; the pools' own fit (fit_ub) runs after they exist.
-    if (cparams.moe_cache && moe_alias_bufs.empty() && !model.no_alloc() && n_tokens > 512 && ub_capped != this) {
+    if (cparams.moe_cache && moe_alias_bufs.empty() && !model.no_alloc() && opoff_due && ub_capped != this) {
         ub_capped = this;
         uint32_t u = n_tokens;
         std::string why;
