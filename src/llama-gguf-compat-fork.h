@@ -74,7 +74,9 @@ static inline void gguf_compat_kv_fork(gguf_context * g, const std::string & fro
                     gguf_set_arr_str(g, nk.c_str(), p.data(), n);
                 } else {
                     const char * d = (const char *) gguf_get_arr_data(g, i);
-                    std::vector<char> v(d, d + n * gguf_type_size(t));   // a copy: setting a key may move the array it came from
+                    const size_t es = t == GGUF_TYPE_UINT16 || t == GGUF_TYPE_INT16 ? 2 : t == GGUF_TYPE_UINT32 || t == GGUF_TYPE_INT32 || t == GGUF_TYPE_FLOAT32 ? 4 :
+                                      t == GGUF_TYPE_UINT64 || t == GGUF_TYPE_INT64 || t == GGUF_TYPE_FLOAT64 ? 8 : 1;   // gguf.h has no public type size
+                    std::vector<char> v(d, d + n * es);   // a copy: setting a key may move the array it came from
                     gguf_set_arr_data(g, nk.c_str(), t, v.data(), n);
                 }
                 break;
