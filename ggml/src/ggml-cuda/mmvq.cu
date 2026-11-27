@@ -1758,7 +1758,7 @@ static void mul_mat_vec_q_switch_type(
 static void ggml_cuda_mul_mat_vec_q_impl(
         ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst,
         const ggml_cuda_mm_fusion_args_host * fusion, const ggml_cuda_mm_multi_fork * multi) {
-    GGML_ASSERT(        src1->type == GGML_TYPE_F32);
+    GGML_ASSERT(        src1->type == GGML_TYPE_F32 || src1->type == GGML_TYPE_BF16);
     GGML_ASSERT(        dst->type  == GGML_TYPE_F32);
     GGML_ASSERT(!ids || ids->type  == GGML_TYPE_I32); // Optional, used for batched GGML_MUL_MAT_ID.
 
@@ -1777,7 +1777,6 @@ static void ggml_cuda_mul_mat_vec_q_impl(
 
     GGML_ASSERT(!ids || ne12 <= MMVQ_MAX_BATCH_SIZE);
 
-    const float   * src1_d =       (const float   *) src1->data;
     const int32_t *  ids_d = ids ? (const int32_t *)  ids->data : nullptr;
     float         *  dst_d =       (float         *)  dst->data;
 
@@ -1880,12 +1879,12 @@ static void ggml_cuda_mul_mat_vec_q_impl(
         const int64_t q8_ne[4] = { ne10, q8_flat ? q8_rows : ne11, q8_flat ? 1 : ne12, q8_flat ? 1 : ne13 };
         const int64_t q8_s[3]  = { s11, q8_flat ? s11*q8_rows : s12, q8_flat ? s11*q8_rows : s13 };
         bool q8_hit = false;
-        src1_q8 = (char *) ggml_cuda_q8_reuse_fork(ctx.device, ctx.curr_stream_no, src1_d, q8_ne, q8_s, ggml_nbytes(src1), q8_bytes, &q8_hit);
+        src1_q8 = (char *) ggml_cuda_q8_reuse_fork(ctx.device, ctx.curr_stream_no, src1->data, q8_ne, q8_s, ggml_nbytes(src1), q8_bytes, &q8_hit);
         if (src1_q8 == nullptr) {
             src1_q8 = src1_q8_1.alloc(q8_bytes);
         }
         if (!q8_hit) {
-            quantize_row_q8_1_cuda(src1_d, src1_q8, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
+            quantize_row_q8_1_cuda(src1->data, src1->type, src1_q8, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
         }
     }
 
