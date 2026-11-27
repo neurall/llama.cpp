@@ -99,6 +99,7 @@ static inline void gguf_compat_kv_fork(gguf_context * g, const std::string & fro
         gguf_set_val_u32(g, (o + "value_length_swa").c_str(),   (uint32_t) gguf_compat_int(g, pf + "attention.value_length", head));
         gguf_set_val_u32(g, (o + "key_length").c_str(),         (uint32_t) (kv_lora + rope));   // ours: the full layers' cache row [kv latent | rope]
         gguf_set_val_u32(g, (o + "value_length").c_str(),       (uint32_t) kv_lora);
+        if (gguf_find_key(g, (o + "head_count_kv").c_str()) < 0) { gguf_set_val_u32(g, (o + "head_count_kv").c_str(), 1); }   // one KV head (the DSV4 converter's)
         const int64_t ci = gguf_find_key(g, (o + "compress_ratios").c_str());
         if (ci >= 0 && gguf_get_kv_type(g, ci) == GGUF_TYPE_ARRAY && gguf_get_arr_type(g, ci) == GGUF_TYPE_INT32) {
             const int32_t * d = (const int32_t *) gguf_get_arr_data(g, ci);
