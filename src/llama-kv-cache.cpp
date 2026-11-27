@@ -2550,6 +2550,7 @@ void llama_kv_cache::set_input_attn_mask_f32(float * data, int64_t n_kv, int64_t
         /*.n_kv             =*/ n_kv,
         /*.n_stream         =*/ n_stream,
         /*.n_tps            =*/ ubatch->n_tokens/n_stream,
+        /*.k0               =*/ 0,   // fork: this mask's columns are the cells from 0
         /*.rows             =*/ nullptr,
         /*.block_uniform    =*/ false,
     };

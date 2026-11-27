@@ -357,10 +357,7 @@ ggml_tensor * llama_model_ernie5_5::graph::build_mla_top_k(
             idx_w->nb[1], idx_w->nb[1]*n_tps, idx_w->nb[1]*n_tps, 0);
 
     ggml_tensor * score = nullptr;
-    if (cparams.fused_lid) {
-        score = ggml_lightning_indexer(ctx0, idx_q, idx_k, idx_w, idx_mask);
-        res->add_fused_node({LLM_FUSED_OP_LIGHTNING_INDEXER, score, il});
-    } else {
+    {   // fork: no fused_lid switch (and no fused-node list) in this tree: the plain ops
         // sum over heads of relu(q_h . k) * w_h
         ggml_tensor * kq = ggml_mul_mat(ctx0, ggml_cont(ctx0, ggml_permute(ctx0, idx_k, 0, 2, 1, 3)),
                 ggml_permute(ctx0, idx_q, 0, 2, 1, 3));                     // [n_kv, n_tps, n_head, n_stream]
@@ -486,7 +483,7 @@ ggml_tensor * llama_model_ernie5_5::graph::build_latent_moe(ggml_tensor * cur, i
             LLAMA_EXPERT_GATING_FUNC_TYPE_NONE,
             il,
             probs,
-            nullptr, nullptr, nullptr, nullptr,
+            nullptr,      // fork: no per-expert scale tensors in this signature (upstream's up/gate/down_exps_s)
             selected);
     cb(moe_out, "ffn_moe_out", il);
 
