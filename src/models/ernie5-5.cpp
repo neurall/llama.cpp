@@ -357,7 +357,9 @@ ggml_tensor * llama_model_ernie5_5::graph::build_mla_top_k(
             idx_w->nb[1], idx_w->nb[1]*n_tps, idx_w->nb[1]*n_tps, 0);
 
     ggml_tensor * score = nullptr;
-    {   // fork: no fused_lid switch (and no fused-node list) in this tree: the plain ops
+    if (true) {   // fork: the fused indexer op as deepseek4.cpp uses it (no fused_lid switch here; the plain ops below tripped a CUDA broadcast assert at 13k)
+        score = ggml_lightning_indexer(ctx0, idx_q, idx_k, idx_w, idx_mask);
+    } else {
         // sum over heads of relu(q_h . k) * w_h
         ggml_tensor * kq = ggml_mul_mat(ctx0, ggml_cont(ctx0, ggml_permute(ctx0, idx_k, 0, 2, 1, 3)),
                 ggml_permute(ctx0, idx_q, 0, 2, 1, 3));                     // [n_kv, n_tps, n_head, n_stream]
