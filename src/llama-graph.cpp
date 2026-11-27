@@ -11,6 +11,7 @@
 #include "llama-moestate-fork.h"
 #include "llama-model.h"
 #include "llama-moe-cache.h"
+#include "../ggml/src/ggml-op-slots-fork.h"   // the op_params slots the fork gives a meaning of its own
 #include "llama-batch.h"
 #include "llama-cparams.h"
 #include "llama-sampler.h"
@@ -461,7 +462,7 @@ static ggml_tensor * build_attn_inp_kq_mask(
     ggml_tensor * res = ggml_new_tensor_4d(ctx, type, n_kv - k0, n_tokens/n_stream, 1, n_stream);
     ggml_set_input(res);
     ggml_set_name(res, "attn_inp_kq_mask");
-    res->op_params[0] = (int32_t) n_kv;   // the mask's width no longer tells the graph's cells, and a graph can be reused only for the cells its K/V views cover (can_reuse_kq_mask)
+    ggml_fork_mask_set_n_kv(res, (int32_t) n_kv);   // the mask's width no longer tells the graph's cells, and a graph can be reused only for the cells its K/V views cover (can_reuse_kq_mask)
 
     return res;
 }
@@ -478,7 +479,7 @@ static bool can_reuse_kq_mask(
     bool res = true;
 
     res &= (kq_mask->ne[0] == n_kv - (cparams.flash_attn ? mctx->get_kq_mask_k0() : 0));   // fork: the same first cell too (a reused mask must cover this ubatch's cells)
-    res &= (kq_mask->op_params[0] == (int32_t) n_kv);   // fork: and the same cells: two passes can have equal widths at different cells, and the old graph read too few of them (PPL 1.18 vs 1.09)
+    res &= (ggml_fork_mask_n_kv(kq_mask) == (int32_t) n_kv);   // fork: and the same cells: two passes can have equal widths at different cells, and the old graph read too few of them (PPL 1.18 vs 1.09)
     res &= (kq_mask->ne[1] == n_tokens/n_stream);
     res &= (kq_mask->ne[2] == 1);
     res &= (kq_mask->ne[3] == n_stream);
@@ -951,8 +952,6 @@ void llm_graph_input_cls::set_input(const llama_ubatch * ubatch) {
 }
 
 void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
-    GGML_UNUSED(ubatch);
-
     const int64_t n_rs = mctx->get_n_rs();
 
     if (s_copy) {
@@ -962,6 +961,34 @@ void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
         // assuming copy destinations ALWAYS happen ONLY on the cells between head and head+n
         for (uint32_t i = 0; i < n_rs; ++i) {
             data[i] = mctx->s_copy(i);
+        }
+    }
+
+    set_input_rep(mctx, ubatch);
+}
+
+void llm_graph_input_rs::set_input_rep(const llama_memory_recurrent_context * mctx, const llama_ubatch * ubatch) {
+    if (!has_rep) {
+        return;
+    }
+
+    const int64_t n_seqs = ubatch->n_seqs;
+
+    int32_t * reps = (int32_t *) rep_n->data;
+    int32_t * cols = (int32_t *) rep_cols->data;
+
+    GGML_ASSERT(ggml_backend_buffer_is_host(rep_n->buffer));
+    GGML_ASSERT(ggml_backend_buffer_is_host(rep_cols->buffer));
+
+    for (int64_t s = 0; s < n_seqs; ++s) {
+        const int64_t n_rep = mctx->get_rs_rep(s);
+        GGML_ASSERT(n_rep <= n_pend);
+
+        reps[s] = n_rep;
+
+        // the conv history is [window | pending]: the window after the kept tokens
+        for (int64_t c = 0; c < n_conv; ++c) {
+            cols[s*n_conv + c] = n_rep + c;
         }
     }
 }
@@ -1712,6 +1739,8 @@ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
             data[i] = mctx->get_recr()->s_copy(i);
         }
     }
+
+    inp_rs->set_input_rep(mctx->get_recr(), ubatch);
 }
 
 bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params) {
@@ -1758,6 +1787,8 @@ void llm_graph_input_mem_hybrid_k::set_input(const llama_ubatch * ubatch) {
             data[i] = mctx->get_recr()->s_copy(i);
         }
     }
+
+    inp_rs->set_input_rep(mctx->get_recr(), ubatch);
 }
 
 bool llm_graph_input_mem_hybrid_k::can_reuse(const llm_graph_params & params) {
@@ -1815,6 +1846,8 @@ void llm_graph_input_mem_hybrid_iswa::set_input(const llama_ubatch * ubatch) {
             data[i] = mctx->get_recr()->s_copy(i);
         }
     }
+
+    inp_rs->set_input_rep(mctx->get_recr(), ubatch);
 }
 
 bool llm_graph_input_mem_hybrid_iswa::can_reuse(const llm_graph_params & params) {
@@ -1904,6 +1937,8 @@ void llm_graph_input_mem_hybrid_iswa_rel::set_input(const llama_ubatch * ubatch)
             data[i] = mctx->get_recr()->s_copy(i);
         }
     }
+
+    inp_rs->set_input_rep(mctx->get_recr(), ubatch);
 }
 
 bool llm_graph_input_mem_hybrid_iswa_rel::can_reuse(const llm_graph_params & params) {
@@ -2325,7 +2360,7 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     }
 
 
-    prec_policy.apply(res);
+    prec_policy.apply(res, w);
 
     if (w_s) {
         res = ggml_mul(ctx0, res, w_s);
@@ -2412,7 +2447,6 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
           ggml_tensor * slots,
                  bool   cached) const {
     ggml_tensor * w_s = model.get_w_scale(w);
-
     // as in build_lora_mm: the folded weight reads the transformed input, the LoRA delta reads `cur`
     ggml_tensor * cur_mm = build_hadamard_input(w, cur);
     // the experts in the MoE cache are selected by their slots
@@ -2420,8 +2454,8 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
         ggml_mul_mat_id(ctx0, w, cur_mm, ids) :
         ggml_mul_mat_id(ctx0, cached ? moe_cache->get_experts(w) : w, cur_mm, slots);
     if (mm_id_backend) {
-        res->op_params[1] = 1; // ids may be -1: zero the output first
-        if (mm_id_hi > mm_id_lo) { res->op_params[8] = mm_id_lo; res->op_params[9] = mm_id_hi; }
+        ggml_fork_mmid_set_neg_ids(res); // ids may be -1: zero the output first
+        if (mm_id_hi > mm_id_lo) { ggml_fork_mmid_set_range(res, mm_id_lo, mm_id_hi); }
         ggml_backend_sched_set_tensor_backend(sched, res, mm_id_backend);
     }
 
@@ -2430,7 +2464,7 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
     }
 
     // after the NVFP4 default, so that the policy can request a higher precision
-    prec_policy.apply(res);
+    prec_policy.apply(res, w);
 
     if (w_s) {
         const int64_t n_expert = w_s->ne[0];
@@ -3529,7 +3563,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // every block of the pool (ggml_cuda_mul_mat_q).
         auto mc_mm = [&](ggml_tensor * w, ggml_tensor * x, ggml_tensor * ids, ggml_tensor * table) {
             ggml_tensor * m = ggml_mul_mat_id(ctx0, w, x, ids);
-            if (mc_zero) { m->op_params[1] = 1; }
+            if (mc_zero) { ggml_fork_mmid_set_neg_ids(m); }
             if (n_tokens > 1) { m->src[3] = sel_dev; m->src[4] = table; }
             return m;
         };
@@ -3628,7 +3662,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
             if (mcache && !mc_mix_b) {
                 up->src[3] = mcache->host_table;
-                up->op_params[0] = mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots;   // no id equals INT32_MIN: nothing on the host, the router observation stays
+                ggml_fork_mmid_set_cache_absent(up, mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots);   // no id equals INT32_MIN: nothing on the host, the router observation stays
                 if (mc_cpu_backend) {
                     // must run where the skip table is honored (CPU), never op-offloaded
                     ggml_backend_sched_set_tensor_backend(sched, up, mc_cpu_backend);
@@ -3656,7 +3690,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                         cur->src[6] = probs;   // policy r: the router's probability of every expert for these tokens, the relevance the cache scores by
                     }
                     cur->src[3] = mcache->host_table;
-                    cur->op_params[0] = mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots;
+                    ggml_fork_mmid_set_cache_absent(cur, mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots);
                     if (mc_ppk) { ggml_format_name(cur, "ffn_moe_defer_ppk-%d", il); }   // the prompt upload observed the pass's ids already: the CPU's op must not count them again
                     if (mc_cpu_backend) {
                         ggml_backend_sched_set_tensor_backend(sched, cur, mc_cpu_backend);
@@ -3754,8 +3788,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
         // upstream (#30656): src1 of the down projection can exceed the F16 range on these architectures, so it is rescaled by a power of two and the product scaled back
         // (the amax op cannot be split across devices, so these architectures are denied -sm tensor [TAG_MOE_AMAX_SCALE])
+        const bool use_amax = llm_arch_mmid_down_bf16(arch) && prec_policy.get_src1(down_exps) != GGML_PREC_BF16;
         llm_graph_amax_src1 amax_src1 = { nullptr, nullptr };
-        if (arch == LLM_ARCH_MISTRAL4 || arch == LLM_ARCH_MELLUM || arch == LLM_ARCH_FLINT || arch == LLM_ARCH_LAGUNA) {
+        if (use_amax) {
             amax_src1 = build_amax_src1_f16(cur);
             cur = amax_src1.res;
         }
@@ -4173,7 +4208,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 ggml_tensor * m = ggml_mul_mat_id(ctx0, w, in, sl);
                 // zero first: the ids of the other parts' ranges are -1 (a part with every expert has none, unless the mix's table masks the other card's: NaN on
                 // Qwen3.6, mix_on_stream: the home part's down matmul left 148 output values unwritten, the weighted sum made NaN logits of them)
-                if (pt.lo > 0 || pt.hi < n_expert || mix_on) { m->op_params[1] = 1; }
+                if (pt.lo > 0 || pt.hi < n_expert || mix_on) { ggml_fork_mmid_set_neg_ids(m); }
                 m->src[3] = selected_experts;
                 m->src[4] = pt.pc->dev_table;
                 return pin(m);
@@ -4297,7 +4332,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             if (!t || depth > 6) { return; }
             if (t->op == GGML_OP_MUL_MAT_ID) {
                 t->src[3] = llama_moe_cache_bell_table_fork(mcache);
-                t->op_params[0] = mcache->n_slots;
+                ggml_fork_mmid_set_cache_absent(t, mcache->n_slots);
                 if (strstr(t->src[0]->name, "gate_exps")) { t->src[5] = all_h; }
             }
             for (int j = 0; j < 2; ++j) { each(t->src[j], depth + 1); }
@@ -4343,7 +4378,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
     if (mcache && !mc_pp && !mc_bell) {
         experts->src[3] = mcache->host_table;
-        experts->op_params[0] = mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots;
+        ggml_fork_mmid_set_cache_absent(experts, mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots);
         if (mc_cpu_backend) {
             ggml_backend_sched_set_tensor_backend(sched, experts, mc_cpu_backend);
         }
@@ -4402,7 +4437,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         ggml_tensor * dexp = expert_chain(cur, mc_ids_def);
         each_mmid(dexp, 0, [&](ggml_tensor * t) {
             t->src[3] = mc_defer_tbl;
-            t->op_params[0] = mcache->n_slots;
+            ggml_fork_mmid_set_cache_absent(t, mcache->n_slots);
             t->src[4] = nullptr; // no predictor handoff on the deferred gate op
             const char * kind = strstr(t->src[0]->name, "gate_exps") ? "gate" : strstr(t->src[0]->name, "up_exps") ? "up" : "down";
             ggml_format_name(t, "ffn_moe_defer_%s-%d", kind, il);
@@ -4905,7 +4940,9 @@ ggml_tensor * llm_graph_context::build_attn_mha(
          ggml_tensor * v_mla,
              int64_t   n_kv_max,
                float   kq_scale,
-                 int   il) const {
+                 int   il,
+         ggml_tensor * bias_table,
+         ggml_tensor * bias_indices) const {
     const bool v_trans = v->nb[1] > v->nb[2];
 
     // split the batch into streams if needed
@@ -4920,12 +4957,28 @@ ggml_tensor * llm_graph_context::build_attn_mha(
     k = ggml_permute(ctx0, k, 0, 2, 1, 3);
     v = ggml_permute(ctx0, v, 0, 2, 1, 3);
 
+    auto dense_bias_mask = [&]() {
+        ggml_tensor * table = ggml_cont(ctx0, ggml_permute(ctx0, bias_table, 1, 0, 2, 3));
+        ggml_tensor * bias = ggml_get_rows(ctx0, table, bias_indices);
+        bias = ggml_reshape_4d(ctx0, bias, q->ne[2], bias_indices->ne[0], q->ne[1], n_stream);
+        bias = ggml_cont(ctx0, ggml_permute(ctx0, bias, 2, 0, 1, 3));
+        cb(bias, "kq_b", il);
+
+        ggml_tensor * mask = kq_mask->type == GGML_TYPE_F32 ? kq_mask : ggml_cast(ctx0, kq_mask, GGML_TYPE_F32);
+        mask = ggml_add(ctx0, bias, mask);
+        if (cparams.flash_attn) {
+            mask = ggml_cast(ctx0, mask, GGML_TYPE_F16);
+        }
+        cb(mask, "kq_mask_rel_pos", il);
+        return mask;
+    };
+
     ggml_tensor * cur;
 
     const bool use_flash_attn = cparams.flash_attn && kq_b == nullptr;
     GGML_ASSERT(use_flash_attn || kv_rows == nullptr);
     if (use_flash_attn) {
-        GGML_ASSERT(kq_b == nullptr && "Flash attention does not support KQ bias yet");
+        GGML_ASSERT(kq_b == nullptr && "Flash attention does not support dense KQ bias");
 
         if (v_trans) {
             v = ggml_transpose(ctx0, v);
@@ -4960,6 +5013,16 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         if (const int32_t smin = llama_dsplit_sparse_min_fork(); smin > 0 && n_kv_max > 0 && (q->ne[1] > 1 || gate_decode)) { ggml_flash_attn_ext_set_sparse_min(cur, smin); }
         ggml_prec_set_acc(cur, GGML_PREC_F32);
 
+        if (bias_table) {
+            ggml_flash_attn_ext_add_indexed_bias(cur, bias_table, bias_indices);
+            auto * dev = model.dev_layer(il);
+            if ((!cparams.offload_kqv && ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU) || !ggml_backend_dev_supports_op(dev, cur)) {
+                // Keep ordinary flash attention on the layer device.
+                ggml_flash_attn_ext_add_indexed_bias(cur, nullptr, nullptr);
+                cur->src[3] = dense_bias_mask();
+            }
+        }
+
         if (v_mla) {
 #if 0
             // v_mla can be applied as a matrix-vector multiplication with broadcasting across dimension 3 == n_tokens.
@@ -4979,6 +5042,9 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
     } else {
+        if (bias_table) {
+            kq_mask = dense_bias_mask();
+        }
         ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);
         cb(kq, "kq", il);
 
@@ -5535,7 +5601,9 @@ static ggml_tensor * build_attn_iswa_impl(
             float     kq_scale,
             int       il,
         const std::function<ggml_tensor * (int64_t t0, int64_t nt, ggml_tensor * after)> & mask_block = nullptr,
-            int64_t   n_block = 0) {
+            int64_t   n_block = 0,
+        ggml_tensor * bias_table = nullptr,
+        ggml_tensor * bias_indices = nullptr) {
     ggml_context * ctx0 = gctx.ctx0;
     ggml_cgraph  * gf   = gctx.gf;
 
@@ -5619,7 +5687,7 @@ static ggml_tensor * build_attn_iswa_impl(
                 cur = cur ? ggml_concat(ctx0, cur, o_b, 1) : o_b;
             }
         } else {
-            cur = gctx.build_attn_mha(q, k, v, kq_b, kq_mask, kv_rows, sinks, v_mla, 0, kq_scale, il);
+            cur = gctx.build_attn_mha(q, k, v, kq_b, kq_mask, kv_rows, sinks, v_mla, 0, kq_scale, il, bias_table, bias_indices);
         }
         cur = build_attn_scale_kv_output(ctx0, mctx_cur, cur, il);
         gctx.cb(cur, "kqv_out", il);
@@ -6028,6 +6096,8 @@ ggml_tensor * llm_graph_context::build_rs(
 static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
            ggml_context * ctx0,
      const llama_ubatch & ubatch,
+    const llama_hparams & hparams,
+    const llama_cparams & cparams,
     const llama_memory_recurrent_context * mctx_cur) {
 
     auto inp = std::make_unique<llm_graph_input_rs>(mctx_cur);
@@ -6045,13 +6115,38 @@ static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
     inp->head = mctx_cur->get_head();
     inp->rs_z = mctx_cur->get_rs_z();
 
+    inp->has_rep = mctx_cur->get_rs_replay();
+    if (inp->has_rep) {
+        // the widest conv window of the model: the delta-net conv, or the PLE n-gram conv (qwen4exp)
+        const int64_t n_conv_r = hparams.ssm_d_conv - 1;
+        const int64_t n_conv_p = hparams.ple_conv_state() > 0 ? (int64_t) (hparams.ple_conv_kernel - 1)*hparams.ple_ngram_size : 0;
+
+        inp->n_conv = std::max(n_conv_r, n_conv_p);
+        inp->n_pend = cparams.n_rs_seq + 1;
+
+        inp->rep_cols = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, inp->n_conv, n_seqs);
+        ggml_set_input(inp->rep_cols);
+        ggml_set_name(inp->rep_cols, "rs_rep_cols");
+
+        const auto win = [&](int64_t n) {
+            return n == inp->n_conv ? inp->rep_cols : ggml_view_2d(ctx0, inp->rep_cols, n, n_seqs, inp->rep_cols->nb[1], 0);
+        };
+
+        inp->rep_cols_r = win(n_conv_r);
+        inp->rep_cols_p = n_conv_p > 0 ? win(n_conv_p) : nullptr;
+
+        inp->rep_n = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_seqs);
+        ggml_set_input(inp->rep_n);
+        ggml_set_name(inp->rep_n, "rs_rep_n");
+    }
+
     return inp;
 }
 
 llm_graph_input_rs * llm_graph_context::build_rs_inp() const {
     const auto * mctx_cur = static_cast<const llama_memory_recurrent_context *>(mctx);
 
-    auto inp = build_rs_inp_impl(ctx0, ubatch, mctx_cur);
+    auto inp = build_rs_inp_impl(ctx0, ubatch, hparams, cparams, mctx_cur);
 
     return (llm_graph_input_rs *) res->add_input(std::move(inp));
 }
@@ -6198,7 +6293,7 @@ ggml_tensor * llm_graph_context::build_rwkv_token_shift_store(
 llm_graph_input_mem_hybrid * llm_graph_context::build_inp_mem_hybrid() const {
     const auto * mctx_cur = static_cast<const llama_memory_hybrid_context *>(mctx);
 
-    auto inp_rs   = build_rs_inp_impl     (ctx0, ubatch, mctx_cur->get_recr());
+    auto inp_rs   = build_rs_inp_impl     (ctx0, ubatch, hparams, cparams, mctx_cur->get_recr());
     auto inp_attn = build_attn_inp_kv_impl(ctx0, ubatch, hparams, cparams, mctx_cur->get_attn());
 
     auto inp = std::make_unique<llm_graph_input_mem_hybrid>(cparams, std::move(inp_attn), std::move(inp_rs), mctx_cur);
@@ -6209,7 +6304,7 @@ llm_graph_input_mem_hybrid * llm_graph_context::build_inp_mem_hybrid() const {
 llm_graph_input_mem_hybrid_k * llm_graph_context::build_inp_mem_hybrid_k() const {
     const auto * mctx_cur = static_cast<const llama_memory_hybrid_context *>(mctx);
 
-    auto inp_rs   = build_rs_inp_impl     (ctx0, ubatch, mctx_cur->get_recr());
+    auto inp_rs   = build_rs_inp_impl     (ctx0, ubatch, hparams, cparams, mctx_cur->get_recr());
     auto inp_attn = build_attn_inp_k_impl(ctx0, ubatch, hparams, cparams, mctx_cur->get_attn());
 
     auto inp = std::make_unique<llm_graph_input_mem_hybrid_k>(cparams, std::move(inp_attn), std::move(inp_rs), mctx_cur);
@@ -6220,7 +6315,7 @@ llm_graph_input_mem_hybrid_k * llm_graph_context::build_inp_mem_hybrid_k() const
 llm_graph_input_mem_hybrid_iswa * llm_graph_context::build_inp_mem_hybrid_iswa() const {
     const auto * mctx_cur = static_cast<const llama_memory_hybrid_iswa_context *>(mctx);
 
-    auto inp_rs = build_rs_inp_impl(ctx0, ubatch, mctx_cur->get_recr());
+    auto inp_rs = build_rs_inp_impl(ctx0, ubatch, hparams, cparams, mctx_cur->get_recr());
 
     // build iswa attention input
     const auto * attn_ctx = mctx_cur->get_attn();
@@ -6257,7 +6352,7 @@ llm_graph_input_mem_hybrid_iswa_rel * llm_graph_context::build_inp_mem_hybrid_is
         uint32_t extent_swa) const {
     const auto * mctx_cur = static_cast<const llama_memory_hybrid_iswa_context *>(mctx);
 
-    auto inp_rs = build_rs_inp_impl(ctx0, ubatch, mctx_cur->get_recr());
+    auto inp_rs = build_rs_inp_impl(ctx0, ubatch, hparams, cparams, mctx_cur->get_recr());
 
     const auto * attn_ctx = mctx_cur->get_attn();
 
@@ -6330,9 +6425,8 @@ ggml_tensor * llm_graph_context::build_attn(
 
     const auto & attn_mask = is_swa ? inp_attn->self_attn_mask_swa : inp_attn->self_attn_mask;
 
-    // TODO: support kv_rows - fill the distances over the kv_rows cell lists and pass the rows to build_attn_mha,
-    //       needs a kv_rows flash attention with a per-head mask (CUDA has none)
     GGML_ASSERT(attn_mask.rows == nullptr);
+    ggml_tensor * indices = is_swa ? inp->self_rel_pos_swa : inp->self_rel_pos;
 
     ggml_tensor * raw = attn_mask.raw;   // [n_kv, n_tokens/n_stream, 1, n_stream]
     const int64_t n_kv     = raw->ne[0];

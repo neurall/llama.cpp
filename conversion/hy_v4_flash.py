@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable, cast
 
 import numpy as np
 import torch
 
-from .base import LazyTorchTensor, ModelBase, gguf, logger
+from .base import LazyTorchTensor, MmprojModel, ModelBase, gguf, logger
+from .deepseek41 import _StreamedBytes
 from .hy_v4 import HYV4Model
 
 # the reference derives the hash multipliers from the Engram seed, the 1-based layer id and the compressed vocab size
@@ -492,9 +493,30 @@ class HYV4FlashModel(HYV4Model):
             self._engram_tables[bid] = take("multi_head_embedding.embedding.weight")[0]
             want = [i - 1 for i in self._engram_ids()]
             if all(i in self._engram_tables for i in want):
-                tables = [self._engram_tables.pop(i) for i in want]
-                yield (tn(T.PER_LAYER_TOKEN_EMBD),
-                       tables[0] if len(tables) == 1 else torch.cat(tables, dim=0))
+                self._write_engram_tables([self._engram_tables.pop(i) for i in want])
+
+    def _write_engram_tables(self, tables: list[torch.Tensor]) -> None:
+        # the concatenated tables are ~127 GB in BF16, so they are streamed one table at a time as deepseek41 does
+        f32 = self.ftype == gguf.LlamaFileType.ALL_F32
+        dim = tables[0].shape[1]
+        if any(t.shape[1] != dim for t in tables):
+            raise ValueError("HY_V4_FLASH engram tables differ in width")
+        n_rows = sum(t.shape[0] for t in tables)
+
+        def chunks() -> Iterable[np.ndarray]:
+            while tables:
+                table = LazyTorchTensor.to_eager(tables.pop(0))
+                for r0 in range(0, table.shape[0], 1 << 18):
+                    # a copy, so that no chunk still held by the writer keeps the whole table alive
+                    rows = (table[r0:r0 + (1 << 18)].float() if f32 else table[r0:r0 + (1 << 18)].bfloat16()).clone()
+                    yield rows.view(torch.uint8).numpy()
+                del table, rows
+
+        qt = gguf.GGMLQuantizationType.F32 if f32 else gguf.GGMLQuantizationType.BF16
+        data = cast(np.ndarray, _StreamedBytes((n_rows, dim * (4 if f32 else 2)), chunks))
+        name = self.format_tensor_name(gguf.MODEL_TENSOR.PER_LAYER_TOKEN_EMBD)
+        self.gguf_writer.add_tensor(name, data, raw_dtype=qt)
+        self._engram_done.add(name)
 
     NEXTN_MAP = {
         "eh_proj.weight":          gguf.MODEL_TENSOR.NEXTN_EH_PROJ,
@@ -564,3 +586,65 @@ class HYV4FlashModel(HYV4Model):
             return
 
         yield from super().modify_tensors(data_torch, name, bid)
+
+
+@ModelBase.register("HYV4FlashForCausalLM", "HYV4FlashForConditionalGeneration")
+class HYV4FlashVisionModel(MmprojModel):
+    """Vision tower of HY_V4_FLASH: a SigLIP-shaped encoder with a rmsnorm_mlp_adapter projector.
+
+    Positions come from a learned grid, resampled to the patch grid. The projector merges 2x2 patches with a strided conv2d, runs a 1x1 conv2d and appends a newline embedding to every row.
+    """
+
+    projector_type = gguf.VisionProjectorType.HY_V4_FLASH
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert self.hparams_vision is not None
+        # there is no image_size, the position-embedding grid is max_image_size / patch_size
+        self.hparams_vision["image_size"] = self.hparams_vision.get("max_image_size", 2048)
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        assert self.hparams_vision is not None
+        vcfg = self.hparams_vision
+        projector_type = vcfg.get("projector_type")
+        if projector_type != "rmsnorm_mlp_adapter":
+            raise ValueError(f"unsupported projector_type {projector_type!r}")
+        # the graph implements the plain variant only
+        unsupported = {
+            "use_2d_rope": bool(vcfg.get("use_2d_rope", False)),
+            "cat_extra_token": bool(vcfg.get("cat_extra_token", False)),
+            "use_image_newline_token": not vcfg.get("use_image_newline_token", True),
+            "perceive_post_norm": bool(vcfg.get("perceive_post_norm", False)),
+            "hidden_act": vcfg.get("hidden_act", "gelu") != "gelu",
+            "interpolate_mode": vcfg.get("interpolate_mode", "bilinear") != "bilinear",
+        }
+        for key, bad in unsupported.items():
+            if bad:
+                raise NotImplementedError(f"HY_V4_FLASH vision config {key}={vcfg.get(key)!r} is not supported")
+        self.gguf_writer.add_clip_projector_type(self.projector_type)
+        self.gguf_writer.add_vision_use_gelu(True)
+        # rms_norm_eps is also the LayerNorm eps of the encoder blocks
+        self.gguf_writer.add_vision_attention_layernorm_eps(vcfg.get("rms_norm_eps", 1e-5))
+        self.gguf_writer.add_vision_spatial_merge_size(vcfg.get("spatial_merge_size", 2))
+        self.gguf_writer.add_vision_min_pixels(int(self.preprocessor_config["min_pixels"]))
+        self.gguf_writer.add_vision_max_pixels(int(self.preprocessor_config["max_pixels"]))
+
+    @classmethod
+    def filter_tensors(cls, item: tuple[str, Callable[[], torch.Tensor]]) -> tuple[str, Callable[[], torch.Tensor]] | None:
+        if not item[0].startswith("vit."):
+            return None
+
+        return super().filter_tensors(item)
+
+    def modify_tensors(self, data_torch: torch.Tensor, name: str, bid: int | None) -> Iterable[tuple[str, torch.Tensor]]:
+        # row 0 of the position embedding is an unused CLS slot, the reference resamples rows 1:
+        if "position_embedding" in name:
+            data_torch = data_torch[1:]
+        yield from super().modify_tensors(data_torch, name, bid)
+
+    def tensor_force_quant(self, name, new_name, bid, n_dims):
+        # conv weights in F32 or F16, BF16 IM2COL is not supported on Metal
+        if ("mm.0." in new_name or "mm.2." in new_name) and new_name.endswith(".weight"):
+            return gguf.GGMLQuantizationType.F16 if self.ftype == gguf.LlamaFileType.MOSTLY_F16 else gguf.GGMLQuantizationType.F32
+        return super().tensor_force_quant(name, new_name, bid, n_dims)

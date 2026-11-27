@@ -240,6 +240,8 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-vk-host-exit-fork.cpp)
     # one Vulkan buffer holds what the driver takes in one allocation (not ggml-vulkan's 1 GiB suballocation block): a 1.5 GiB graph in one buffer
     llama_build_and_test(test-vk-max-size-fork.cpp)
+    # the op_params slots the fork gives a meaning of its own (ggml/src/ggml-op-slots-fork.h): upstream's accessors still read their defaults (CPU, no model)
+    llama_build_and_test(test-op-slots-fork.cpp)
     llama_build_and_test(test-unicode.cpp  LABEL behavior  LINK llama)
     llama_build_and_test(test-sampling.cpp  LABEL behavior  LINK llama)
     llama_build_and_test(test-reasoning-budget.cpp  LABEL behavior)
@@ -407,6 +409,7 @@ llama_build_and_test(test-thread-safety.cpp  LABEL "main backend"  ARGS -m "${MO
 set_tests_properties(test-thread-safety PROPERTIES FIXTURES_REQUIRED test-download-model)
 
 llama_build_and_test(test-arg-parser.cpp  LABEL behavior)
+llama_build_and_test(test-quantize-target.cpp  LABEL "main behavior backend"  LINK llama)
 llama_build_and_test(test-model-resolution.cpp  LABEL behavior)
 # the test serves its repos from an httplib server, and the library links it privately
 target_link_libraries(test-model-resolution PRIVATE cpp-httplib)

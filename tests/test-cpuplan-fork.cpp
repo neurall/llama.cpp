@@ -6,6 +6,7 @@
 // A step with nothing to compute plans one thread; a step with an expert to compute keeps the team.
 #include "ggml.h"
 #include "ggml-cpu.h"
+#include "../ggml/src/ggml-op-slots-fork.h"
 
 #undef NDEBUG
 #include <cassert>
@@ -36,7 +37,7 @@ static chain make_chain(const std::vector<int32_t> & ids_v, const std::vector<in
     if (ids_from_this_graph) { ids = ggml_cont(c.ctx, ids); }   // the picks are computed by this very graph: the plan cannot read them
     c.out = ggml_mul_mat_id(c.ctx, as, x, ids);
     c.out->src[3] = table;
-    ((int32_t *) c.out->op_params)[0] = N_SLOTS;
+    ggml_fork_mmid_set_cache_absent(c.out, N_SLOTS);
     ggml_build_forward_expand(c.gf, c.out);
     return c;
 }

@@ -300,6 +300,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const 
             || arch == LLM_ARCH_BAILINGMOE3
             || arch == LLM_ARCH_KIMI_K3
             || arch == LLM_ARCH_KIMI_K31
+            || arch == LLM_ARCH_RAON1_MINI
             || arch == LLM_ARCH_MISTRAL4
             || arch == LLM_ARCH_MISTRAL_LARGE4
             || arch == LLM_ARCH_HY_V4
@@ -386,7 +387,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const 
     if (arch == LLM_ARCH_PLAMO2 || arch == LLM_ARCH_JAMBA || arch == LLM_ARCH_NEMOTRON_H || arch == LLM_ARCH_NEMOTRON_H_MOE ||
             arch == LLM_ARCH_GRANITE_HYBRID || arch == LLM_ARCH_LFM2 || arch == LLM_ARCH_LFM2MOE || arch == LLM_ARCH_LFM3 ||
             arch == LLM_ARCH_KIMI_LINEAR || arch == LLM_ARCH_BAILINGMOE3 || arch == LLM_ARCH_KIMI_K3 || arch == LLM_ARCH_KIMI_K31 ||
-            arch == LLM_ARCH_GLM5_NEXT || arch == LLM_ARCH_HY_V4_FLASH
+            arch == LLM_ARCH_GLM5_NEXT || arch == LLM_ARCH_HY_V4_FLASH || arch == LLM_ARCH_RAON1_MINI
             ) {
         GGML_ASSERT(n_layer >= 2);
         std::vector<uint32_t> n_head_per_layer;
@@ -398,7 +399,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const 
                     : (il == 1 ? 0 : n_head));
         }
         // GLM5 next KDA heads come from the uniform head count, only head_count_kv is per layer.
-        if (arch == LLM_ARCH_GLM5_NEXT) {
+        if (arch == LLM_ARCH_GLM5_NEXT || arch == LLM_ARCH_RAON1_MINI) {
             ms.add_kv(LLM_KV_ATTENTION_HEAD_COUNT, n_head);
             // the MLA cache holds one latent head
             for (uint32_t & n : n_head_per_layer) {
@@ -440,6 +441,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const 
             || arch == LLM_ARCH_BAILINGMOE3
             || arch == LLM_ARCH_KIMI_K3
             || arch == LLM_ARCH_KIMI_K31
+            || arch == LLM_ARCH_RAON1_MINI
             || arch == LLM_ARCH_GLM5_NEXT
             || arch == LLM_ARCH_HY_V4
             || arch == LLM_ARCH_HY_V4_FLASH
@@ -485,6 +487,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const 
     ms.add_kv(LLM_KV_ATTENTION_CLAMP_KQV,              1.0f);
     ms.add_kv(LLM_KV_ATTENTION_LAYERNORM_EPS,          1e-5f);
     ms.add_kv(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,      1e-5f);
+    ms.add_kv(LLM_KV_ATTENTION_LATENT_NORM_RMS_EPS,    1e-6f);
     ms.add_kv(LLM_KV_ATTENTION_GROUPNORM_EPS,          1e-5f);
     ms.add_kv(LLM_KV_ATTENTION_GROUPNORM_GROUPS,       uint32_t(8));
     ms.add_kv(LLM_KV_ATTENTION_Q_LORA_RANK,            (arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_DEEPSEEK41) ? uint32_t(64) : uint32_t(512));
@@ -546,6 +549,14 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const 
         ms.add_kv(LLM_KV_EXPERT_WEIGHTS_NORM, false);
     }
 
+    if (arch == LLM_ARCH_RAON1_MINI) {
+        ms.add_kv(LLM_KV_EXPERT_WEIGHTS_SCALE, 1.0f);
+        ms.add_kv(LLM_KV_EXPERT_WEIGHTS_NORM, true);
+        ms.add_kv(LLM_KV_HYPER_CONNECTION_COUNT, uint32_t(4));
+        ms.add_kv(LLM_KV_HYPER_CONNECTION_EPSILON, 1e-5f);
+        ms.add_kv(LLM_KV_HYPER_CONNECTION_MAGNITUDE, 2.0f);
+    }
+
     // MSA requires one indexer head per GQA (KV) head, unlike the DSA archs where the
     // indexer head count is independent of the main attention head count.
     if (arch == LLM_ARCH_QWEN4EXP || arch == LLM_ARCH_GLM5_NEXT) {
@@ -604,7 +615,8 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const 
         // text-only hy_v4 files carry no sections, keep the normal rope path
         ms.add_kv(LLM_KV_ROPE_DIMENSION_SECTIONS, std::vector<uint32_t>({0, 0, 0, 0}));
     } else if (arch == LLM_ARCH_HY_V4_FLASH) {
-        // published hy_v4_flash files carry no sections, the model defaults them to [12, 10, 10, 0] (IMROPE path)
+        // the published files carry the VL sections, so the text model runs the M-RoPE path
+        ms.add_kv(LLM_KV_ROPE_DIMENSION_SECTIONS, std::vector<uint32_t>({12, 10, 10, 0}));
     } else {
         ms.add_kv(LLM_KV_ROPE_DIMENSION_SECTIONS, std::vector<uint32_t>({n_embd_head/4, n_embd_head/4, n_embd_head/4, n_embd_head/4}));
     }
@@ -1211,6 +1223,7 @@ static bool moe_mandatory(const llm_arch arch) {
         case LLM_ARCH_KIMI_LINEAR:
         case LLM_ARCH_KIMI_K3:
         case LLM_ARCH_KIMI_K31:
+        case LLM_ARCH_RAON1_MINI:
         case LLM_ARCH_GLM5_NEXT:
         case LLM_ARCH_STEP35:
         case LLM_ARCH_MISTRAL4:
@@ -1496,23 +1509,19 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
 
         const bool encode = arch == LLM_ARCH_T5 || arch == LLM_ARCH_DREAM || arch == LLM_ARCH_LLADA || arch == LLM_ARCH_LLADA_MOE || arch == LLM_ARCH_RND1;
         // hy_v4 also runs as the VL text model, with rope sections and the IMROPE path
-        // hy_v4_flash also runs without an indexer, where the sparse layers attend their whole context
-        struct arch_config { bool moe; bool vl; bool no_indexer; };
-        std::vector<arch_config> configs = {{false, false, false}, {true, false, false}};
+        struct arch_config { bool moe; bool vl; };
+        std::vector<arch_config> configs = {{false, false}, {true, false}};
         if (arch == LLM_ARCH_HY_V4) {
-            configs.push_back({true, true, false});
+            configs.push_back({true, true});
         }
-        if (arch == LLM_ARCH_HY_V4_FLASH) {
-            configs.push_back({true, false, true});
-        }
-        for (const auto & [moe, vl, no_indexer] : configs) {
+        for (const auto & [moe, vl] : configs) {
             if (moe && !moe_implemented(arch)) {
                 continue;
             }
             if (!moe && moe_mandatory(arch)) {
                 continue;
             }
-            const std::string config_name = moe ? (vl ? "MoE-VL" : (no_indexer ? "MoE-noidx" : "MoE")) : "Dense";
+            const std::string config_name = moe ? (vl ? "MoE-VL" : "MoE") : "Dense";
             gguf_context_ptr gguf_ctx = get_gguf_ctx(arch, moe);
             if (arch == LLM_ARCH_BAILINGMOE3) {
                 GGML_ASSERT(gguf_remove_key(gguf_ctx.get(), "bailingmoe3.kda.safe_gate") >= 0);
@@ -1521,10 +1530,6 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
                 // sums to n_rot / 2, unequal so that a swapped section is caught
                 const std::vector<uint32_t> sections = {12, 10, 10, 0};
                 gguf_set_arr_data(gguf_ctx.get(), llama_arch_kv_name(arch, LLM_KV_ROPE_DIMENSION_SECTIONS).c_str(), GGUF_TYPE_UINT32, sections.data(), sections.size());
-            }
-            if (no_indexer) {
-                // without top_k the memory is a plain iSWA pair and the graph builds no selection
-                GGML_ASSERT(gguf_remove_key(gguf_ctx.get(), llama_arch_kv_name(arch, LLM_KV_ATTENTION_INDEXER_TOP_K).c_str()) >= 0);
             }
             std::pair<llama_model_ptr, llama_context_ptr> model_and_ctx_cpu;
             std::vector<float> logits_cpu;

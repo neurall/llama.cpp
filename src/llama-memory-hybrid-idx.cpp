@@ -24,6 +24,7 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
                             /* common */
                  uint32_t   n_seq_max,
                  uint32_t   n_rs_seq,
+                     bool   rs_replay,
                      bool   offload,
                      bool   unified,
                             /* layer filters */
@@ -35,7 +36,7 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
         no_alloc,
         type_k, type_v, v_trans, kv_size, n_swa, swa_type,
         type_r, type_s, rs_size,
-        n_seq_max, n_rs_seq, offload, unified,
+        n_seq_max, n_rs_seq, rs_replay, offload, unified,
         filter_attn, filter_recr),
     mem_idx(filter_idx == nullptr ? nullptr : new llama_kv_cache_kpool(
         model, no_alloc, type_k, type_v, v_trans, offload, unified,
