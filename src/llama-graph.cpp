@@ -1008,6 +1008,7 @@ bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
 
     res &= head == mctx->get_head();
     res &= rs_z == mctx->get_rs_z();
+    res &= rs_in_place == mctx->get_rs_in_place();
 
     if (strcmp(s_copy->name, "rs_s_copy_ip") == 0) {   // fork: built reading the states in place (llama_rs_inplace_fork)
         res &= llama_rs_inplace_fork(mctx, params.ubatch, params.cparams.n_rs_seq);
@@ -1761,6 +1762,7 @@ bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params) {
 
     res &= inp_rs->head == mctx->get_recr()->get_head();
     res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();
+    res &= inp_rs->rs_in_place == mctx->get_recr()->get_rs_in_place();
 
     return res;
 }
@@ -1808,6 +1810,7 @@ bool llm_graph_input_mem_hybrid_k::can_reuse(const llm_graph_params & params) {
 
     res &= inp_rs->head == mctx->get_recr()->get_head();
     res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();
+    res &= inp_rs->rs_in_place == mctx->get_recr()->get_rs_in_place();
 
     return res;
 }
@@ -1881,6 +1884,7 @@ bool llm_graph_input_mem_hybrid_iswa::can_reuse(const llm_graph_params & params)
 
     res &= inp_rs->head == mctx->get_recr()->get_head();
     res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();
+    res &= inp_rs->rs_in_place == mctx->get_recr()->get_rs_in_place();
 
     return res;
 }
@@ -1986,6 +1990,7 @@ bool llm_graph_input_mem_hybrid_iswa_rel::can_reuse(const llm_graph_params & par
 
     res &= inp_rs->head == mctx->get_recr()->get_head();
     res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();
+    res &= inp_rs->rs_in_place == mctx->get_recr()->get_rs_in_place();
 
     return res;
 }
@@ -6060,7 +6065,9 @@ ggml_tensor * llm_graph_context::build_rs(
            uint32_t   rs_head,
            uint32_t   rs_size,
             int32_t   rs_zero,
-        const llm_graph_get_rows_fn & get_state_rows) const {
+        const llm_graph_get_rows_fn & get_state_rows,
+               bool   in_place,
+               bool   from_cache) const {
 
     GGML_UNUSED(rs_size);
     ggml_tensor * states = ggml_reshape_2d(ctx0, s, state_size, s->ne[1]);
@@ -6078,9 +6085,22 @@ ggml_tensor * llm_graph_context::build_rs(
 
     ggml_tensor * states_all = ggml_get_rows(ctx0, states, state_copy);
 
-    ggml_tensor * output_states = get_state_rows ?
-        get_state_rows(ctx0, states, state_copy_main) :
-        ggml_view_2d(ctx0, states_all, state_size, n_seqs, states_all->nb[1], 0);
+    ggml_tensor * output_states;
+    if (get_state_rows) {
+        output_states = get_state_rows(ctx0, states, state_copy_main);
+    } else if (!from_cache) {
+        // rollback snapshots: the states are never in place, so the readers read the gathered states directly
+        output_states = ggml_view_2d(ctx0, states_all, state_size, n_seqs, states_all->nb[1], 0);
+    } else {
+        // move the gathered states into their cells, the readers then read them from the cache
+        // when the states are already in place the gather and the move have no rows, so the graph only changes in size
+        const int64_t n_move = in_place ? 0 : n_seqs;
+        ggml_build_forward_expand(gf, ggml_cpy(ctx0,
+                ggml_view_2d(ctx0, states_all, state_size, n_move, states_all->nb[1], 0),
+                ggml_view_2d(ctx0, states,     state_size, n_move, states->nb[1],     rs_head*states->nb[1])));
+        // view of the cache: all readers must run after the move and before the new states are stored over it
+        output_states = ggml_view_2d(ctx0, states, state_size, n_seqs, states->nb[1], rs_head*states->nb[1]);
+    }
     ggml_build_forward_expand(gf, output_states);
 
     // copy extra states which won't be changed further (between n_seqs and n_rs)
@@ -6114,6 +6134,9 @@ static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
 
     inp->head = mctx_cur->get_head();
     inp->rs_z = mctx_cur->get_rs_z();
+
+    inp->rs_in_place = mctx_cur->get_rs_in_place();
+    inp->s_copy_rows = ggml_view_1d(ctx0, inp->s_copy, inp->rs_in_place ? 0 : n_rs, 0);
 
     inp->has_rep = mctx_cur->get_rs_replay();
     if (inp->has_rep) {
@@ -6176,16 +6199,23 @@ ggml_tensor * llm_graph_context::build_rs(
         ggml_tensor * s,
             int32_t   state_size,
             int32_t   n_seqs,
-        const llm_graph_get_rows_fn & get_state_rows) const {
+        const llm_graph_get_rows_fn & get_state_rows,
+               bool   gathered) const {
     const auto * kv_state = inp->mctx;
+
+    const bool in_place = inp->rs_in_place && !get_state_rows && !gathered;
+
+    // the snapshot mode is fixed per context, so the graph shape is stable
+    const bool from_cache = !gathered && !kv_state->get_rs_snapshots();
+    GGML_ASSERT(get_state_rows || !from_cache || s->type == GGML_TYPE_F32); // the states are read from the cache, the gather is F32
 
     // a custom getter reads the states of the ubatch straight from the cache, so the gather skips the first
     // state: it still holds the n_rs - n_seqs extra states and copies no state of a single sequence ubatch
-    ggml_tensor * state_copy = get_state_rows ? inp->s_copy_tail : inp->s_copy;
+    ggml_tensor * state_copy = get_state_rows ? inp->s_copy_tail : from_cache ? inp->s_copy_rows : inp->s_copy;
 
     return build_rs(s, state_copy, inp->s_copy_main, state_size, n_seqs,
                     kv_state->get_n_rs(), kv_state->get_head(), kv_state->get_size(), kv_state->get_rs_z(),
-                    get_state_rows);
+                    get_state_rows, in_place, from_cache);
 }
 
 void llm_graph_context::build_conv_state_store(
@@ -6347,6 +6377,13 @@ llm_graph_input_mem_hybrid_iswa * llm_graph_context::build_inp_mem_hybrid_iswa()
     return (llm_graph_input_mem_hybrid_iswa *) res->add_input(std::move(inp));
 }
 
+// fork: --moe ink-fa-bias=1: the relative bias of one stream as flash attention's indexed bias (upstream's build_attn: the kernel adds table[bin] per query,
+// key and head from the dense distances) instead of the fork's [n_kv, n_tokens, n_head] mask (ggml_rel_bias_mask); several streams take the distances always
+static bool llm_rel_fa_bias_fork(const llama_cparams & cparams) {
+    static const bool on = [] { const char * e = llama_moe_get_opt("ink-fa-bias"); return e && atoi(e) != 0; }();
+    return on && cparams.flash_attn;
+}
+
 llm_graph_input_mem_hybrid_iswa_rel * llm_graph_context::build_inp_mem_hybrid_iswa_rel(
         uint32_t extent,
         uint32_t extent_swa) const {
@@ -6381,7 +6418,7 @@ llm_graph_input_mem_hybrid_iswa_rel * llm_graph_context::build_inp_mem_hybrid_is
 
     auto inp = std::make_unique<llm_graph_input_mem_hybrid_iswa_rel>(cparams, std::move(inp_attn), std::move(inp_rs), mctx_cur, extent, extent_swa);
 
-    if (inp->inp_attn->self_attn_mask.raw->ne[3] > 1) {   // several streams: the dense distances (build_attn's unfused path)
+    if (inp->inp_attn->self_attn_mask.raw->ne[3] > 1 || llm_rel_fa_bias_fork(cparams)) {   // several streams, or the bias in the attention kernel: the dense distances
         inp->self_rel_pos = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, attn_ctx->get_base()->get_n_kv(), ubatch.n_tokens);
         ggml_set_input(inp->self_rel_pos);
         ggml_set_name(inp->self_rel_pos, "attn_inp_rel_pos");
@@ -6427,6 +6464,12 @@ ggml_tensor * llm_graph_context::build_attn(
 
     GGML_ASSERT(attn_mask.rows == nullptr);
     ggml_tensor * indices = is_swa ? inp->self_rel_pos_swa : inp->self_rel_pos;
+
+    if (llm_rel_fa_bias_fork(cparams) && indices && attn_mask.raw->ne[3] == 1) {   // table [bins, n_head, n_tokens] as the kernel reads it (upstream)
+        return build_attn_iswa_impl(*this, inp_attn, wo, wo_b, wo_s, q_cur, k_cur, v_cur, nullptr, attn_mask.raw, nullptr, sinks, nullptr, kq_scale, il,
+                nullptr, 0, table, indices);
+    }
+    table = ggml_cont(ctx0, ggml_permute(ctx0, table, 1, 0, 2, 3));   // fork: [n_head, bins, n_tokens], one head's bins a row for the gather below
 
     ggml_tensor * raw = attn_mask.raw;   // [n_kv, n_tokens/n_stream, 1, n_stream]
     const int64_t n_kv     = raw->ne[0];
