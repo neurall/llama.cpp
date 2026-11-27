@@ -62,6 +62,11 @@ int main() {
     CHECK(llama_kv_decode_k0_fork(768, 1024, 1024) == 0);
     CHECK(llama_kv_decode_k0_fork(12288, 12544, 256) == 12288);             // pad 256: the old start
     CHECK(llama_kv_decode_k0_fork(12032, 13312, 1024) == 12032);            // a tie moved the first cell back: never past it
-    printf("ok: decode pad, cells of a decode graph, mask start\n");
+    // a relative bias in the scores: the mask starts at k0 only when the attention kernel adds the bias itself (the folded per-head mask would lose it)
+    CHECK(llama_kq_mask_trim_ok_fork(false, false));    // Qwen, GLM, DeepSeek: as before
+    CHECK(llama_kq_mask_trim_ok_fork(false, true));
+    CHECK(!llama_kq_mask_trim_ok_fork(true, false));    // Inkling 2, the fork's folded mask: the whole mask
+    CHECK(llama_kq_mask_trim_ok_fork(true, true));      // Inkling 2 with --moe ink-fa-bias=1: the kernel reads table and distances for every key
+    printf("ok: decode pad, cells of a decode graph, mask start, mask start under a relative bias\n");
     return 0;
 }

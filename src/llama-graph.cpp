@@ -6312,9 +6312,14 @@ llm_graph_input_mem_hybrid_iswa * llm_graph_context::build_inp_mem_hybrid_iswa()
 
 // fork: --moe ink-fa-bias=1: the relative bias of one stream as flash attention's indexed bias (upstream's build_attn: the kernel adds table[bin] per query,
 // key and head from the dense distances) instead of the fork's [n_kv, n_tokens, n_head] mask (ggml_rel_bias_mask); several streams take the distances always
-static bool llm_rel_fa_bias_fork(const llama_cparams & cparams) {
+// fork: --moe ink-fa-bias=1, read here and by llama_kv_cache::kq_mask_k0 (a mask from k0 keeps the bias only on this path)
+bool llama_rel_fa_bias_opt_fork() {
     static const bool on = [] { const char * e = llama_moe_get_opt("ink-fa-bias"); return e && atoi(e) != 0; }();
-    return on && cparams.flash_attn;
+    return on;
+}
+
+static bool llm_rel_fa_bias_fork(const llama_cparams & cparams) {
+    return llama_rel_fa_bias_opt_fork() && cparams.flash_attn;
 }
 
 llm_graph_input_mem_hybrid_iswa_rel * llm_graph_context::build_inp_mem_hybrid_iswa_rel(
