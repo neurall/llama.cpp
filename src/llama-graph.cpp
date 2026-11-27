@@ -6310,6 +6310,13 @@ llm_graph_input_mem_hybrid_iswa * llm_graph_context::build_inp_mem_hybrid_iswa()
     return (llm_graph_input_mem_hybrid_iswa *) res->add_input(std::move(inp));
 }
 
+// fork: --moe ink-fa-bias=1: the relative bias of one stream as flash attention's indexed bias (upstream's build_attn: the kernel adds table[bin] per query,
+// key and head from the dense distances) instead of the fork's [n_kv, n_tokens, n_head] mask (ggml_rel_bias_mask); several streams take the distances always
+static bool llm_rel_fa_bias_fork(const llama_cparams & cparams) {
+    static const bool on = [] { const char * e = llama_moe_get_opt("ink-fa-bias"); return e && atoi(e) != 0; }();
+    return on && cparams.flash_attn;
+}
+
 llm_graph_input_mem_hybrid_iswa_rel * llm_graph_context::build_inp_mem_hybrid_iswa_rel(
         uint32_t extent,
         uint32_t extent_swa) const {
@@ -6344,7 +6351,7 @@ llm_graph_input_mem_hybrid_iswa_rel * llm_graph_context::build_inp_mem_hybrid_is
 
     auto inp = std::make_unique<llm_graph_input_mem_hybrid_iswa_rel>(cparams, std::move(inp_attn), std::move(inp_rs), mctx_cur, extent, extent_swa);
 
-    if (inp->inp_attn->self_attn_mask.raw->ne[3] > 1) {   // several streams: the dense distances (build_attn's unfused path)
+    if (inp->inp_attn->self_attn_mask.raw->ne[3] > 1 || llm_rel_fa_bias_fork(cparams)) {   // several streams, or the bias in the attention kernel: the dense distances
         inp->self_rel_pos = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, attn_ctx->get_base()->get_n_kv(), ubatch.n_tokens);
         ggml_set_input(inp->self_rel_pos);
         ggml_set_name(inp->self_rel_pos, "attn_inp_rel_pos");
@@ -6390,6 +6397,12 @@ ggml_tensor * llm_graph_context::build_attn(
 
     GGML_ASSERT(attn_mask.rows == nullptr);
     ggml_tensor * indices = is_swa ? inp->self_rel_pos_swa : inp->self_rel_pos;
+
+    if (llm_rel_fa_bias_fork(cparams) && indices && attn_mask.raw->ne[3] == 1) {   // table [bins, n_head, n_tokens] as the kernel reads it (upstream)
+        return build_attn_iswa_impl(*this, inp_attn, wo, wo_b, wo_s, q_cur, k_cur, v_cur, nullptr, attn_mask.raw, nullptr, sinks, nullptr, kq_scale, il,
+                nullptr, 0, table, indices);
+    }
+    table = ggml_cont(ctx0, ggml_permute(ctx0, table, 1, 0, 2, 3));   // fork: [n_head, bins, n_tokens], one head's bins a row for the gather below
 
     ggml_tensor * raw = attn_mask.raw;   // [n_kv, n_tokens/n_stream, 1, n_stream]
     const int64_t n_kv     = raw->ne[0];
