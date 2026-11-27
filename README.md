@@ -98,25 +98,11 @@ The same machine, one session (2026-11-26), 1024 tokens out, the better of two r
 
 This fork reads prompts fastest in every row and leads Inkling 2 Mini with its DSpark draft. Adamant's MTP draft decodes fastest on Qwen 3.8 Next (93-118 o/s); without drafts this fork decodes faster than Adamant (78.7 against 51.7 o/s on two cards). On Qwen 3.8 Next, Strata decodes 7-13% faster than this fork without drafts; this fork's own MTP draft is slower than no draft there (the next release turns a slower draft off by itself).
 
-### 8 GB laptop (RTX 4060), against Strata
-
-One session (2026-11-27), 1024 tokens out, run 1 / run 2. This fork: b16923. Strata: 0.2.21.
-
-| model, test | this fork i/s | Strata i/s | this fork o/s | Strata o/s |
-|---|---|---|---|---|
-| Inkling 2 Mini IQ4_XS, 12k | 29.8 / 30.3 | - / **203.1** | 12.69 / 12.74 | 5.87 / 12.40 |
-| Inkling 2 Mini IQ4_XS, short | - | - | 13.12 / 12.62 | **20.99 / 21.90** |
-| Qwen 3.8 Next IQ4_XS, 14k | 10.5 / 7.7 | **240.5 / 279.3** | 2.23 / 2.16 | **3.00 / 3.10** |
-| Qwen 3.8 Next IQ4_XS, short | - | - | **3.05 / 3.25** | 2.30 / 2.30 |
-
-On 8 GB Strata is far ahead on prompts (Strata's first 12k run reused a cached prompt, "-"). This fork's work on small cards is in progress.
-
 ## Where it wins, where it does not
 
 - **Wins:** MoE models larger than the free VRAM. The less of the model fits, the bigger the gain, down to models larger than RAM that run partly from the SSD (Kimi K3.1: 580 GB on 256 GB of RAM). Long prompts. Two or more GPUs without NVLink.
 - **Stock speed:** models that fit in VRAM, and dense models: the fork's defaults only apply when a MoE model is larger than the free VRAM.
 - **Drafts** (MTP, DSpark): Inkling 2 Mini with its DSpark draft decodes 25% faster (86.4 against 69.1 o/s, 12k/1k, 1x RTX 3090). On Qwen 3.8 Next the MTP and DSpark drafts are not faster than no draft yet.
-- **8 GB cards:** not a win yet. Inkling 2 Mini runs its experts on the CPU there (RTX 4060 laptop: 12k/1k 30 i/s, 12.7 o/s, Strata 203 i/s); Qwen 3.8 Next reads 14k prompts at 8-10 i/s against Strata's 240-279 (table above).
 - **Vulkan** runs at about half the CUDA speed on the same NVIDIA card. HIP and Vulkan on AMD iGPUs work (Radeon 780M, Windows: Inkling 2 Mini 12k/1k 96.4 i/s and 7.8 o/s on Vulkan).
 
 ## Quick start
