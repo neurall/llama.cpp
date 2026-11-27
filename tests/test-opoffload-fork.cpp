@@ -38,6 +38,14 @@ int main() {
     CHECK(opoff_plan_fork_calc(7040 * MiB, 6886 * MiB, 512, 5950 * MiB, 484 * MiB, 0, 1440 * MiB, 32768).off);
     // a 256-token pass that fits is not refused for what a 512-token pass would need
     CHECK(!opoff_plan_fork_calc(4000 * MiB, 3944 * MiB, 256, 5990 * MiB, 484 * MiB, 0, 1440 * MiB, 32768).off);
+    // W10 --no-op-offload 2026-11-27: "free 5950 MiB, margin 3212 (KV fixed 2728, 0.031 MiB a cell), graph 7205 MiB at 16384 -> 5792": KV got 4608 cells
+    const double g = 7205.0 * MiB / 16384;
+    const uint32_t full = ub_cut_fork(5950 * MiB, 3212 * MiB, g, 32768, 16384, false);
+    CHECK(full >= 5700 && full <= 5800);                  // the old cut: the 12k prompt did not fit the KV
+    const uint32_t half = ub_cut_fork(5950 * MiB, 3212 * MiB, g, 32768, 16384, true);
+    CHECK(half >= 512 && half < full);
+    CHECK((5950.0 - 3212) * MiB - half * g >= 12846.0 * 32768);   // the KV holds the 12846-token prompt beside that pass
+    CHECK(ub_cut_fork(3000 * MiB, 3212 * MiB, g, 32768, 16384, true) == 0);
     if (g_fail) { fprintf(stderr, "test-opoffload-fork: %d failed\n", g_fail); return 1; }
     printf("test-opoffload-fork: ok\n");
     return 0;
