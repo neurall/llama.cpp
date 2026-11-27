@@ -1734,7 +1734,8 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
     const char * lst = llama_moe_get_opt("kv-fallback");
     std::string list = lst ? lst : KVX_DEFAULT;
     std::vector<std::string> unknown;
-    const std::vector<int> allowed = kvx_allowed(list, &unknown);
+    std::vector<int> allowed = kvx_allowed(list, &unknown);
+    if (model.arch == LLM_ARCH_ERNIE5_5) { allowed = { 0 }; }   // fork: its MLA layers read K unquantized (src/models/ernie5-5.cpp): f16 only, the passes shrink instead
     static bool warned_list = false;
     if (!unknown.empty() && !warned_list) {   // once: the words that are no tier (k8v8, k4v4, ram, or none) are left out
         warned_list = true;
