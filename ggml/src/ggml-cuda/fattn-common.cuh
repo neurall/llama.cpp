@@ -1006,7 +1006,7 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
 template <int ncols1>
 __launch_bounds__(FATTN_KQ_STRIDE/2, 1)
 static __global__ void flash_attn_mask_to_KV_max(
-        const half2 * mask_ptr, int * KV_max_ptr, const int ne30, const int64_t s31, const int64_t s33, const int k0_mask) {
+        const half2 * mask_ptr, int * KV_max_ptr, const int ne30, const int64_t s31, const int64_t s33, const int k0_mask, const int n_rows) {
     const half2 * GGML_CUDA_RESTRICT mask   = mask_ptr;
     int         * GGML_CUDA_RESTRICT KV_max = KV_max_ptr;
 
@@ -1030,6 +1030,9 @@ static __global__ void flash_attn_mask_to_KV_max(
 
 #pragma unroll
         for (int j = 0; j < ncols1; ++j) {
+            if (jt*ncols1 + j >= n_rows) {
+                break;   // fork: rows past the mask are the last tile's padding queries (their output is dropped): they see nothing
+            }
             const float2 tmp = __half22float2(mask[j*s31 + KV_max_sj/2 + tid]);
             all_inf = all_inf && int(isinf(tmp.x)) && int(isinf(tmp.y));
         }
@@ -1525,8 +1528,8 @@ void launch_fattn(
     // Optional optimization where the mask is scanned to determine whether part of the calculation can be skipped.
     // Only worth the overhead if there is at lease one FATTN_KQ_STRIDE x FATTN_KQ_STRIDE square to be skipped or
     //     multiple sequences of possibly different lengths, or kv_rows lists that end with padding.
-    // The scan reads ncols1 mask rows per tile, including the last tile.
-    const bool scan_mask = !has_bias && !use_sparse && ncols1_eff == ncols1 && mask && mask->ne[2] == 1 && mask->ne[1]/ncols1 >= ntiles_x &&
+    // fork: the scan reads at most the mask's rows (n_rows): a mask not padded to whole tiles keeps the scan (upstream turned it off there: MiMo 12k FA +88%)
+    const bool scan_mask = !has_bias && !use_sparse && ncols1_eff == ncols1 && mask && mask->ne[2] == 1 &&
         n_kv_cols % FATTN_KQ_STRIDE == 0 && (Q->ne[1] >= 1024 || Q->ne[3] > 1 || kv_rows);
     if (scan_mask && plan) {
         plan_take(size_t(ntiles_x) * Q->ne[3] * sizeof(int));   // KV_max below
@@ -1543,7 +1546,7 @@ void launch_fattn(
         KV_max.alloc(ne_KV_max);
         ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(blocks_num_KV_max, block_dim_KV_max, 0, main_stream);
         ggml_cuda_kernel_launch(flash_attn_mask_to_KV_max<ncols1>, launch_params,
-            (const half2 *) mask->data, KV_max.ptr, iter_k, s31, s33, int(n_kv_cols - mask->ne[0]));   // fork: k0 (0 with kv_rows: the mask has a column per row)
+            (const half2 *) mask->data, KV_max.ptr, iter_k, s31, s33, int(n_kv_cols - mask->ne[0]), int(mask->ne[1]));   // fork: k0 (0 with kv_rows: the mask has a column per row)
         CUDA_CHECK(cudaGetLastError());
     }
 
