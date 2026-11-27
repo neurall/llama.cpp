@@ -606,6 +606,7 @@ llama_model_loader::llama_model_loader(
     this->use_mmap      = load_mode == LLAMA_LOAD_MODE_MMAP || load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK || load_mode == LLAMA_LOAD_MODE_AUTO;
     this->use_direct_io = load_mode == LLAMA_LOAD_MODE_DIRECT_IO;
 
+    int n_compat_skipped = 0;   // fork: tensors of such a file left out (gguf_compat_skip_tensor_fork)
     std::string compat_arch;   // fork: the file's own architecture name when it is another tool's (llama-gguf-compat-fork.h)
     if (!fname.empty()) {
         // Load the main GGUF
@@ -647,7 +648,7 @@ llama_model_loader::llama_model_loader(
             }
             n_elements += ggml_nelements(cur);
             n_bytes    += ggml_nbytes(cur);
-            if (!compat_arch.empty() && gguf_compat_skip_tensor_fork(compat_arch, tensor_name)) { n_elements -= ggml_nelements(cur); n_bytes -= ggml_nbytes(cur); continue; }
+            if (!compat_arch.empty() && gguf_compat_skip_tensor_fork(compat_arch, tensor_name)) { n_elements -= ggml_nelements(cur); n_bytes -= ggml_nbytes(cur); n_compat_skipped++; continue; }
             llama_tensor_weight w(files.back().get(), 0, metadata, cur);   // fork: found in the file by its own name, kept under ours
             if (!compat_arch.empty()) { ggml_set_name(cur, gguf_compat_tensor_fork(compat_arch, tensor_name).c_str()); tensor_name = cur->name; }
             weights_map.emplace(tensor_name, w);
@@ -789,7 +790,7 @@ llama_model_loader::llama_model_loader(
                 }
                 n_elements += ggml_nelements(cur);
                 n_bytes    += ggml_nbytes(cur);
-                if (!compat_arch.empty() && gguf_compat_skip_tensor_fork(compat_arch, tensor_name)) { n_elements -= ggml_nelements(cur); n_bytes -= ggml_nbytes(cur); continue; }
+                if (!compat_arch.empty() && gguf_compat_skip_tensor_fork(compat_arch, tensor_name)) { n_elements -= ggml_nelements(cur); n_bytes -= ggml_nbytes(cur); n_compat_skipped++; continue; }
                 llama_tensor_weight w(files.back().get(), file_idx, ctx_gguf.get(), cur);   // fork: as in the main file
                 if (!compat_arch.empty()) { ggml_set_name(cur, gguf_compat_tensor_fork(compat_arch, cur->name).c_str()); }
                 weights_map.emplace(std::string(cur->name), w);
@@ -807,6 +808,7 @@ llama_model_loader::llama_model_loader(
         if (n_split > 1 || has_extras) {
             int declared_tensors = gguf_get_n_tensors(metadata);
             get_key(llm_kv(LLM_KV_SPLIT_TENSORS_COUNT), declared_tensors, n_split > 1 && !has_extras);
+            declared_tensors -= n_compat_skipped;   // fork: tensors that hold metadata (gguf_compat_skip_tensor_fork) are in the count, not in the model
             if (declared_tensors != (int) weights_map.size()) {
                 if (n_split > 1 && !has_extras) {
                     throw std::runtime_error(format("corrupted model: %d tensors expected but %zu found", declared_tensors, weights_map.size()));
