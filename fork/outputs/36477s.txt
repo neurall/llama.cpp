@@ -1,0 +1,28 @@
+run 36477 | stock-b12804-official | tetrisc | Hy4-flash-IQ2_AH-00001-of-00002.gguf | decode 29.93 o/s | prompt 45.3 i/s | 996 tokens | args: -np 1 -b 2048 | power 280+280 W | 2026-11-27 10:44:43
+
+We need answer user asks "generate smallest html tetris game." Need provide code likely single HTML file minimal. Need think about requirements: smallest HTML tetris game. Need generate compact playable Tetris in HTML/JS/CSS. Need maybe include controls. Need ensure code works. Need decide final answer: concise with code block. Need maybe mention save as tetris.html. Need produce smallest reasonably playable. Need design minimal Tetris game in one HTML file. Need ensure correctness. Let's craft compact code.
+
+Need implement Tetris: board 10x20, shapes, gravity, move rotate, hard drop maybe, line clear, game over. Minimal HTML with canvas and JS. Need maybe no CSS or minimal. Need generate "smallest" maybe code-golf style? But user likely wants small HTML game. Need balance readability vs small. Could provide compact but understandable. Need maybe include controls in text. Need ensure code valid.
+
+Let's design a compact single-file Tetris.
+
+Approach:
+HTML:
+<canvas id=c width=200 height=400></canvas><script>...</script>
+CSS inline minimal: body background; canvas border; maybe style.
+JS:
+const W=10,H=20,S=20, c=document.getElementById('c'), x=c.getContext('2d');
+Board array H rows of W zeros.
+Shapes as arrays of 4 coordinate pairs or matrices. Need rotation. Use matrices easier.
+I = [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]] etc. But 4x4 for I, 3x3 for others. Need rotate matrix. Need collision. Need spawn. Need draw. Need game loop. Need line clear. Need score maybe not necessary. Need game over. Need controls: left/right/up rotate/down soft/hard drop. Need repeat? keydown works. Need prevent default arrow keys. Need drop interval. Need use setInterval or requestAnimationFrame. Simpler setInterval(update,500). Keydown moves. Need render after each key. Need hard drop with space. Need pause? no.
+
+Need ensure collision with matrix coordinates. Function collide(b,p) loops y,x over shape matrix; if cell and out of bounds or board occupied. Need allow negative y? Spawn at y=0; rotation may produce cells with y negative? If matrix rotation no negative coordinates, but shape matrix may have empty rows. If p.y negative? We can avoid negative. For top spawn, p.y=0. For I matrix 4x4 with row 1 filled; okay. For T etc 3x3. Need collision if y>=H or x<0 etc. If y<0? not needed. But if p.y negative after moving up? no.
+
+Need line clear: for y from H-1 down: if row full, splice row, unshift zeros, y++. Need board as array of arrays.
+
+Need draw: clear black; draw board cells; draw current piece. Need grid? no. Need draw function fillRect. Need colors. Need shape color. Need maybe draw ghost? no. Need draw border? CSS.
+
+Need random piece: shapes object array of matrices and colors. Need p = {m:..., c:..., x:..., y:0}. Need choose random. Need spawn x = Math.floor((W-m.length)/2) maybe for 3x3 x=3, for 4x4 x=3. Good. Need if collision at spawn game over.
+
+Need rotate: rotate matrix clockwise: m[0].map((_,i)=>m.map(r=>r[i]).reverse())? Let's verify. For matrix m, clockwise = m[0].map((_,i)=>m.map(r=>r[i]).reverse()). Example [[1,2],[3,4]] -> i0 [1,3].reverse [3,1], i1 [2,4].reverse [4,2] => [[3,1],[4,2]] that's counterclockwise? Actually clockwise should [[3,1],[4,2]] yes. Good. Need try rotate with wall kicks? Minimal: rotate and if collision try x-1,x+1 maybe. Need implement: const old=p.m; p.m=rot(p.m); if(hit(p.m,p.x,p.y)){p.m=old; if(!hit(p.m,p.x+1,p.y))p.x++; else if(!hit(p.m,p.x-1,p.y))p.x--; else gameOver? Actually if rotation collides, revert; no game over. Need avoid stuck. Simpler: if no collision after rotation accept else revert. Could include wall kick. Need function hit(m,x
+---

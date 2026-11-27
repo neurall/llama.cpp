@@ -40,15 +40,16 @@ Each row: the official stock binary (its own defaults, `-np 1`) against this for
 | Qwen 3.8 Next IQ4_XS | 3k/1k | 32.1<br>54.9 | 209<br>1339 | +71% | +542% 6.4x | 1.4101<br>1.4101 | b13842 | b11829 | [18381](fork/outputs/18381.txt)<br>[18228s](fork/outputs/18228s.txt) |
 | Qwen 3.8 Next IQ3_S | 3k/1k | 44.59<br>56.18 | 387.2<br>1777.2 | +26% | +359% 4.6x | -<br>- | b14939 | b11829 | [24122](fork/outputs/24122.txt)<br>[18270s](fork/outputs/18270s.txt) |
 | Qwen 3.8 Next IQ3_S | 12k/1k | 43.8<br>53.6 | 372<br>1477 | +22% | +297% 4.0x | 1.3927<br>1.3927 | b13586 | b11742 | [16719](fork/outputs/16719.txt)<br>[17094s](fork/outputs/17094s.txt) |
+| Hy4-Flash IQ2-AH (126 GiB)¶ | edit 3k/1k | 28.20<br>39.37 | 329.4<br>1055.9 | +40% | +221% 3.2x | -<br>- | b16923 | b12804 | [36475s](fork/outputs/36475s.txt)<br>[36465](fork/outputs/36465.txt) |
 | Inkling 2 Mini IQ4_XS (fits one card)§ | short/1k | 18.39<br>80.62 | 43.9<br>106.0 | +338% 4.4x | +141% 2.4x | -<br>- | b16902 | b12670 | [34081s](fork/outputs/34081s.txt)<br>[35613](fork/outputs/35613.txt) |
+| Hy4-Flash IQ2-AH (126 GiB)¶ | 13k/1k | 22.99<br>35.60 | 319.8<br>691.9 | +55% | +116% 2.2x | -<br>- | b16923 | b12804 | [36473s](fork/outputs/36473s.txt)<br>[36463](fork/outputs/36463.txt) |
 | Inkling 2 Mini IQ4_XS + DSpark draft§ | short/1k | 18.39<br>87.10 | 43.9<br>77.4 | +374% 4.7x | +76% 1.8x | -<br>- | b16903 | b12670 | [34081s](fork/outputs/34081s.txt)<br>[35698](fork/outputs/35698.txt) |
 | Inkling 2 Mini IQ4_XS (fits one card)§ | 19k/1k | 61.04<br>69.17 | 803.3<br>1353.3 | +13% | +68% 1.7x | -<br>- | b16907 | b12760 | -<br>[35977](fork/outputs/35977.txt) |
-| Hy4-Flash IQ2-AH (126 GiB) | short/1k | 26.73<br>36.46 | 55.8<br>85.1 | +36% | +53% | -<br>- | b16907 | b12760 | [35915s](fork/outputs/35915s.txt)<br>[35973](fork/outputs/35973.txt) |
-| Hy4-Flash IQ2-AH (126 GiB) | 13k/1k | 30.08<br>27.64 | 340.8<br>646.1 | -8% | +90% 1.9x | -<br>- | b16907 | b12760 | -<br>[35970](fork/outputs/35970.txt) |
 | MiMo 2.6F 3-bit | short/1k | 14.1<br>34.8 | -<br>- | +147% 2.5x | - | 1.8758<br>1.8758 | b13838 | b11829 | [18201](fork/outputs/18201.txt)<br>[18225s](fork/outputs/18225s.txt) |
 | Qwen 3.8 Next IQ4_XS | short/1k | 30.9<br>55.1 | -<br>- | +78% | - | 1.4101<br>1.4101 | b13586 | b11742 | [16788](fork/outputs/16788.txt)<br>[17114s](fork/outputs/17114s.txt) |
 | GLM 5.3 3-bit | short/1k | 12.7<br>21.6 | -<br>- | +69% | - | 1.7626<br>1.7578 | b13838 | b11829 | [18213](fork/outputs/18213.txt)<br>[18236s](fork/outputs/18236s.txt) |
 | GLM 5.3 3.5-bit* | short/1k | 10.7<br>17.1 | -<br>- | +59% | - | 1.6326<br>1.6265 | b13842 | b11829 | [18431](fork/outputs/18431.txt)<br>[18279s](fork/outputs/18279s.txt) |
+| Hy4-Flash IQ2-AH (126 GiB)¶ | short/1k | 29.93<br>40.59 | -<br>- | +36% | - | -<br>- | b16923 | b12804 | [36477s](fork/outputs/36477s.txt)<br>[36467](fork/outputs/36467.txt) |
 | Qwen 3.8 Next IQ3_S | short/1k | 43.5<br>56.9 | -<br>- | +31% | - | 1.3927<br>1.3927 | b13563 | b11742 | [16766](fork/outputs/16766.txt)<br>[17102s](fork/outputs/17102s.txt) |
 
 † Rows with a 64-token answer (/64): stock was asked for 64 tokens, below the 256 tokens a decode speed is taken from, so the decode gain of these rows is for information; the prompt gain stands. The new rows show the best decode speed and the best prompt speed among the runs of the cell (what the run list prints, two decimals); the linked answer is one of those runs, so its header can show a slower speed than the table.  
@@ -58,49 +59,64 @@ Rows marked **1× RTX 5090**: a rented cloud server (2× EPYC 9J14, 760 GB RAM, 
 \* DeepSeek 4.1 IQ2_XXS (232 GiB) is far larger than the 128 GB RAM: stock reads it through the page cache at about 1.5 t/s; ours keeps the hot experts in VRAM and a pinned RAM pool and reads the rest from the SSD (O_DIRECT).
 § Inkling 2 Mini rows: 1x RTX 3090 of the Threadripper machine, 2026-11-24/26; stock b12670 at its defaults (`-c 32768 -b 512`, answer stopped at 263 tokens). Stock rows at 12k and edit follow.  
 ‡ Kimi K3.1 Pro row: Threadripper PRO 3975WX, 256 GB DDR4-3200, the same two RTX 3090 (2026-11-20; stock 2026-11-16, its answer stopped at 357 tokens). Column order as above: first line stock, second line ours.
+¶ Hy4-Flash rows: the same Threadripper machine with both RTX 3090 at 280 W, 2026-11-27, stock b12804 and ours in one session, `-b 2048` on both; stock stopped its edit answer at 693 tokens.  
 
 All rows, all builds: [fork/docs/perf-history.md](fork/docs/perf-history.md).
 
 ## This release against the previous one and stock
 
-2x RTX 3090, Threadripper PRO 3975WX, 256 GB DDR4-3200 (2 GPUs; Qwen 3.6 fits one), same session, 12k/1k, run 1 / run 2, stock = the last official stock run of the same cell on this machine.
+Hy4-Flash IQ2-AH (126 GiB) on 2x RTX 3090 at 280 W, Threadripper PRO 3975WX, 256 GB DDR4-3200, one session (2026-11-27), `-b 2048` on all three, run 1 / run 2. Stock = official b12804. The other models were gated against b16907 in one session and are level (release notes).
 
-| model | stock i/s, o/s | b16046 i/s | this release i/s | b16046 o/s | this release o/s |
-|---|---|---|---|---|---|
-| MiMo 2.6F 3-bit | 115.6, 30.01 (b12317) | 1417.0 / 1456.6 | 1365.8 / 1367.2 | 42.93 / 43.92 | 45.68 / 45.13 |
-| Qwen 3.8 Next IQ4_XS | 511.1, 51.42 (b12669) | 2268.6 / 2669.6 | 2296.2 / 2575.6 | 77.31 / 78.23 | 77.52 / 78.58 |
-| GLM 5.3 3.5-bit | - | 968.5 / 1043.0 | 968.3 / 1009.3 | 31.66 / 30.98 | 30.05 / 31.04 |
-| GLM 5.3 3-bit | - | 915.7 / 989.4 | 912.1 / 954.8 | 32.85 / 33.04 | 33.58 / 34.23 |
-| Qwen 3.6 35B-A3B (fits VRAM) | - | 8302.0 / 8947.5 | 8209.2 / 8802.7 | 160.25 / 160.90 | 161.01 / 161.11 |
-| DeepSeek 4.1 IQ2_XXS | - | 750.8 / 779.6 | 694.9 / 710.4 | 37.34 / 37.37 | 37.05 / 37.50 |
+| test | stock i/s | b16907 i/s | this release i/s | stock o/s | b16907 o/s | this release o/s |
+|---|---|---|---|---|---|---|
+| 13k/1k | 303.7 / 319.8 | 630.8 / 667.0 | 628.5 / 691.9 | 23.13 / 22.99 | 29.76 / 23.89 | 35.21 / 35.60 |
+| code edit 3k/1k | 325.0 / 329.4 | 1023.6 / 1048.0 | 1019.8 / 1055.9 | 27.93 / 28.20 | 32.68 / 33.53 | 39.34 / 39.37 |
+| short/1k | 77.6 / 45.3 | 87.7 / 38.2 | 87.8 / 38.7 | 29.61 / 29.93 | 28.90 / 40.31 | 39.85 / 40.59 |
 
-## Against Strata
+## Against Strata and Adamant
 
 Where both run the same model, this fork is comparable with [Strata](https://github.com/Niko1221/Strata). The models with the biggest gains above are not in its model list (its README, 2026-11-26: Qwen3.8-Flash-Next, Hy4-Flash, Qwen3.6-35B-A3B and Inkling 2 Mini): Kimi K3.1, GLM 5.3, MiMo 2.6 and DeepSeek 4.1 run only here.
 
-The same machine, one session (2026-11-26), 1024 tokens out, the better of two runs. This fork: release b16903. Strata: 0.2.21 with engine 0.1.60 (Qwen), 0.2.20 (Inkling), its own packs. **Cards** = the cards the engine used: with both cards visible, Strata ran on one.
+The same machine, one session (2026-11-26), 1024 tokens out, the better of two runs. This fork: release b16903. Strata: 0.2.21 with engine 0.1.60 (Qwen), 0.2.20 (Inkling), its own packs. [Adamant](https://github.com/nixcat-dev/adamant) built from its source, with and without its MTP draft (Qwen only). **Cards** = the cards the engine used: with both cards visible, Strata ran on one.
 
 | model | engine | cards | 12k/1k i/s | 12k/1k o/s | short/1k o/s |
 |---|---|---|---|---|---|
 | Qwen 3.8 Next IQ4_XS (87 GiB) | this fork | 2 | **2603.7** | 78.72 | 80.15 |
 | | this fork + MTP draft | 2 | 2038.8 | 77.19 | 74.03 |
 | | Strata | 1 | 2533.8 | 84.10 | 85.80 |
+| | Adamant + MTP draft | 1 | 2154.0 | **93.20** | **96.70** |
+| | Adamant, no draft | 1 | 2125.9 | 51.70 | 53.20 |
 | Qwen 3.8 Next IQ4_XS, one card visible | this fork | 1 | **2399.2** | 69.38 | 68.21 |
 | | this fork + MTP draft | 1 | 2073.1 | 55.55 | 56.30 |
 | | Strata | 1 | 2106.6 | 75.20 | 77.30 |
+| | Adamant + MTP draft | 1 | 2173.7 | **117.80** | **119.40** |
+| | Adamant, no draft | 1 | 2153.6 | 68.40 | 73.20 |
 | Inkling 2 Mini IQ4_XS (fits one card) | this fork | 1 | **1357.4** | 69.22 | - |
 | | this fork + DSpark draft | 1 | 1296.7 | **86.35** | - |
 | | Strata + draft | 1 | 918.9 | 69.50 | - |
 | | Strata, no draft | 1 | 918.7 | 69.50 | - |
 
-This fork reads prompts fastest in every row and leads Inkling 2 Mini with its DSpark draft. On Qwen 3.8 Next, Strata decodes 7-13% faster than this fork without drafts; this fork's own MTP draft is slower than no draft there (the next release turns a slower draft off by itself).
+This fork reads prompts fastest in every row and leads Inkling 2 Mini with its DSpark draft. Adamant's MTP draft decodes fastest on Qwen 3.8 Next (93-118 o/s); without drafts this fork decodes faster than Adamant (78.7 against 51.7 o/s on two cards). On Qwen 3.8 Next, Strata decodes 7-13% faster than this fork without drafts; this fork's own MTP draft is slower than no draft there (the next release turns a slower draft off by itself).
+
+### 8 GB laptop (RTX 4060), against Strata
+
+One session (2026-11-27), 1024 tokens out, run 1 / run 2. This fork: b16923. Strata: 0.2.21.
+
+| model, test | this fork i/s | Strata i/s | this fork o/s | Strata o/s |
+|---|---|---|---|---|
+| Inkling 2 Mini IQ4_XS, 12k | 29.8 / 30.3 | - / **203.1** | 12.69 / 12.74 | 5.87 / 12.40 |
+| Inkling 2 Mini IQ4_XS, short | - | - | 13.12 / 12.62 | **20.99 / 21.90** |
+| Qwen 3.8 Next IQ4_XS, 14k | 10.5 / 7.7 | **240.5 / 279.3** | 2.23 / 2.16 | **3.00 / 3.10** |
+| Qwen 3.8 Next IQ4_XS, short | - | - | **3.05 / 3.25** | 2.30 / 2.30 |
+
+On 8 GB Strata is far ahead on prompts (Strata's first 12k run reused a cached prompt, "-"). This fork's work on small cards is in progress.
 
 ## Where it wins, where it does not
 
 - **Wins:** MoE models larger than the free VRAM. The less of the model fits, the bigger the gain, down to models larger than RAM that run partly from the SSD (Kimi K3.1: 580 GB on 256 GB of RAM). Long prompts. Two or more GPUs without NVLink.
 - **Stock speed:** models that fit in VRAM, and dense models: the fork's defaults only apply when a MoE model is larger than the free VRAM.
 - **Drafts** (MTP, DSpark): Inkling 2 Mini with its DSpark draft decodes 25% faster (86.4 against 69.1 o/s, 12k/1k, 1x RTX 3090). On Qwen 3.8 Next the MTP and DSpark drafts are not faster than no draft yet.
-- **8 GB cards:** Inkling 2 Mini runs its experts on the CPU there for now (RTX 4060 laptop: 12k/1k 30 i/s, 12.9 o/s); its fused experts enter the expert cache in the next release.
+- **8 GB cards:** not a win yet. Inkling 2 Mini runs its experts on the CPU there (RTX 4060 laptop: 12k/1k 30 i/s, 12.7 o/s, Strata 203 i/s); Qwen 3.8 Next reads 14k prompts at 8-10 i/s against Strata's 240-279 (table above).
 - **Vulkan** runs at about half the CUDA speed on the same NVIDIA card. HIP and Vulkan on AMD iGPUs work (Radeon 780M, Windows: Inkling 2 Mini 12k/1k 96.4 i/s and 7.8 o/s on Vulkan).
 
 ## Quick start

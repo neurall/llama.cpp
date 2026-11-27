@@ -1,0 +1,40 @@
+run 36467 | rel_hy4_rd | tetrisc | Hy4-flash-IQ2_AH-00001-of-00002.gguf | decode 40.59 o/s | prompt 38.7 i/s | 1024 tokens | args: -np 1 -b 2048 | power 280+280 W | 2026-11-27 10:29:43
+
+We need answer user asks "generate smallest html tetris game." Need provide code likely single HTML file minimal. Need think about constraints: "smallest" maybe concise. Need generate a minimal HTML Tetris game. Need decide final answer: include a compact HTML file with embedded CSS/JS. Need ensure playable. Need maybe mention controls. Need maybe provide minified-ish code. Need be careful correctness.
+
+We need design smallest HTML Tetris game. Need produce code that works. Need maybe use canvas, simple tetrominoes, gravity, keyboard controls, line clearing, score. Need minimize size but readable enough. Need maybe "smallest" means smallest possible code. We can provide compact but not golfed to unreadable? User asks generate smallest html tetris game. We can give a compact single-file version. Need ensure no external dependencies. Need maybe include controls: ←→ move, ↑ rotate, ↓ drop. Need maybe auto start. Need maybe game over reset. Need maybe use 10x20 board, block size 20? Canvas 200x400. Need implement tetris.
+
+Let's design compact JS. Need test mentally.
+
+Approach:
+HTML:
+<canvas id=c width=200 height=400></canvas><script>...</script>
+CSS maybe body background, canvas border. Minimal.
+
+JS variables:
+W=10,H=20,S=20,c=document.getElementById('c'),x=c.getContext('2d'),b=Array(H).fill().map(()=>Array(W).fill(0)),p=[[1,1,1,1],[0,1,0,1],[0,1,1,1],[0,0,1,1],[0,1,1,0],[1,1,0,0],[1,0,1,1]]? Need tetromino shapes as 4x? Need rotation. Need choose representation.
+
+Simplest: shapes as arrays of coordinate pairs relative. Rotation function. Need collision. Need spawn. Need line clear. Need draw. Need loop with setInterval or requestAnimationFrame. Need compact.
+
+Shapes:
+I: [[0,1],[1,1],[2,1],[3,1]]
+O: [[1,0],[2,0],[1,1],[2,1]]
+T: [[1,0],[0,1],[1,1],[2,1]]
+S: [[1,0],[2,0],[0,1],[1,1]]
+Z: [[0,0],[1,0],[1,1],[2,1]]
+J: [[0,0],[0,1],[1,1],[2,1]]
+L: [[2,0],[0,1],[1,1],[2,1]]
+Rotation: for each [a,b] -> [b,-a]? Need normalize min x/y. For 4x4? If rotate coordinate pairs and normalize to min, works but I rotates to vertical at x=0 y=0..3. O rotates to same. Good. But repeated rotations of shapes can shift; normalize each time. Need collision with x,y offsets.
+
+State:
+let q=shapes[random], px=3, py=0, score=0, over=false.
+collision(s,x,y): s.some(([i,j])=> x+i<0||x+i>=W||y+j>=H||(y+j>=0&&b[y+j][x+i])) . Need y+j negative? spawn y=0, rotations normalize so no negative. During upward? no. Could include y+j<0.
+merge: for each cell b[y+j][x+i]=color. Need color. Could store shape index+1. q shape index maybe t. Need q shape coords and t index. Use q=random index, s=shapes[q], color=q+1.
+clear: loop rows from H-1 down; if row full, splice row, unshift empty row, score++. Need if multiple rows.
+drop: if collision(s,px,py+1) merge, clear, spawn; else py++.
+spawn: t=random, s=shapes[t], px=3, py=0; if collision game over.
+rotate: ns=rot(s); if !collision(ns,px,py) s=ns; maybe wall kicks? Minimal no. Need rotation variable s not tied to t. On spawn s=shapes[t]. On merge color=t+1. If rotated, t remains color. Good.
+hard drop: while !collision(s,px,py+1) py++; drop? Need then merge. Could call drop after loop.
+key events: ArrowLeft/Right, ArrowUp rotate, ArrowDown soft drop, space hard drop. preventDefault.
+Loop: setInterval(()=>{...},500). Need draw each tick. Could draw
+---
