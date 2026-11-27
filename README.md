@@ -1,132 +1,87 @@
-# Rocket LLama 
+# Rocket LLama
 
-# up to 59x (k 3.1) faster input tokens\s and 22x (mimo) output t\s especially on best big models 
-
-<img width="1894" height="621" alt="image" src="https://github.com/user-attachments/assets/a6be5bb1-7bb7-4b63-b25b-5c4112d7dc64" />
-
-**Mixture-of-experts models larger than your GPUs, at GPU speed.** A fork of [llama.cpp](https://github.com/ggml-org/llama.cpp): the experts the tokens use most stay in VRAM, the rest stream from a pinned RAM pool and the SSD, and long prompts run in large passes on every GPU. On the same machine it runs Kimi K3.1 Pro (580 GB) 59x faster on prompts and 8.9x faster on answers than stock llama.cpp.
+A fork of llama.cpp for MoE models larger than your VRAM. The free VRAM of every GPU becomes a cache of the experts that are in use, the CPU computes the rest in parallel, and long prompts stream the missing experts to the GPUs in large passes. On the same machine with the same request: up to **45x the prompt speed** and **7.8x the decode speed** of stock llama.cpp.
 
 ```sh
-llama-server -m MODEL.gguf      # everything automatic; models that fit in VRAM run as in upstream
+llama-server -m MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf
 ```
 
-**Support:** if this fork helps you, please support my open-source development (nothing fancy, just rent, food and hardware): [paypal.me/neuralll](https://paypal.me/neuralll)
+No `-c`, `-ub`, `-ngl` or `--moe` flags: the context, the micro-batch, the expert placement and the threads are sized per request.
 
-**Download:** [latest release](https://github.com/neurall/llama.cpp/releases/latest). Linux `tar.gz` and Windows `zip`, each with the CPU, CUDA, Vulkan and HIP backends (the Windows zip carries the ROCm runtime). NVIDIA cards also need the `cudart-` archive when CUDA 13 is not installed.
+**Download:** the [latest release](https://github.com/neurall/llama.cpp/releases/latest) has one package per OS with CPU, CUDA, Vulkan and HIP backends (Linux `tar.gz`, Windows `zip`). NVIDIA cards also need the `cudart-` archive if CUDA 13 is not installed.
 
-## Biggest gains against stock llama.cpp
+## Best gains against stock llama.cpp
 
-Each row: the official stock binary (its own defaults, `-np 1`) against this fork, same machine, same request; the best valid run of ours among our builds (the build column names it). In the t/s and pp columns the first line is stock, the second ours. **12k/1k** = a 12.4k-13.8k-token code-review prompt with 1024 tokens out, **short/1k** = a short coding request.
+One row per model and machine: our best valid run against the official stock binary, on the same machine and with the same request, each build on its own defaults (`-np 1` only). **i/s** = prompt tokens per second, **o/s** = generated tokens per second. Both answers are linked (ours, then stock). Sorted by the bigger of the two gains.
 
-| model | test | t/s | pp | gain t | gain pp | ppl | build | stock | output |
-|---|---|---|---|---|---|---|---|---|---|
-| Kimi K3.1 Pro IQ1_S (580 GB)‡ | 13k/1k | 0.31<br>2.74 | 1.46<br>86.0 | +784% 8.9x | +5791% 58.9x | -<br>- | b16028 | b12426 | [29437s](fork/outputs/29437s.txt)<br>[31951](fork/outputs/31951.txt) |
-| MiMo 2.6F 3-bit | 12k/1k | 13.99<br>25.71 | 49.4<br>1241.1 | +84% | +2412% 25.1x | -<br>- | **b14965** | b11829 | [24369](fork/outputs/24369.txt)<br>[18221s](fork/outputs/18221s.txt) |
-| MiMo 2.6F 3-bit | 16k/64† | 13.73<br>26.67 | 48.6<br>1123.9 | +94% 1.94x† | +2212% 23.12x | -<br>- | b13954 | b11887 | [19204](fork/outputs/19204.txt)<br>[19571s](fork/outputs/19571s.txt) |
-| DeepSeek 4.1 IQ2_XXS* | short/1k | 1.47<br>32.95 | -<br>- | +2141% 22.4x | - | -<br>- | b14939 | b11887 | [24094](fork/outputs/24094.txt)<br>[19818s](fork/outputs/19818s.txt) |
-| MiMo 2.6F 3-bit, 1× RTX 5090 | 12k/1k | 6.83<br>36.13 | 141.3<br>3016.3 | +429% 5.3x | +2035% 21.3x | -<br>- | b13348 | b11799 | [14701](fork/outputs/14701.txt)<br>[14700s](fork/outputs/14700s.txt) |
-| GLM 5.3 3-bit | 16k/1k† | 12.53<br>19.56 | 41.7<br>869.6 | +56%† | +1985% 20.9x | -<br>- | b14939 | b11887 | [24065](fork/outputs/24065.txt)<br>[19572s](fork/outputs/19572s.txt) |
-| DeepSeek 4.1 IQ2_XXS* | 3k/1k | 1.46<br>26.25 | 39.1<br>336.4 | +1698% 18.0x | +760% 8.6x | -<br>- | b14939 | b11887 | [24092](fork/outputs/24092.txt)<br>[19814s](fork/outputs/19814s.txt) |
-| GLM 5.3 3.5-bit* | 12k/1k | 10.72<br>15.18 | 34.3<br>614.9 | +42% | +1693% 17.9x | -<br>- | b14954 | b11829 | [24296](fork/outputs/24296.txt)<br>[18275s](fork/outputs/18275s.txt) |
-| GLM 5.3 3-bit | 12k/1k | 12.8<br>19.8 | 43<br>689 | +55% | +1518% 16.2x | 1.7626<br>1.7578 | b13838 | b11829 | [18209](fork/outputs/18209.txt)<br>[18232s](fork/outputs/18232s.txt) |
-| MiMo 2.6F 3-bit | 3k/1k | 14.1<br>31.6 | 48<br>754 | +124% 2.2x | +1460% 15.6x | 1.8758<br>1.8758 | b13838 | b11829 | [18199](fork/outputs/18199.txt)<br>[18223s](fork/outputs/18223s.txt) |
-| GLM 5.3 3-bit | 3k/1k | 12.7<br>20.2 | 40<br>617 | +59% | +1443% 15.4x | 1.7626<br>1.7578 | b13838 | b11829 | [18211](fork/outputs/18211.txt)<br>[18235s](fork/outputs/18235s.txt) |
-| GLM 5.3 3.5-bit* | 3k/1k | 10.70<br>17.05 | 32.5<br>465.7 | +59% | +1333% 14.3x | -<br>- | b14940 | b11829 | [24158](fork/outputs/24158.txt)<br>[18277s](fork/outputs/18277s.txt) |
-| DeepSeek 4.1 IQ2_XXS* | 16k/1k | 1.46<br>18.60 | 42.5<br>347.9 | +1174% 12.7x | +719% 8.2x | -<br>- | b14563 | b11887 | [22095](fork/outputs/22095.txt)<br>[19809s](fork/outputs/19809s.txt) |
-| Qwen 3.8 Next IQ4_XS | 15k/1k | 29.14<br>52.31 | 176.8<br>1934.1 | +80% | +994% 10.9x | -<br>- | b13845, b14705 | b12131 | [23477](fork/outputs/23477.txt), [23510](fork/outputs/23510.txt)<br>[23452s](fork/outputs/23452s.txt) |
-| Qwen 3.8 Next IQ4_XS | 16k/1k† | 31.98<br>50.98 | 207.9<br>1907.5 | +59%† | +818% 9.2x | -<br>- | b14939 | b11887 | [24059](fork/outputs/24059.txt)<br>[19568s](fork/outputs/19568s.txt) |
-| Qwen 3.8 Next IQ4_XS | 12k/1k | 32.6<br>52.7 | 213<br>1902 | +62% | +793% 8.9x | 1.4101<br>1.4101 | b13838, b14020 | b11829 | [18203](fork/outputs/18203.txt), [19588](fork/outputs/19588.txt)<br>[18227s](fork/outputs/18227s.txt) |
-| Qwen 3.8 Next IQ4_XS | 4k/64† | 30.22<br>53.92 | 209.5<br>1705.0 | +78% 1.78x† | +714% 8.14x | -<br>- | b13964 | b11887 | [19270](fork/outputs/19270.txt)<br>[19567s](fork/outputs/19567s.txt) |
-| Qwen 3.8 Next IQ4_XS | 3k/1k | 32.1<br>54.9 | 209<br>1339 | +71% | +542% 6.4x | 1.4101<br>1.4101 | b13842 | b11829 | [18381](fork/outputs/18381.txt)<br>[18228s](fork/outputs/18228s.txt) |
-| Qwen 3.8 Next IQ3_S | 3k/1k | 44.59<br>56.18 | 387.2<br>1777.2 | +26% | +359% 4.6x | -<br>- | b14939 | b11829 | [24122](fork/outputs/24122.txt)<br>[18270s](fork/outputs/18270s.txt) |
-| Qwen 3.8 Next IQ3_S | 12k/1k | 43.8<br>53.6 | 372<br>1477 | +22% | +297% 4.0x | 1.3927<br>1.3927 | b13586 | b11742 | [16719](fork/outputs/16719.txt)<br>[17094s](fork/outputs/17094s.txt) |
-| Hy4-Flash IQ2-AH (126 GiB)¶ | edit 3k/1k | 28.20<br>39.37 | 329.4<br>1055.9 | +40% | +221% 3.2x | -<br>- | b16923 | b12804 | [36475s](fork/outputs/36475s.txt)<br>[36465](fork/outputs/36465.txt) |
-| Inkling 2 Mini IQ4_XS (fits one card)§ | short/1k | 18.39<br>80.62 | 43.9<br>106.0 | +338% 4.4x | +141% 2.4x | -<br>- | b16902 | b12670 | [34081s](fork/outputs/34081s.txt)<br>[35613](fork/outputs/35613.txt) |
-| Hy4-Flash IQ2-AH (126 GiB)¶ | 13k/1k | 22.99<br>35.60 | 319.8<br>691.9 | +55% | +116% 2.2x | -<br>- | b16923 | b12804 | [36473s](fork/outputs/36473s.txt)<br>[36463](fork/outputs/36463.txt) |
-| Inkling 2 Mini IQ4_XS + DSpark draft§ | short/1k | 18.39<br>87.10 | 43.9<br>77.4 | +374% 4.7x | +76% 1.8x | -<br>- | b16903 | b12670 | [34081s](fork/outputs/34081s.txt)<br>[35698](fork/outputs/35698.txt) |
-| Inkling 2 Mini IQ4_XS (fits one card)§ | 19k/1k | 61.04<br>69.17 | 803.3<br>1353.3 | +13% | +68% 1.7x | -<br>- | b16907 | b12760 | -<br>[35977](fork/outputs/35977.txt) |
-| MiMo 2.6F 3-bit | short/1k | 14.1<br>34.8 | -<br>- | +147% 2.5x | - | 1.8758<br>1.8758 | b13838 | b11829 | [18201](fork/outputs/18201.txt)<br>[18225s](fork/outputs/18225s.txt) |
-| Qwen 3.8 Next IQ4_XS | short/1k | 30.9<br>55.1 | -<br>- | +78% | - | 1.4101<br>1.4101 | b13586 | b11742 | [16788](fork/outputs/16788.txt)<br>[17114s](fork/outputs/17114s.txt) |
-| GLM 5.3 3-bit | short/1k | 12.7<br>21.6 | -<br>- | +69% | - | 1.7626<br>1.7578 | b13838 | b11829 | [18213](fork/outputs/18213.txt)<br>[18236s](fork/outputs/18236s.txt) |
-| GLM 5.3 3.5-bit* | short/1k | 10.7<br>17.1 | -<br>- | +59% | - | 1.6326<br>1.6265 | b13842 | b11829 | [18431](fork/outputs/18431.txt)<br>[18279s](fork/outputs/18279s.txt) |
-| Hy4-Flash IQ2-AH (126 GiB)¶ | short/1k | 29.93<br>40.59 | -<br>- | +36% | - | -<br>- | b16923 | b12804 | [36477s](fork/outputs/36477s.txt)<br>[36467](fork/outputs/36467.txt) |
-| Qwen 3.8 Next IQ3_S | short/1k | 43.5<br>56.9 | -<br>- | +31% | - | 1.3927<br>1.3927 | b13563 | b11742 | [16766](fork/outputs/16766.txt)<br>[17102s](fork/outputs/17102s.txt) |
+| model | machine | test | prompt i/s: stock → ours | decode o/s: stock → ours | ours | stock | answers |
+|---|---|---|---|---|---|---|---|
+| Kimi K3.1 Pro IQ1_S | TR | 13k/1k | 1.5 → 67.9 (**45x**) | 0.31 → 2.41 (**7.8x**) | b15843 | b12426 | [31918](fork/outputs/31918.txt), [29437s](fork/outputs/29437s.txt) |
+| MiMo 2.6 Flash 3-bit | R7 | 12k/1k | 49.4 → 1241.1 (**25.1x**) | 13.99 → 25.71 (1.8x) | b14965 | b11829 | [24369](fork/outputs/24369.txt), [18221s](fork/outputs/18221s.txt) |
+| DeepSeek 4.1 Flash IQ2_XXS | R7 | short/1k | - | 1.47 → 32.95 (**22.4x**) | b14939 | b11887 | [24094](fork/outputs/24094.txt), [19818s](fork/outputs/19818s.txt) |
+| MiMo 2.6 Flash 3-bit | 5090 | 12k/1k | 141.3 → 3016.3 (**21.3x**) | 6.83 → 36.13 (5.3x) | b13348 | b11799 | [14701](fork/outputs/14701.txt), [14700s](fork/outputs/14700s.txt) |
+| GLM 5.3 Flash 3-bit | R7 | 16k/1k† | 41.7 → 869.6 (**20.9x**) | 12.53 → 19.56 (1.6x†) | b14939 | b11887 | [24065](fork/outputs/24065.txt), [19572s](fork/outputs/19572s.txt) |
+| GLM 5.3 Flash 3.5-bit | R7 | 12k/1k | 34.3 → 614.9 (**17.9x**) | 10.72 → 15.18 (1.4x) | b14954 | b11829 | [24296](fork/outputs/24296.txt), [18275s](fork/outputs/18275s.txt) |
+| MiMo 2.6 Flash 3-bit | TR | 12k/1k | 115.6 → 1699.9 (**14.7x**) | 30.01 → 33.58 (1.1x) | b15463 | b12317 | [28397](fork/outputs/28397.txt), [26475s](fork/outputs/26475s.txt) |
+| Qwen3.8 Flash Next IQ4_XS | R7 | 15k/1k | 176.8 → 1934.1 (**10.9x**) | 29.14 → 52.31 (1.8x) | b13845, b14705 | b12131 | [23477](fork/outputs/23477.txt), [23510](fork/outputs/23510.txt), [23452s](fork/outputs/23452s.txt) |
+| DeepSeek 4.1 Flash IQ2_XXS | TR | 2k/1k | 81.0 → 371.5 (4.6x) | 5.02 → 38.97 (**7.8x**) | b15065 | b12317 | [26851](fork/outputs/26851.txt), [26797s](fork/outputs/26797s.txt) |
+| Qwen3.8 Flash Next IQ4_XS | TR | 14k/1k | 443.2 → 2714.9 (**6.1x**) | 50.42 → 55.71 (1.1x) | b15862 | b12499 | [30944](fork/outputs/30944.txt), [30903s](fork/outputs/30903s.txt) |
+| Qwen3.8 Flash Next IQ3_S | R7 | 3k/1k | 387.2 → 1777.2 (**4.6x**) | 44.59 → 56.18 (1.3x) | b14939 | b11829 | [24122](fork/outputs/24122.txt), [18270s](fork/outputs/18270s.txt) |
+| ERNIE 5.5 Flash IQ3_XXS/IQ4_XS | TR | 12k/1k | 116.3 → 453.7 (**3.9x**) | 18.05 → 20.18 (1.1x) | b16934 | stock + PR‡ | [36667](fork/outputs/36667.txt), [36687s](fork/outputs/36687s.txt) |
+| Qwen3.8 Flash Next IQ3_S | TR | 14k/1k | 754.5 → 2631.2 (**3.5x**) | 58.22 → 57.05 (1.0x) | b15781 | b12499 | [30408](fork/outputs/30408.txt), [30905s](fork/outputs/30905s.txt) |
+| Hy4 Flash IQ2_AH | TR | 4k edit | 329.4 → 1055.9 (**3.2x**) | 28.2 → 39.37 (1.4x) | b16923 | b12804 | [36465](fork/outputs/36465.txt), [36475s](fork/outputs/36475s.txt) |
 
-† Rows with a 64-token answer (/64): stock was asked for 64 tokens, below the 256 tokens a decode speed is taken from, so the decode gain of these rows is for information; the prompt gain stands. The new rows show the best decode speed and the best prompt speed among the runs of the cell (what the run list prints, two decimals); the linked answer is one of those runs, so its header can show a slower speed than the table.  
-16k/1k†: ours answered 1024 tokens, stock was asked for 64 there, so the decode gain of those rows is for information too.  
-Rows marked **1× RTX 5090**: a rented cloud server (2× EPYC 9J14, 760 GB RAM, one RTX 5090 at PCIe 5 x16), 2026-10-21, stock and ours minutes apart. All other rows: Ryzen 7 3700X, 128 GB DDR4, 2× RTX 3090 (the second at x4).  
-\* GLM 3.5-bit (127.7 GiB) is larger than this machine's 128 GB RAM, so part of it runs from the SSD and the system swaps (up to about 4 GiB of swap in use during runs). Ours is faster than stock despite that.  
-\* DeepSeek 4.1 IQ2_XXS (232 GiB) is far larger than the 128 GB RAM: stock reads it through the page cache at about 1.5 t/s; ours keeps the hot experts in VRAM and a pinned RAM pool and reads the rest from the SSD (O_DIRECT).
-§ Inkling 2 Mini rows: 1x RTX 3090 of the Threadripper machine, 2026-11-24/26; stock b12670 at its defaults (`-c 32768 -b 512`, answer stopped at 263 tokens). Stock rows at 12k and edit follow.  
-‡ Kimi K3.1 Pro row: Threadripper PRO 3975WX, 256 GB DDR4-3200, the same two RTX 3090 (2026-11-20; stock 2026-11-16, its answer stopped at 357 tokens). Column order as above: first line stock, second line ours.
-¶ Hy4-Flash rows: the same Threadripper machine with both RTX 3090 at 280 W, 2026-11-27, stock b12804 and ours in one session, `-b 2048` on both; stock stopped its edit answer at 693 tokens.  
+**Tests:** 12k/1k = 12.4k-13.8k-token code-review prompt, 1024 tokens out (13k-16k: the same review, longer); 2k/1k and 3k/1k = a 2k-3k-token source file to review or edit; 4k edit = a 4k-token source file plus an edit instruction; short/1k = one-line prompt, 1024 tokens out (too short to time the prompt).
+**Machines:** **TR** = Threadripper PRO 3975WX (32 cores), 256 GB DDR4-3200 in 8 channels, 2x RTX 3090 (both PCIe 4.0 x16); **R7** = Ryzen 7 3700X, 128 GB DDR4-3200, 2x RTX 3090 (x16 + x4); **5090** = a rented server with one RTX 5090 (PCIe 5.0 x16).
+† stock was asked for 64 tokens there, so that decode gain is for information. ‡ stock has no ERNIE 5.5 support yet: stock b12220 plus upstream PR #31925 and our model loader. Models that fit in VRAM, and dense models, run at stock speed and are left out. Older tables, the per-feature gains and perplexity: [fork/docs/perf-history.md](fork/docs/perf-history.md), [fork/docs/features.md](fork/docs/features.md).
 
-All rows, all builds: [fork/docs/perf-history.md](fork/docs/perf-history.md).
+## Against other engines
 
-## This release against the previous one and stock
+Same machine (TR), same session (2026-11-26), same prompts, ours b16903. Qwen3.8 Flash Next UD-IQ4_XS (87 GiB) on 24 GB cards; prompt i/s from the first run (the other engines reuse their prompt cache on the second), decode o/s of both runs.
 
-Hy4-Flash IQ2-AH (126 GiB) on 2x RTX 3090 at 280 W, Threadripper PRO 3975WX, 256 GB DDR4-3200, one session (2026-11-27), `-b 2048` on all three, run 1 / run 2. Stock = official b12804. The other models were gated against b16907 in one session and are level (release notes).
-
-| test | stock i/s | b16907 i/s | this release i/s | stock o/s | b16907 o/s | this release o/s |
-|---|---|---|---|---|---|---|
-| 13k/1k | 303.7 / 319.8 | 630.8 / 667.0 | 628.5 / 691.9 | 23.13 / 22.99 | 29.76 / 23.89 | 35.21 / 35.60 |
-| code edit 3k/1k | 325.0 / 329.4 | 1023.6 / 1048.0 | 1019.8 / 1055.9 | 27.93 / 28.20 | 32.68 / 33.53 | 39.34 / 39.37 |
-| short/1k | 77.6 / 45.3 | 87.7 / 38.2 | 87.8 / 38.7 | 29.61 / 29.93 | 28.90 / 40.31 | 39.85 / 40.59 |
-
-## Against Strata and Adamant
-
-Where both run the same model, this fork is comparable with [Strata](https://github.com/Niko1221/Strata). The models with the biggest gains above are not in its model list (its README, 2026-11-26: Qwen3.8-Flash-Next, Hy4-Flash, Qwen3.6-35B-A3B and Inkling 2 Mini): Kimi K3.1, GLM 5.3, MiMo 2.6 and DeepSeek 4.1 run only here.
-
-The same machine, one session (2026-11-26), 1024 tokens out, the better of two runs. This fork: release b16903. Strata: 0.2.21 with engine 0.1.60 (Qwen), 0.2.20 (Inkling), its own packs. [Adamant](https://github.com/nixcat-dev/adamant) built from its source, with and without its MTP draft (Qwen only). **Cards** = the cards the engine used: with both cards visible, Strata ran on one.
-
-| model | engine | cards | 12k/1k i/s | 12k/1k o/s | short/1k o/s |
+| test | ours | ours + MTP draft | Adamant + MTP | Adamant | Strata 0.2.21 |
 |---|---|---|---|---|---|
-| Qwen 3.8 Next IQ4_XS (87 GiB) | this fork | 2 | **2603.7** | 78.72 | 80.15 |
-| | this fork + MTP draft | 2 | 2038.8 | 77.19 | 74.03 |
-| | Strata | 1 | 2533.8 | 84.10 | 85.80 |
-| | Adamant + MTP draft | 1 | 2154.0 | **93.20** | **96.70** |
-| | Adamant, no draft | 1 | 2125.9 | 51.70 | 53.20 |
-| Qwen 3.8 Next IQ4_XS, one card visible | this fork | 1 | **2399.2** | 69.38 | 68.21 |
-| | this fork + MTP draft | 1 | 2073.1 | 55.55 | 56.30 |
-| | Strata | 1 | 2106.6 | 75.20 | 77.30 |
-| | Adamant + MTP draft | 1 | 2173.7 | **117.80** | **119.40** |
-| | Adamant, no draft | 1 | 2153.6 | 68.40 | 73.20 |
-| Inkling 2 Mini IQ4_XS (fits one card) | this fork | 1 | **1357.4** | 69.22 | - |
-| | this fork + DSpark draft | 1 | 1296.7 | **86.35** | - |
-| | Strata + draft | 1 | 918.9 | 69.50 | - |
-| | Strata, no draft | 1 | 918.7 | 69.50 | - |
+| 12k prompt, 1 GPU | **2216** i/s | 1799 | 2174 | 2154 | 2107 |
+| 12k decode, 1 GPU | 68.4-69.4 o/s | 53.0-55.6 | **105-118** | 67.5-68.4 | 74.7-75.2 |
+| 12k prompt, 2 GPUs | 2336 i/s | 1650 | 2154 | 2126 | **2534** |
+| 12k decode, 2 GPUs | 78.5-78.7 o/s | 68.5-77.2 | **90-93** | 51.0-51.7 | 83.3-84.1 |
+| short prompt decode, 1 GPU | 67.9-68.2 o/s | 56.0-56.3 | **116-119** | 68.7-73.2 | 75.3-77.3 |
+| short prompt decode, 2 GPUs | 79.1-80.2 o/s | 62.7-74.0 | **84-97** | 53.1-53.2 | 85.6-85.8 |
 
-This fork reads prompts fastest in every row and leads Inkling 2 Mini with its DSpark draft. Adamant's MTP draft decodes fastest on Qwen 3.8 Next (93-118 o/s); without drafts this fork decodes faster than Adamant (78.7 against 51.7 o/s on two cards). On Qwen 3.8 Next, Strata decodes 7-13% faster than this fork without drafts; this fork's own MTP draft is slower than no draft there (the next release turns a slower draft off by itself).
+Inkling 2 Mini UD-IQ4_XS, 12k prompt, 1 GPU: ours 1357 i/s, 68.8-69.2 o/s; ours with its draft 1256 i/s, **85.4-86.4** o/s; Strata 0.2.20 919 i/s, 69.4-69.5 o/s (with or without its draft). Rows 35733-35784 in `fork/runs.db`.
 
 ## Where it wins, where it does not
 
-- **Wins:** MoE models larger than the free VRAM. The less of the model fits, the bigger the gain, down to models larger than RAM that run partly from the SSD (Kimi K3.1: 580 GB on 256 GB of RAM). Long prompts. Two or more GPUs without NVLink.
-- **Stock speed:** models that fit in VRAM, and dense models: the fork's defaults only apply when a MoE model is larger than the free VRAM.
-- **Drafts** (MTP, DSpark): Inkling 2 Mini with its DSpark draft decodes 25% faster (86.4 against 69.1 o/s, 12k/1k, 1x RTX 3090). On Qwen 3.8 Next the MTP and DSpark drafts are not faster than no draft yet.
-- **Vulkan** runs at about half the CUDA speed on the same NVIDIA card. HIP and Vulkan on AMD iGPUs work (Radeon 780M, Windows: Inkling 2 Mini 12k/1k 96.4 i/s and 7.8 o/s on Vulkan).
+- **Wins:** MoE models that do not fit in VRAM. The less of the model fits, the bigger the gain, down to models larger than RAM (Kimi K3.1, DeepSeek), which run partly from the SSD. Prompts are faster than Strata and Adamant on one GPU.
+- **Same as stock:** models that fit in VRAM, and dense models.
+- **Not yet:** decode with a speculative draft. Adamant's MTP decodes Qwen3.8 1.5-1.7x faster on one GPU, and our MTP draft is slower than no draft on that model (a picker that drops a slower draft is in progress). Strata decodes Qwen3.8 about 8% faster. Inkling 2 Mini on one card: stock b12804 prompts are faster. ERNIE 5.5 on 8 GB cards: slow prompts (fix in progress).
 
 ## Quick start
 
 ```sh
-llama-server -m MODEL.gguf                                            # OpenAI-compatible server on :8080
-llama-server -m MODEL.gguf -md DRAFT.gguf --spec-type draft-dspark    # with a draft model
+llama-server -m MODEL.gguf                 # OpenAI-compatible server, everything automatic
+llama-cli    -m MODEL.gguf -p "hello"
 ```
+
+The fork's defaults apply only when a MoE model is larger than the free VRAM of all GPUs; other models, and every setting you pass yourself, behave as in upstream. The chosen values are printed at startup (`-lv 5` prints all of them).
 
 | switch | effect |
 |---|---|
 | `--fork off` | upstream behaviour for everything |
+| `-at off` | no automatic tuning (the fork's other defaults stay) |
 | `--moe fixed=1` | repeatable output for benchmarks |
 | `--moe dense-split=0` / `=1` | force one card / the dense split over the cards |
 | `--moe-expert-cache 0` | expert cache off |
-| `GET /status` | server phase with live ms per token |
+| `GET /status` | server phase (loading, prefill, generation) with live ms per token |
 
-Every `--moe` key: [fork/docs/fork-knobs.md](fork/docs/fork-knobs.md). How it works and the per-feature measurements: [fork/docs/features.md](fork/docs/features.md). Perplexity against stock (equal where the pass shape is the same): [fork/docs/perf-history.md](fork/docs/perf-history.md).
+Every `--moe` key and its default: [fork/docs/fork-knobs.md](fork/docs/fork-knobs.md). How a row is reproduced: [fork/docs/perf-history.md](fork/docs/perf-history.md#reproduce).
 
 ## Known limits
 
-- Measured on 2x RTX 3090 (Ryzen 7 3700X with 128 GB, later Threadripper PRO 3975WX with 256 GB), one rented RTX 5090 and one notebook (ASUS GA403UV: RTX 4060 laptop 8 GB, Radeon 780M, 32 GB RAM); other hardware is untested.
-- The first runs of a model are slower: the hot-expert state is learned from use and kept in `moe-state.ini`.
-- Output can differ between runs even at temperature 0 (a cached expert runs on the GPU, a missed one on the CPU).
+- **Measured hardware:** two machines with 2x RTX 3090, a rented RTX 5090, an RTX 4060 laptop (8 GB) and a Radeon 780M (Vulkan, HIP). 3+ GPUs and mixed vendors are untested.
+- **The first runs of a model are slower:** the hot-expert map is learned from use and kept in `moe-state.ini`; the release ships pre-learned maps in `hotmaps/`.
+- **Models larger than free RAM load lazily:** the server answers while the experts are still being pinned, so the first big prompt after a start can be slower.
+- **Output can differ between runs** even at temperature 0: a cached expert runs on the GPU, a missed one on the CPU, and they round slightly differently (`--moe fixed=1` fixes the placement). Perplexity matches stock within noise ([table](fork/docs/perf-history.md#quality)).
 
 ## Credits and thanks
 

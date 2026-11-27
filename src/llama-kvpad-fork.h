@@ -44,3 +44,11 @@ static inline uint32_t llama_kv_decode_k0_fork(uint32_t k0_first, uint32_t n_kv,
     if (pad <= 256) { return k0_first; }
     return std::min(k0_first, n_kv > pad ? n_kv - pad : 0u);
 }
+
+// Whether a pass's mask may start at k0 (llama_kv_cache::kq_mask_k0) in a model that adds a relative position bias to the scores (Inkling 2). The cells before
+// k0 are visible to every token of the pass but not bias-free: each gets the bias of its distance, and the pad bin's -sink past the extent. The fork's
+// attention folds the bias into a per-head mask built over the attention mask's columns, so a mask from k0 drops it for those cells (Inkling 2 Mini, experts
+// in the pool on a 7 GB card, one token a pass: PPL 1.615 / 1.609 against 1.586, 2026-11-27). Flash attention with the indexed bias adds it for every key.
+static inline bool llama_kq_mask_trim_ok_fork(bool rel_bias, bool fa_indexed_bias) {
+    return !rel_bias || fa_indexed_bias;
+}

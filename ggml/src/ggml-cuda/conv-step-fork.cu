@@ -7,6 +7,7 @@
 // GGML_CUDA_CONV_STEP=0 turns it off.
 #include "common.cuh"
 #include "ew-epi-fork.cuh"
+#include "fuse-apart-fork.h"
 #include "ggml-impl.h"
 
 #include <cstdlib>
@@ -64,18 +65,35 @@ static bool cs_is_view(const ggml_tensor * t) {
 
 }  // namespace
 
-// returns the nodes to skip after i (0: no fusion)
-int ggml_cuda_try_fuse_conv_step_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i) {
+namespace {
+
+struct cs_match {
+    const ggml_tensor * x = nullptr, * past = nullptr, * nw = nullptr, * cpy = nullptr, * conv = nullptr, * cell = nullptr, * w = nullptr;
+    int last = -1, i_conv = -1;
+    int64_t C = 0, S = 0, off = 0;
+};
+
+static bool cs_on() {
     static const bool on = !getenv("GGML_CUDA_CONV_STEP") || atoi(getenv("GGML_CUDA_CONV_STEP")) != 0;
+    return on;
+}
+
+static bool cs_epi_on() {
+    static const bool epi_on = !getenv("GGML_CUDA_MM_EPI") || atoi(getenv("GGML_CUDA_MM_EPI")) != 0;
+    return epi_on;
+}
+
+// the conv step that starts at concat node i, or false (shared by the fusion and graph_optimize's deps)
+static bool cs_match_at(const ggml_cgraph * cgraph, int i, cs_match & m) {
     const ggml_tensor * x = cgraph->nodes[i];
-    if (!on || x->op != GGML_OP_CONCAT || ggml_get_op_params_i32(x, 0) != 0 || x->type != GGML_TYPE_F32) {
-        return 0;
+    if (x->op != GGML_OP_CONCAT || ggml_get_op_params_i32(x, 0) != 0 || x->type != GGML_TYPE_F32) {
+        return false;
     }
     const ggml_tensor * past = x->src[0], * nw = x->src[1];
     const int n_conv = (int) x->ne[0];
     if (!past || !nw || past->type != GGML_TYPE_F32 || nw->type != GGML_TYPE_F32 || nw->ne[0] != 1 || n_conv > CS_MAX_CONV || n_conv < 2 ||
             x->ne[3] != 1 || x->nb[0] != sizeof(float) || !ggml_is_contiguous(x)) {
-        return 0;
+        return false;
     }
     // the next two non-view nodes: the state store cpy and the ssm_conv, in either order
     const ggml_tensor * cpy = nullptr, * conv = nullptr;
@@ -85,10 +103,10 @@ int ggml_cuda_try_fuse_conv_step_fork(ggml_backend_cuda_context & ctx, const ggm
         if (cs_is_view(t)) { continue; }
         if (t->op == GGML_OP_CPY && !cpy && t->src[0]->view_src == x) { cpy = t; last = j; continue; }
         if (t->op == GGML_OP_SSM_CONV && !conv && t->src[0] == x) { conv = t; last = j; i_conv = j; continue; }
-        return 0;
+        return false;
     }
     if (!cpy || !conv) {
-        return 0;
+        return false;
     }
     // the store: the last n_cols columns of x, as [n_cols, C, S] contiguous rows into f32 cells [n_cols*C, S]
     const ggml_tensor * lv = cpy->src[0], * cell = cpy->src[1];
@@ -97,16 +115,56 @@ int ggml_cuda_try_fuse_conv_step_fork(ggml_backend_cuda_context & ctx, const ggm
     const int64_t off = (int64_t) lv->view_offs / (int64_t) sizeof(float);
     if (cell->type != GGML_TYPE_F32 || lv->ne[1] != C || lv->ne[2] != S || lv->nb[1] != x->nb[1] || lv->nb[2] != x->nb[2] ||
             off + n_cols != n_conv || lv->view_offs % sizeof(float) != 0 || cell->ne[0] != n_cols*C || cell->nb[0] != sizeof(float) || ggml_nrows(cell) != S) {
-        return 0;
+        return false;
     }
     const ggml_tensor * w = conv->src[1];
     if (w->type != GGML_TYPE_F32 || w->ne[0] != n_conv || w->ne[1] != C || w->nb[0] != sizeof(float) || conv->type != GGML_TYPE_F32 || conv->ne[1] != 1) {
-        return 0;
+        return false;
     }
     // nodes between that are not the three or views stop it (nothing else may run in between)
     for (int j = i + 1; j < last; ++j) {
         const ggml_tensor * t = cgraph->nodes[j];
-        if (t != cpy && t != conv && !cs_is_view(t)) { return 0; }
+        if (t != cpy && t != conv && !cs_is_view(t)) { return false; }
+    }
+    m = { x, past, nw, cpy, conv, cell, w, last, i_conv, C, S, off };
+    return true;
+}
+
+// the elementwise run after the conv that the kernel can take as its epilogue (end: its last node), from the graph alone
+static bool cs_epi_match(const ggml_cgraph * cgraph, const cs_match & m, ewc_prog & P, int & end) {
+    return cs_epi_on() && m.conv->nb[0] == sizeof(float) && m.conv->nb[2] == m.C*sizeof(float) && ggml_cuda_ew_after_fork(cgraph, m.i_conv, m.last, P, end);
+}
+
+}  // namespace
+
+// graph_optimize (ggml_cuda_fusion_add_alloc_deps): the tensors the fused kernel reads or writes beside the group's last node, to keep alive until that
+// node, so that no output of the group is laid over them (the depth mix's hazard, mix-match-fork.h); returns that node, -1: no conv step at i
+int ggml_cuda_conv_step_keep_fork(const ggml_cgraph * cgraph, int i, const ggml_tensor ** keep, int & n_keep) {
+    cs_match m;
+    if (!cs_on() || !cs_match_at(cgraph, i, m)) {
+        return -1;
+    }
+    ewc_prog P;
+    int end = 0;
+    keep[0] = m.past; keep[1] = m.nw; keep[2] = m.x;
+    n_keep = 3;
+    return cs_epi_match(cgraph, m, P, end) ? end : m.last;
+}
+
+// returns the nodes to skip after i (0: no fusion)
+int ggml_cuda_try_fuse_conv_step_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i) {
+    cs_match m;
+    if (!cs_on() || !cs_match_at(cgraph, i, m)) {
+        return 0;
+    }
+    const ggml_tensor * x = m.x, * past = m.past, * nw = m.nw, * conv = m.conv, * cell = m.cell, * w = m.w;
+    const int64_t C = m.C, S = m.S;
+    // tripwire, should never fire: graph_optimize kept past, nw and x alive until the group's last node, so the conv output cannot sit on what the
+    // kernel reads (the state cell and its past view overlap by design: each thread reads its channel's past columns before it stores them)
+    if (!ggml_cuda_fuse_apart_fork(conv, { past, nw, x }, false)) {
+        static int said = 0;
+        ggml_cuda_fuse_apart_warn_fork("conv step", conv, said);
+        return 0;
     }
 
     cs_args A{};
@@ -116,13 +174,12 @@ int ggml_cuda_try_fuse_conv_step_fork(ggml_backend_cuda_context & ctx, const ggm
     A.w = (const char *) w->data; A.w_nb1 = w->nb[1];
     A.out = (char *) conv->data; A.o_nb0 = conv->nb[0]; A.o_nb2 = conv->nb[2];
     A.cell = (char *) cell->data; A.c_nb1 = cell->nb[1];
-    A.n_conv = n_conv; A.C = (int) C; A.S = (int) S; A.cell_off = (int) off;
+    A.n_conv = (int) x->ne[0]; A.C = (int) C; A.S = (int) S; A.cell_off = (int) m.off;
     const dim3 grid((unsigned) ((C + 127)/128), (unsigned) S);
     // the elementwise run after the conv (residual add, scale, dynamic taps) in the same kernel, element (c, s) by the thread that has the conv value
-    static const bool epi_on = !getenv("GGML_CUDA_MM_EPI") || atoi(getenv("GGML_CUDA_MM_EPI")) != 0;
     ewc_prog P;
     int end = 0;
-    if (epi_on && conv->nb[0] == sizeof(float) && conv->nb[2] == C*sizeof(float) && ggml_cuda_ew_after_fork(cgraph, i_conv, last, P, end)) {
+    if (cs_epi_match(cgraph, m, P, end)) {
         const ggml_tensor * out = cgraph->nodes[end];
         auto apart = [&](const ggml_tensor * t) {
             const char * a0 = (const char *) out->data, * b0 = (const char *) t->data;
@@ -138,5 +195,5 @@ int ggml_cuda_try_fuse_conv_step_fork(ggml_backend_cuda_context & ctx, const ggm
         }
     }
     cs_kernel<<<grid, 128, 0, ctx.stream()>>>(A);
-    return last - i;
+    return m.last - i;
 }

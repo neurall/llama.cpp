@@ -1395,12 +1395,18 @@ struct mtmd_context {
             case PROJECTOR_TYPE_HY_V4_VL:
             case PROJECTOR_TYPE_HY_V4_FLASH:
                 {
-                    // image start/end markers use fullwidth bar and U+2581 like hunyuanvl; the trailing hash follows the tokenizer revision, so take it from the vocab
                     if (text_model && pos_type != MTMD_POS_TYPE_MROPE) {
-                        throw std::runtime_error("hy_v4 VL projectors need a text model with M-RoPE rope sections");
+                        throw std::runtime_error(proj == PROJECTOR_TYPE_HY_V4_FLASH ? "the hy_v4_flash projector needs a text model with M-RoPE rope sections"
+                                                                                    : "hy_v4 VL projectors need a text model with M-RoPE rope sections");
                     }
-                    img_beg = lookup_token_text_prefix("<｜hy_image▁start");
-                    img_end = lookup_token_text_prefix("<｜hy_image▁end");
+                    if (proj == PROJECTOR_TYPE_HY_V4_FLASH) {
+                        img_beg = "<｜hy_image▁start:opensource｜>";
+                        img_end = "<｜hy_image▁end:opensource｜>";
+                    } else {
+                        // the hy_v4 VL markers end in a hash that follows the tokenizer revision, so take them from the vocab
+                        img_beg = lookup_token_text_prefix("<｜hy_image▁start");
+                        img_end = lookup_token_text_prefix("<｜hy_image▁end");
+                    }
                     image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(models.v.get());
                 } break;
             case PROJECTOR_TYPE_EXAONE4_5:

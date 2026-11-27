@@ -6,6 +6,7 @@
 #include "traits.h"
 #include "ggml-cpu-impl.h"
 #include "ggml-impl.h"
+#include "ggml-op-slots-fork.h"
 #include "quants.h"
 #include "ggml-threading.h"
 #include "unary-ops.h"
@@ -1303,6 +1304,25 @@ static void ggml_compute_forward_mul_mat_one_chunk(
     }
 }
 
+// converts n BF16 values (whole blocks of vec_dot_type) to vec_dot_type: widened directly to F32, otherwise via F32 in chunks
+static void ggml_cpu_bf16_to_vec_dot_type(const ggml_bf16_t * x, void * y, int64_t n, enum ggml_type vec_dot_type) {
+    if (vec_dot_type == GGML_TYPE_F32) {
+        ggml_cpu_bf16_to_fp32(x, (float *) y, n);
+        return;
+    }
+
+    ggml_from_float_t const from_float = type_traits_cpu[vec_dot_type].from_float;
+    const int64_t bs = ggml_blck_size(vec_dot_type);
+
+    float tmp[1024];
+    const int64_t chunk = (1024/bs)*bs;
+    for (int64_t i = 0; i < n; i += chunk) {
+        const int64_t nc = MIN(chunk, n - i);
+        ggml_cpu_bf16_to_fp32(x + i, tmp, nc);
+        from_float(tmp, (char *) y + (i/bs)*ggml_type_size(vec_dot_type), nc);
+    }
+}
+
 void ggml_compute_forward_mul_mat(
         const struct ggml_compute_params * params,
               struct ggml_tensor * dst) {
@@ -1385,11 +1405,9 @@ UseGgmlGemm1:;
         const size_t nbw3 = nbw2*ne12;
 
         assert(params->wsize >= ne13*nbw3);
-        // src1 is either packed from F32 into vec_dot_type, or widened from F16 or BF16 into the F32 work buffer
-        const bool widen = src1->type != GGML_TYPE_F32;
-
-        GGML_ASSERT(!widen || vec_dot_type == GGML_TYPE_F32);
-        GGML_ASSERT(!widen || src1->type == GGML_TYPE_F16 || src1->type == GGML_TYPE_BF16);
+        // src1 is either packed from F32 or BF16 into vec_dot_type, or widened from F16 or BF16 into the F32 work buffer
+        GGML_ASSERT(src1->type == GGML_TYPE_F32 || src1->type == GGML_TYPE_BF16 ||
+                    (src1->type == GGML_TYPE_F16 && vec_dot_type == GGML_TYPE_F32));
 
     #if 0
         for (int64_t i13 = 0; i13 < ne13; ++i13) {
@@ -1417,7 +1435,7 @@ UseGgmlGemm1:;
                     if (src1->type == GGML_TYPE_F16) {
                         ggml_cpu_fp16_to_fp32((const ggml_fp16_t *) src1_row, (float *) wdata_row, ne10_block_size);
                     } else if (src1->type == GGML_TYPE_BF16) {
-                        ggml_cpu_bf16_to_fp32((const ggml_bf16_t *) src1_row, (float *) wdata_row, ne10_block_size);
+                        ggml_cpu_bf16_to_vec_dot_type((const ggml_bf16_t *) src1_row, wdata_row, ne10_block_size, vec_dot_type);
                     } else {
                         from_float((const float *) src1_row, wdata_row, ne10_block_size);
                     }
@@ -1608,7 +1626,7 @@ static void * incr_ptr_aligned(void ** p, size_t size, size_t align) {
 static size_t ggml_moe_host_bytes(const struct ggml_tensor * dst) {
     const struct ggml_tensor * ids = dst->src[2];
     const int32_t * tbl   = (const int32_t *) dst->src[3]->data;
-    const int32_t   dummy = ggml_get_op_params_i32(dst, 0);
+    const int32_t   dummy = ggml_fork_mmid_cache_absent(dst);
     const int64_t   n_as  = dst->src[0]->ne[2];
     // an expert counts once however many tokens use it: a seen flag per expert (O(tokens x used), was a rescan of every earlier slot)
     uint8_t   seen_stack[1024];
@@ -1692,7 +1710,7 @@ static void ggml_compute_forward_mul_mat_id_impl(
         const size_t nbw3 = nbw2*ne12;
 
         assert(params->wsize >= ne13*nbw3);
-        GGML_ASSERT(src1->type == GGML_TYPE_F32);
+        GGML_ASSERT(src1->type == GGML_TYPE_F32 || src1->type == GGML_TYPE_BF16);
 
 #if 0
         for (int64_t i13 = 0; i13 < ne13; ++i13) {
@@ -1711,9 +1729,13 @@ static void ggml_compute_forward_mul_mat_id_impl(
                     size_t bs = ggml_blck_size(vec_dot_type);
                     int64_t ne10_block_start = (ith * ne10/bs) / nth;
                     int64_t ne10_block_end   = ((ith + 1) * ne10/bs) / nth;
-                    from_float((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11 + ne10_block_start*bs*nb10),
-                               (void *)               (wdata + i13*nbw3 + i12*nbw2 + i11*nbw1 + ne10_block_start*nbw0),
-                               (ne10_block_end - ne10_block_start) * bs);
+                    const void * src1_row  = (const char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11 + ne10_block_start*bs*nb10;
+                    void       * wdata_row =                    wdata  + i13*nbw3 + i12*nbw2 + i11*nbw1 + ne10_block_start*nbw0;
+                    if (src1->type == GGML_TYPE_BF16) {
+                        ggml_cpu_bf16_to_vec_dot_type((const ggml_bf16_t *) src1_row, wdata_row, (ne10_block_end - ne10_block_start) * bs, vec_dot_type);
+                    } else {
+                        from_float((const float *) src1_row, wdata_row, (ne10_block_end - ne10_block_start) * bs);
+                    }
                 }
             }
         }
@@ -1725,14 +1747,14 @@ static void ggml_compute_forward_mul_mat_id_impl(
         memset(matrix_row_counts, 0, n_as*sizeof(int64_t));
 
         // llama MoE expert cache: when src[3] is set it is an I32 table mapping
-        // expert id -> device cache slot, with op_params[0] holding the "not
+        // expert id -> device cache slot, with op_params[GGML_FORK_SLOT_MMID_CACHE_ABSENT] holding the "not
         // cached" dummy value. Cached ids are served by the device-side cache
         // chain, so this op skips them and zeroes their dst rows instead.
         const int32_t * moe_tbl   = NULL;
         int32_t         moe_dummy = 0;
         if (dst->src[3]) {
             moe_tbl   = (const int32_t *) dst->src[3]->data;
-            moe_dummy = ggml_get_op_params_i32(dst, 0);
+            moe_dummy = ggml_fork_mmid_cache_absent(dst);
         }
 
         // group rows by src0 matrix
@@ -1907,12 +1929,12 @@ static void ggml_compute_forward_mul_mat_id_impl(
 // so uploads can be timed around them
 static atomic_int g_moe_cpu_active;
 
-// A MoE cache product (src[3]: the host table, op_params[0]: the table's value for an expert that is not on a card) has host work when one of its picks is such
+// A MoE cache product (src[3]: the host table, op_params[GGML_FORK_SLOT_MMID_CACHE_ABSENT]: the table's value for an expert that is not on a card) has host work when one of its picks is such
 // an expert. Every pick cached, skipped or negative (fully cached layers, empty deferred runs): nothing to compute, the op only zeroes its output.
 static bool ggml_moe_host_work(const struct ggml_tensor * dst) {
     const struct ggml_tensor * ids = dst->src[2];
     const int32_t * tbl   = (const int32_t *) dst->src[3]->data;
-    const int32_t   dummy = ggml_get_op_params_i32(dst, 0);
+    const int32_t   dummy = ggml_fork_mmid_cache_absent(dst);
     for (int64_t t = 0; t < ids->ne[1]; ++t) {
         for (int64_t i = 0; i < ids->ne[0]; ++i) {
             const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
@@ -3461,9 +3483,10 @@ struct ggml_cplan ggml_graph_plan(
                     } break;
                 case GGML_OP_GATED_DELTA_NET:
                     {
-                        const int64_t S_v = node->src[2]->ne[0];
-                        const int64_t K   = ggml_get_op_params_i32(node, 0);
-                        const int64_t per_thread = S_v + (K > 1 ? S_v * S_v : 0);
+                        const int64_t S_v  = node->src[2]->ne[0];
+                        const int64_t K    = ggml_get_op_params_i32(node, 0);
+                        const bool    keep = node->src[6] && ggml_get_op_params_i32(node, 2) != 0;
+                        const int64_t per_thread = S_v + (K > 1 || keep ? S_v * S_v : 0);
                         cur = per_thread * sizeof(float) * n_tasks;
                     } break;
                 case GGML_OP_COUNT:

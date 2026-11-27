@@ -9,13 +9,14 @@
 // GGML_CUDA_CTRL_FUSE=0 turns it off.
 #include "common.cuh"
 #include "ggml-impl.h"
+#include "ctrl-match-fork.h"
+#include "fuse-apart-fork.h"
 
 #include <cstdlib>
 
 namespace {
 
-constexpr int CT_MAX_R = 128;
-constexpr int CT_MAX_T = 16;
+constexpr int CT_MAX_R = GGML_CT_MAX_R;
 
 struct ct_args {
     const char * c; int64_t c_nb1;   // cur rows
@@ -77,104 +78,38 @@ static __global__ void ct_out_kernel(const __grid_constant__ ct_args A, const fl
     }
 }
 
-static bool ct_is_view(const ggml_tensor * t) {
-    return t->op == GGML_OP_NONE || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE;
-}
-
-static bool ct_unary(const ggml_tensor * t, ggml_unary_op op) {
-    return t->op == GGML_OP_UNARY && ggml_get_unary_op(t) == op;
-}
-
-// a row-contiguous f32 [E, T] operand
-static bool ct_rows(const ggml_tensor * t, int64_t E, int64_t T) {
-    return t->type == GGML_TYPE_F32 && t->ne[0] == E && t->ne[1] == T && t->ne[2] == 1 && t->ne[3] == 1 && t->nb[0] == sizeof(float);
-}
-
 }  // namespace
+
+bool ggml_cuda_ctrl_fuse_on_fork() {
+    static const bool on = !getenv("GGML_CUDA_CTRL_FUSE") || atoi(getenv("GGML_CUDA_CTRL_FUSE")) != 0;
+    return on;
+}
 
 // returns the nodes to skip after i (0: no fusion)
 int ggml_cuda_try_fuse_ctrl_fork(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i) {
-    static const bool on = !getenv("GGML_CUDA_CTRL_FUSE") || atoi(getenv("GGML_CUDA_CTRL_FUSE")) != 0;
-    const ggml_tensor * n0 = cgraph->nodes[i];
-    if (!on || n0->op != GGML_OP_RMS_NORM) {
+    static const bool on = ggml_cuda_ctrl_fuse_on_fork();
+    ggml_ctrl_match_fork m;
+    if (!on || !ggml_ctrl_match_fork_at(cgraph, i, m)) {
         return 0;
     }
-    // the next 12 non-view nodes from i
-    constexpr int N = 12;
-    int idx[N];
-    int n = 0;
-    for (int j = i; j < cgraph->n_nodes && n < N; ++j) {
-        if (!ct_is_view(cgraph->nodes[j])) { idx[n++] = j; }
-    }
-    if (n < N) {
+    // tripwire, should never fire: graph_optimize kept cur and msg alive until the add (ggml_cuda_fusion_add_alloc_deps); the output kernel reads each
+    // element's own cur and msg before it writes it, so the add exactly in place over one of them would be fine, any other overlap is not
+    if (!ggml_cuda_fuse_apart_fork(m.add, { m.cur, m.msg }, true)) {
+        static int said = 0;
+        ggml_cuda_fuse_apart_warn_fork("loop controller", m.add, said);
         return 0;
     }
-    // the add that ends it is one of them; walk back from it
-    const ggml_tensor * add = nullptr;
-    int last = -1;
-    for (int k = 0; k < N; ++k) {
-        const ggml_tensor * t = cgraph->nodes[idx[k]];
-        if (t->op == GGML_OP_ADD && t->src[0]->op == GGML_OP_SUB && t->src[1]->op == GGML_OP_MUL) { add = t; last = idx[k]; }
-    }
-    if (!add) {
-        return 0;
-    }
-    const ggml_tensor * sub = add->src[0], * mgm = add->src[1];
-    const ggml_tensor * cur = sub->src[0], * mfc = sub->src[1];
-    if (mfc->op != GGML_OP_MUL || mfc->src[1] != cur || !ct_unary(mfc->src[0], GGML_UNARY_OP_TANH) || !ct_unary(mgm->src[0], GGML_UNARY_OP_TANH)) {
-        return 0;
-    }
-    const ggml_tensor * tf = mfc->src[0], * tg = mgm->src[0], * msg = mgm->src[1];
-    const ggml_tensor * mmf = tf->src[0], * mmg = tg->src[0];
-    if (mmf->op != GGML_OP_MUL_MAT || mmg->op != GGML_OP_MUL_MAT || mmf->src[1] != mmg->src[1]) {
-        return 0;
-    }
-    const ggml_tensor * mmd = mmf->src[1];
-    if (mmd->op != GGML_OP_MUL_MAT || mmd->src[1]->op != GGML_OP_CONCAT || ggml_get_op_params_i32(mmd->src[1], 0) != 0) {
-        return 0;
-    }
-    const ggml_tensor * cat = mmd->src[1];
-    const ggml_tensor * rc = cat->src[0], * rm = cat->src[1];
-    if (rc->op != GGML_OP_RMS_NORM || rm->op != GGML_OP_RMS_NORM || rc->src[0] != cur || rm->src[0] != msg) {
-        return 0;
-    }
-    const ggml_tensor * set[N] = {rc, rm, cat, mmd, mmf, tf, mfc, sub, mmg, tg, mgm, add};
-    for (int k = 0; k < N; ++k) {
-        bool found = false;
-        for (int s = 0; s < N; ++s) { found |= cgraph->nodes[idx[k]] == set[s]; }
-        if (!found) { return 0; }
-    }
-    const int64_t E = cur->ne[0], T = cur->ne[1], R = mmd->ne[0];
-    const ggml_tensor * wd = mmd->src[0], * wg = mmg->src[0], * wf = mmf->src[0];
-    if (T > CT_MAX_T || R > CT_MAX_R || !ct_rows(cur, E, T) || !ct_rows(msg, E, T) || !ct_rows(add, E, T) ||
-            wd->type != GGML_TYPE_F32 || wd->ne[0] != 2*E || wd->ne[1] != R || !ggml_is_contiguous(wd) ||
-            wg->type != GGML_TYPE_F32 || wg->ne[0] != R || wg->ne[1] != E || !ggml_is_contiguous(wg) ||
-            wf->type != GGML_TYPE_F32 || wf->ne[0] != R || wf->ne[1] != E || !ggml_is_contiguous(wf)) {
-        return 0;
-    }
-    // every skipped node but the add is read only inside the controller
-    for (int k = 0; k < N; ++k) {
-        const int j = idx[k];
-        const ggml_tensor * t = cgraph->nodes[j];
-        if (t == add) { continue; }
-        if (t->flags & GGML_TENSOR_FLAG_OUTPUT) { return 0; }
-        int uses = 0;
-        for (int q = i; q <= last; ++q) {
-            for (int s = 0; s < GGML_MAX_SRC; ++s) { uses += cgraph->nodes[q]->src[s] == t; }
-        }
-        if (uses != ggml_node_get_use_count(cgraph, j)) { return 0; }
-    }
-
+    const int64_t E = m.cur->ne[0], T = m.cur->ne[1], R = m.mmd->ne[0];
     ct_args A{};
-    A.c = (const char *) cur->data; A.c_nb1 = cur->nb[1];
-    A.m = (const char *) msg->data; A.m_nb1 = msg->nb[1];
-    A.wd = (const float *) wd->data; A.wg = (const float *) wg->data; A.wf = (const float *) wf->data;
-    A.d = (char *) add->data; A.d_nb1 = add->nb[1];
+    A.c = (const char *) m.cur->data; A.c_nb1 = m.cur->nb[1];
+    A.m = (const char *) m.msg->data; A.m_nb1 = m.msg->nb[1];
+    A.wd = (const float *) m.wd->data; A.wg = (const float *) m.wg->data; A.wf = (const float *) m.wf->data;
+    A.d = (char *) m.add->data; A.d_nb1 = m.add->nb[1];
     A.E = (int) E; A.R = (int) R;
-    memcpy(&A.eps_c, rc->op_params, sizeof(float));
-    memcpy(&A.eps_m, rm->op_params, sizeof(float));
+    memcpy(&A.eps_c, m.rc->op_params, sizeof(float));
+    memcpy(&A.eps_m, m.rm->op_params, sizeof(float));
     ggml_cuda_pool_alloc<float> h(ctx.pool(), T*R);
     ct_down_kernel<<<dim3((unsigned) R, (unsigned) T), 256, 0, ctx.stream()>>>(A, h.get());
     ct_out_kernel<<<dim3((unsigned) ((E + 7)/8), (unsigned) T), 256, 0, ctx.stream()>>>(A, h.get());
-    return last - i;
+    return m.last - i;
 }

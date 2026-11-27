@@ -170,6 +170,7 @@ enum llm_arch {
     LLM_ARCH_KIMI_LINEAR,
     LLM_ARCH_KIMI_K3,
     LLM_ARCH_KIMI_K31,
+    LLM_ARCH_RAON1_MINI,
     LLM_ARCH_GLM5_NEXT,
     LLM_ARCH_TALKIE,
     LLM_ARCH_MELLUM,
@@ -317,6 +318,7 @@ enum llm_kv {
     LLM_KV_ATTENTION_VALUE_LENGTH,
     LLM_KV_ATTENTION_LAYERNORM_EPS,
     LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,
+    LLM_KV_ATTENTION_LATENT_NORM_RMS_EPS,
     LLM_KV_ATTENTION_GROUPNORM_EPS,
     LLM_KV_ATTENTION_GROUPNORM_GROUPS,
     LLM_KV_ATTENTION_CAUSAL,
@@ -502,6 +504,7 @@ enum llm_kv {
     LLM_KV_DFLASH_CONV_GROUP_SIZE,
     LLM_KV_DFLASH_SELECTOR_RANK,
     LLM_KV_DFLASH_SELECTOR_TOP_K,
+    LLM_KV_DFLASH_SELECTOR_SOFTCAP_AFTER_CORRECTION,
     LLM_KV_DFLASH_HAS_MARKOV_CONTEXT,
     LLM_KV_LILICORR_HIDDEN_SIZE,
     LLM_KV_LILICORR_CANDIDATE_TOPK,
@@ -676,8 +679,6 @@ enum llm_tensor {
     LLM_TENSOR_LAYER_OUT_NORM,
     LLM_TENSOR_LAYER_OUT_SCALE,
     LLM_TENSOR_ATTN_VRES_LAMBDA,
-    LLM_TENSOR_POST_ATTN_NORM,
-    LLM_TENSOR_POST_MLP_NORM,
     LLM_TENSOR_PER_LAYER_TOKEN_EMBD, // gemma3n
     LLM_TENSOR_PER_LAYER_MODEL_PROJ, // gemma3n
     LLM_TENSOR_PER_LAYER_INP_GATE,   // gemma3n
@@ -715,6 +716,7 @@ enum llm_tensor {
     LLM_TENSOR_SSM_F_A,             // kimi: forget gate projection A
     LLM_TENSOR_SSM_F_B,             // kimi: forget gate projection B
     LLM_TENSOR_SSM_BETA,            // kimi: beta mixing coefficient and qwen3.5
+    LLM_TENSOR_SSM_RDA,             // raon1_mini: write gate offset
     LLM_TENSOR_SSM_G_A,             // kimi: output gate projection A
     LLM_TENSOR_SSM_G_B,             // kimi: output gate projection B
     LLM_TENSOR_SSM_G,               // kimi-k3: full-rank KDA gate
@@ -1059,3 +1061,4 @@ bool llm_arch_is_diffusion      (const llm_arch & arch);
 bool llm_arch_supports_sm_tensor(const llm_arch & arch);
 bool llm_arch_supports_rs_rollback(const llm_arch & arch);
 bool llm_arch_supports_mixed_batch(const llm_arch & arch);
+bool llm_arch_mmid_down_bf16(const llm_arch & arch);

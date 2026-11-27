@@ -4,6 +4,7 @@
 #include "ggml-backend-impl.h"
 
 #include "ggml-impl.h"
+#include "ggml-op-slots-fork.h"
 #include "ggml-cpu.h"
 #include "ggml-cpu-impl.h"
 #include "simd-mappings.h"
@@ -4852,7 +4853,7 @@ template <typename BLOC_TYPE, int64_t INTER_SIZE, int64_t NB_COLS, ggml_type PAR
             // llama MoE expert cache: skip ids served by the device cache and zero
             // their dst rows (same contract as the generic CPU mul_mat_id)
             const int32_t * moe_tbl   = dst->src[3] ? (const int32_t *) dst->src[3]->data : nullptr;
-            const int32_t   moe_dummy = ggml_get_op_params_i32(dst, 0);
+            const int32_t   moe_dummy = ggml_fork_mmid_cache_absent(dst);
 
             // group rows by src0 matrix
             for (int32_t iid1 = 0; iid1 < ids->ne[1]; ++iid1) {
@@ -5007,6 +5008,15 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
                 return &q4_0_4x4_q8_0;
             }
         }
+#if defined(__aarch64__) && !defined(__APPLE__)
+        // no dotprod (e.g. Cortex-A53): AArch64 only, on 32-bit ARM the 4x8 kernels run scalar code
+        // not on Apple: repacked weights cannot go to BLAS (Accelerate), which is faster there for large batches
+        if (ggml_cpu_has_neon() && !ggml_cpu_has_dotprod()) {
+            if (cur->ne[1] % 4 == 0) {
+                return &q4_0_4x8_q8_0;
+            }
+        }
+#endif
         if (ggml_cpu_has_vxe()) {
             if (cur->ne[1] % 4 == 0) {
                 return &q4_0_4x4_q8_0;
@@ -5133,6 +5143,15 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
                 return &q8_0_4x4_q8_0;
             }
         }
+#if defined(__aarch64__) && !defined(__APPLE__)
+        // no dotprod (e.g. Cortex-A53): AArch64 only, on 32-bit ARM the 4x8 kernels run scalar code
+        // not on Apple: repacked weights cannot go to BLAS (Accelerate), which is faster there for large batches
+        if (ggml_cpu_has_neon() && !ggml_cpu_has_dotprod()) {
+            if (cur->ne[1] % 4 == 0) {
+                return &q8_0_4x8_q8_0;
+            }
+        }
+#endif
         if (ggml_cpu_has_riscv_v()) {
             #if defined __riscv_zvfh
             switch (__riscv_vlenb() * 8) {

@@ -1,0 +1,518 @@
+#!/usr/bin/env python3
+"""op-slot-check: the op_params slots the fork's code writes, against every slot upstream code reads or writes for the same op.
+
+Upstream gave op_params slots the fork used a meaning of its own three times (MUL_MAT slot 1 = the Hadamard hint, MUL_MAT_ID slot 3 = the
+src1 precision, FLASH_ATTN_EXT slot 5 = the indexed bias flag). Run this against the upstream commit before merging it, and in the gate.
+
+usage: fork/op-slot-check [--fork REF | --worktree] [--upstream REF] [--list] [--overlap-only]
+  --fork REF       the fork tree (default HEAD)
+  --worktree       the fork tree is the working tree, uncommitted changes included
+  --upstream REF   the upstream tree (default origin/master: fetch first). Fork lines are the lines added since merge-base(fork, upstream)
+  --list           also print every (op, slot) the fork writes or reads and every upstream access of the same ops
+  --overlap-only   skip the registry check (for trees older than ggml/src/ggml-op-slots-fork.h)
+
+Exit 1 on an overlap (a slot the fork writes that upstream code reads or writes for the same op; a MUL_MAT_ID's slots count for MUL_MAT,
+backends cut MUL_MAT slices from it with its op_params) or, unless --overlap-only, on a fork write of a slot not in the registry header.
+A fork line that writes a slot with upstream's meaning (a clear, a copy) says `op-slot: upstream` in its comment; `op-slot: OP` names the op
+where it cannot be told from the code. Reviewed overlaps (`op-slot-reviewed:` lines in the registry header) are printed, not failed.
+Plain python3, no dependencies; reads the trees with git.
+"""
+import argparse
+import collections
+import os
+import re
+import subprocess
+import sys
+
+REGISTRY = 'ggml/src/ggml-op-slots-fork.h'
+EXTS = ('*.c', '*.cc', '*.cpp', '*.cxx', '*.h', '*.hpp', '*.cu', '*.cuh', '*.m', '*.mm')
+SPACE = {'MUL_MAT_ID': 'MUL_MAT'}   # ops that share one slot space (the slices a backend cuts from a MUL_MAT_ID are MUL_MATs with its op_params)
+# graph helpers whose result is an op (the assignment `t = helper(...)` tells t's op); ggml_* constructors are read from ggml.c
+BUILDERS = {'build_lora_mm_id': 'MUL_MAT_ID', 'build_lora_mm': 'MUL_MAT', 'expert_chain': 'MUL_MAT_ID'}
+# words in a function or file name that name an op (besides the op's own name)
+NAME_WORDS = {'fattn': 'FLASH_ATTN_EXT', 'mmid': 'MUL_MAT_ID', 'gdn': 'GATED_DELTA_NET'}
+TYPE_SLOTS = {'float': 1, 'int32_t': 1, 'int': 1, 'uint32_t': 1, 'int64_t': 2, 'uint64_t': 2, 'size_t': 2, 'double': 2, 'void': 2}
+
+
+def git(*args):
+    return subprocess.run(['git', *args], capture_output=True, text=True, encoding='utf-8', errors='replace', check=True).stdout
+
+
+def show(ref, path):
+    if ref is None:   # the working tree
+        try:
+            with open(os.path.join(git('rev-parse', '--show-toplevel').strip(), path), encoding='utf-8', errors='replace') as f:
+                return f.read()
+        except OSError:
+            return None
+    r = subprocess.run(['git', 'show', f'{ref}:{path}'], capture_output=True, text=True, encoding='utf-8', errors='replace')
+    return r.stdout if r.returncode == 0 else None
+
+
+def blank(src):
+    """comments and string literals as spaces, lines and columns kept"""
+    out, i, n = [], 0, len(src)
+    while i < n:
+        if src.startswith('//', i):
+            j = src.find('\n', i)
+            j = n if j < 0 else j
+            out.append(' ' * (j - i)); i = j
+        elif src.startswith('/*', i):
+            j = src.find('*/', i + 2)
+            j = n if j < 0 else j + 2
+            out.append(re.sub(r'[^\n]', ' ', src[i:j])); i = j
+        elif src[i] in '"\'' and not (src[i] == "'" and i > 0 and src[i - 1].isalnum()):   # not a digit separator
+            q, j = src[i], i + 1
+            while j < n and src[j] != q and src[j] != '\n':
+                j += 2 if src[j] == '\\' else 1
+            j = min(j + 1, n)
+            out.append(q + ' ' * max(0, j - i - 2) + (q if j - i >= 2 else '')); i = j
+        else:
+            out.append(src[i]); i += 1
+    return ''.join(out)
+
+
+FUNC_HDR = re.compile(r'([A-Za-z_~][\w~]*)\s*\((?:[^()]|\([^()]*\))*\)\s*(?:const|override|noexcept|final|mutable|->\s*[\w:<>\s*&,]+|\s)*$')
+CTRL = re.compile(r'^(?:if|for|while|switch|catch|else|do|return|sizeof)\b')
+
+
+def functions(text):
+    """(first line, last line, name) of every outermost function body, lines 0-based"""
+    res, stack, hdr, line = [], [], [], 0
+    for ch in text:
+        if ch == '{':
+            h = ''.join(hdr).strip(); hdr = []
+            name = None
+            if not any(k for k, _, _ in stack):
+                tail = h.split('\n')[-1].strip() if h else ''
+                m = FUNC_HDR.search(h)
+                if m and not CTRL.match(tail) and not CTRL.match(m.group(1)) and m.group(1) not in ('if', 'for', 'while', 'switch'):
+                    name = m.group(1)
+            stack.append((name is not None, line, name))
+        elif ch == '}':
+            hdr = []
+            if stack:
+                is_f, s, name = stack.pop()
+                if is_f:
+                    res.append((s, line, name))
+        elif ch == ';':
+            hdr = []
+        else:
+            hdr.append(ch)
+        if ch == '\n':
+            line += 1
+    return res
+
+
+EXPR = r'[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*|\s*\[[^\[\]]*\])*'
+CASTP = r'\(\s*(?:const\s+)?(float|int32_t|int|uint32_t|int64_t|uint64_t|size_t|double|char|void|uint8_t|int8_t)\s*\*\s*\)'
+RX = [
+    ('api',   re.compile(r'\bggml_(get|set)_op_params_(?:i32|f32)\s*\(\s*(' + EXPR + r')\s*,\s*([^,()]+(?:\([^()]*\))?[^,()]*?)\s*[,)]')),
+    ('whole', re.compile(r'\bggml_set_op_params\s*\(\s*(' + EXPR + r')\s*,\s*(&?\s*\w+)\s*,\s*sizeof\s*\(?\s*([\w\s\*\[\]]+?)\s*\)?\s*\)')),
+    ('index', re.compile(r'(?<![\w>.])(' + EXPR + r')\s*(?:->|\.)\s*op_params\s*\[\s*([^\]]+?)\s*\]')),
+    ('castx', re.compile(r'\(\s*' + CASTP + r'\s*\(?\s*(' + EXPR + r')\s*(?:->|\.)\s*op_params\s*\)?\s*\)\s*\[\s*([^\]]+?)\s*\]')),
+    ('castp', re.compile(CASTP + r'\s*\(?\s*(' + EXPR + r')\s*(?:->|\.)\s*op_params\s*\)?\s*(?:\+\s*(\d+))?')),
+    ('bare',  re.compile(r'\b(memcpy|memcmp)\s*\(\s*(&?\s*' + EXPR + r')\s*,\s*(&?\s*' + EXPR + r')\s*,')),
+]
+
+COPY = re.compile(r'op_params\s*\[\s*(\w+)\s*\]\s*=\s*' + EXPR + r'\s*(?:->|\.)\s*op_params\s*\[\s*\1\s*\]\s*;')
+
+
+class Ctx:
+    """one file at one ref: blanked lines, functions, op inference"""
+
+    def __init__(self, path, text, fn2op, consts):
+        self.path, self.raw = path, text.split('\n')
+        self.lines = blank(text).split('\n')
+        self.fn2op, self.consts = fn2op, consts
+        self.func_of = [None] * len(self.lines)
+        for s, e, name in functions(blank(text)):
+            for i in range(s, min(e + 1, len(self.lines))):
+                self.func_of[i] = (s, e, name)
+
+    def span(self, i):
+        f = self.func_of[i]
+        return (f[0], f[1], f[2]) if f else (max(0, i - 40), min(len(self.lines) - 1, i + 40), '')
+
+    def slot_value(self, expr, i):
+        e = expr.strip()
+        e = re.sub(r'^\(\s*\w+\s*\)\s*', '', e)
+        if re.fullmatch(r'\d+', e):
+            return int(e)
+        if e in self.consts:
+            return self.consts[e]
+        m = re.fullmatch(r'(\d+)\s*\+\s*(\d+)', e)
+        if m:
+            return int(m.group(1)) + int(m.group(2))
+        m = re.fullmatch(r'(\d+)\s*\+\s*(\w+)', e)   # C + idx with a guard `if (idx != K) return` in the function
+        if m:
+            s, t, _ = self.span(i)
+            for j in range(s, t + 1):
+                g = re.search(r'\bif\s*\(\s*' + m.group(2) + r'\s*!=\s*(\d+)\s*\)', self.lines[j])
+                if g:
+                    return int(m.group(1)) + int(g.group(1))
+        return None
+
+    def ops_of(self, tensor, i):
+        """the op(s) the tensor expression has at line i"""
+        ann = re.search(r'op-slot:\s*([A-Z_0-9]+)', self.raw[i])
+        if ann and ann.group(1) != 'upstream':
+            return {ann.group(1)}
+        t = re.sub(r'\s+', '', tensor.lstrip('&*( '))
+        base = re.split(r'->|\.|\[', t)[0]
+        s, e, fname = self.span(i)
+
+        def opref(line, who):
+            pat = r'(?<![\w>.])' + re.escape(who).replace(r'\-\>', r'\s*->\s*').replace(r'\.', r'\s*\.\s*') + r'\s*->\s*op\s*(?:==|!=|=(?!=))\s*GGML_OP_(\w+)'
+            return set(re.findall(pat, line))
+
+        whos = [t, base] if base != t else [t]
+
+        def case_group(j):
+            ops = set(re.findall(r'\bcase\s+GGML_OP_(\w+)\s*:', self.lines[j]))
+            k = j - 1
+            while ops and k >= s and re.fullmatch(r'\s*(?:case\s+GGML_OP_\w+\s*:\s*)+', self.lines[k]):
+                ops |= set(re.findall(r'GGML_OP_(\w+)', self.lines[k])); k -= 1
+            return ops
+
+        # nearest first upward, inside the function: an op check of the tensor or the enclosing case labels (the case of the access wins over
+        # an unrelated op check earlier in a long switch)
+        in_switch = True
+        for j in range(i, s - 1, -1):
+            for who in whos:
+                got = opref(self.lines[j], who)
+                if got:
+                    return got
+            if in_switch:
+                got = case_group(j)
+                if got:
+                    return got
+                if re.search(r'\bswitch\s*\(', self.lines[j]) and j != i:
+                    in_switch = False
+        # an op check below
+        for j in range(i + 1, e + 1):
+            for who in whos:
+                got = opref(self.lines[j], who)
+                if got:
+                    return got
+        # the assignment that made the tensor
+        for j in range(i, s - 1, -1):
+            m = re.search(r'(?<![\w>.])' + re.escape(base) + r'\s*=\s*(?:\w+\s*\?\s*)?([A-Za-z_]\w*)\s*\(', self.lines[j])
+            if m and m.group(1) != 'nullptr':
+                op = self.fn2op.get(m.group(1)) or BUILDERS.get(m.group(1))
+                if op:
+                    return {op}
+        # the function's or the file's name
+        for name in (fname, self.path.rsplit('/', 1)[-1].split('.')[0]):
+            op = op_in_name(name, self.fn2op['__ops__'])
+            if op:
+                return {op}
+        return {'?'}
+
+
+def op_in_name(name, ops):
+    words = re.split(r'[_\-]', name.lower())
+    best = None
+    for op in ops:
+        ow = op.lower().split('_')
+        if len(ow) == 1 and len(op) < 5:   # one short word (ADD, MUL, SET, ...) names too many functions
+            continue
+        for k in range(len(words) - len(ow) + 1):
+            if words[k:k + len(ow)] == ow and (best is None or len(op) > len(best)):
+                best = op
+    if best is None:
+        for w in words:
+            if w in NAME_WORDS:
+                return NAME_WORDS[w]
+    return best
+
+
+def scan(ctx, lineset=None):
+    """accesses (op, slot, kind, line_no, text): kind 'r' or 'w'; slot an int, '?' or 'all'"""
+    out = []
+    aliases = {}   # pointer name -> (tensor, first slot, slots per element), per function
+
+    def add(tensor, slot, kind, i, at=None):
+        if slot == 'skip':
+            return
+        upstream_meaning = bool(re.search(r'op-slot:\s*upstream', ctx.raw[i]))
+        for op in sorted(ctx.ops_of(tensor, i if at is None else at)):   # an alias: the op at its definition
+            out.append((op, slot, kind, i + 1, ctx.raw[i].strip(), upstream_meaning))
+
+    for i, line in enumerate(ctx.lines):
+        if 'op_params' not in line and not aliases:
+            continue
+        f = ctx.func_of[i]
+        if f is None or (i == f[0]):
+            aliases = {k: v for k, v in aliases.items() if v[3] == f}
+        if lineset is not None and i + 1 not in lineset:
+            # still learn the aliases a later fork line uses
+            for m in re.finditer(r'\b(\w+)\s*=\s*' + CASTP + r'\s*\(?\s*(' + EXPR + r')\s*(?:->|\.)\s*op_params\s*\)?\s*(?:\+\s*(\d+))?\s*;', line):
+                aliases[m.group(1)] = (m.group(3), int(m.group(4) or 0), TYPE_SLOTS.get(m.group(2), 1), f, i)
+            continue
+        if COPY.search(line):
+            continue   # an element copy of one tensor's op_params to another (rpc): meaning kept
+        used = []
+        for kind, rx in RX:
+            for m in rx.finditer(line):
+                if any(a <= m.start() < b for a, b in used):
+                    continue
+                if kind == 'api':
+                    slot = ctx.slot_value(m.group(3), i)
+                    add(m.group(2), slot if slot is not None else '?', 'w' if m.group(1) == 'set' else 'r', i)
+                elif kind == 'whole':
+                    var = m.group(2).lstrip('& ')
+                    s, e, _ = ctx.span(i)
+                    n = None
+                    for j in range(s, i + 1):
+                        d = re.search(r'\b(float|int32_t|int|uint32_t|int64_t|uint64_t|size_t|double)\s+' + var + r'\s*\[\s*\d*\s*\]\s*=\s*\{([^}]*)\}', ctx.lines[j])
+                        if d:
+                            n = len([x for x in d.group(2).split(',') if x.strip()]) * TYPE_SLOTS[d.group(1)]
+                        d = re.search(r'\b(float|int32_t|int|uint32_t|int64_t|uint64_t|size_t|double)\s+' + var + r'\s*[;=,)]', ctx.lines[j])
+                        if d and n is None:
+                            n = TYPE_SLOTS[d.group(1)]
+                        if re.search(r'\*\s*' + var + r'\s*[;=,)]', ctx.lines[j]) and n is None:
+                            n = 2
+                    for k in (range(n) if n else ['all']):
+                        add(m.group(1), k, 'w', i)
+                elif kind == 'index':
+                    slot = ctx.slot_value(m.group(2), i)
+                    rest = line[m.end():]
+                    w = bool(re.match(r'\s*(?:=(?!=)|\+=|-=|\|=|&=|\+\+|--)', rest)) or bool(re.search(r'memcpy\s*\(\s*&\s*$', line[:m.start()]))
+                    add(m.group(1), slot if slot is not None else '?', 'w' if w else 'r', i)
+                elif kind == 'castx':
+                    slot = ctx.slot_value(m.group(3), i)
+                    per = TYPE_SLOTS.get(m.group(1), 1)
+                    w = bool(re.match(r'\s*=(?!=)', line[m.end():]))
+                    add(m.group(2), slot * per if slot is not None else '?', 'w' if w else 'r', i)
+                elif kind == 'castp':
+                    per = TYPE_SLOTS.get(m.group(1), 1)
+                    first = int(m.group(3) or 0) * per
+                    before = line[:m.start()]
+                    w = bool(re.search(r'memcpy\s*\(\s*$', before))
+                    am = re.search(r'\b(\w+)\s*=\s*$', before)
+                    if am:   # a pointer into op_params: its [N] are the accesses
+                        aliases[am.group(1)] = (m.group(2), first, per, f, i)
+                        continue
+                    add(m.group(2), first, 'w' if w else 'r', i)
+                elif kind == 'bare':
+                    dst, src = m.group(2), m.group(3)
+                    d_op, s_op = 'op_params' in dst, 'op_params' in src
+                    if d_op and s_op:
+                        continue   # a copy of one tensor's op_params to another: meaning kept
+                    if d_op and 'op_params[' not in dst:
+                        add(re.sub(r'\s*(?:->|\.)\s*op_params$', '', dst.strip()), 'all', 'w' if m.group(1) == 'memcpy' else 'r', i)
+                    elif s_op and 'op_params[' not in src:
+                        add(re.sub(r'\s*(?:->|\.)\s*op_params$', '', src.strip().lstrip('&')), 0 if m.group(1) == 'memcpy' else 'all', 'r', i)
+                used.append((m.start(), m.end()))
+        for name, (tensor, first, per, fn, at) in list(aliases.items()):
+            for m in re.finditer(r'(?<![\w>.])' + name + r'\s*\[\s*(\d+)\s*\]', line):
+                w = bool(re.match(r'\s*=(?!=)', line[m.end():]))
+                add(tensor, first + int(m.group(1)) * per, 'w' if w else 'r', i, at)
+    return out
+
+
+def fn_to_op(ref):
+    """ggml_* constructor -> op, from ggml.c at ref; also every op name"""
+    hdr = show(ref, 'ggml/include/ggml.h') or ''
+    enum = re.search(r'enum ggml_op\s*\{(.*?)\};', hdr, re.S)
+    ops = re.findall(r'GGML_OP_(\w+)', enum.group(1)) if enum else []
+    src = show(ref, 'ggml/src/ggml.c') or ''
+    b = blank(src)
+    lines = b.split('\n')
+    direct, calls = {}, {}
+    for s, e, name in functions(b):
+        body = '\n'.join(lines[s:e + 1])
+        o = set(re.findall(r'->\s*op\s*=\s*GGML_OP_(\w+)', body))
+        if len(o) == 1:
+            direct[name] = o.pop()
+        elif not o:
+            calls[name] = re.findall(r'\breturn\s+(ggml_\w+)\s*\(', body)
+    changed = True
+    while changed:
+        changed = False
+        for name, cs in calls.items():
+            if name not in direct:
+                got = {direct[c] for c in cs if c in direct}
+                if len(got) == 1:
+                    direct[name] = got.pop(); changed = True
+    for n in ('ggml_new_tensor', 'ggml_new_tensor_1d', 'ggml_new_tensor_2d', 'ggml_new_tensor_3d', 'ggml_new_tensor_4d'):
+        direct.setdefault(n, 'NONE')
+    direct['__ops__'] = ops
+    return direct
+
+
+def registry(ref):
+    text = show(ref, REGISTRY)
+    if text is None:
+        return None, {}, []
+    consts = {m.group(1): int(m.group(2)) for m in re.finditer(r'#define\s+(GGML_FORK_SLOT_\w+)\s+(\d+)', text)}
+    entries = []
+    for m in re.finditer(r'\{\s*GGML_OP_(\w+)\s*,\s*(GGML_FORK_SLOT_\w+|\d+)\s*,\s*(\d+)\s*,\s*"(\w+)"\s*\}', text):
+        slot = consts.get(m.group(2), int(m.group(2)) if m.group(2).isdigit() else None)
+        entries.append((m.group(1), slot, int(m.group(3)), m.group(4)))
+    reviewed = [(m.group(1), int(m.group(2)), m.group(3), m.group(4).strip())
+                for m in re.finditer(r'op-slot-reviewed:\s*(\w+)\s+(\d+)\s+(\w+)\s+(.*)', text)]
+    return entries, consts, reviewed
+
+
+def files_with_op_params(ref):
+    if ref is None:
+        out = git('grep', '-l', '--untracked', '-E', 'op_params', '--', *EXTS, ':!vendor')
+        return out.splitlines()
+    out = git('grep', '-l', '-E', 'op_params', ref, '--', *EXTS, ':!vendor')
+    return [l.split(':', 1)[1] for l in out.splitlines() if ':' in l]
+
+
+def added_lines(base, ref, paths):
+    diff = (git('diff', '-U0', '--no-color', base, *([ref] if ref else []), '--', *paths) if paths else '')
+    res, cur = collections.defaultdict(set), None
+    if ref is None:   # untracked files of the working tree: every line is the fork's
+        for p in git('ls-files', '--others', '--exclude-standard', '--', *paths).splitlines():
+            res[p].update(range(1, (show(None, p) or '').count('\n') + 2))
+    for l in diff.splitlines():
+        if l.startswith('+++ '):
+            cur = l[6:] if l.startswith('+++ b/') else None
+        elif l.startswith('@@') and cur:
+            m = re.match(r'@@ -\S+ \+(\d+)(?:,(\d+))? @@', l)
+            start, n = int(m.group(1)), int(m.group(2) if m.group(2) is not None else 1)
+            res[cur].update(range(start, start + n))
+    return res
+
+
+def space(op):
+    return SPACE.get(op, op)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--fork', default='HEAD')
+    ap.add_argument('--worktree', action='store_true')
+    ap.add_argument('--upstream', default='origin/master')
+    ap.add_argument('--list', action='store_true')
+    ap.add_argument('--overlap-only', action='store_true')
+    a = ap.parse_args()
+
+    fref = None if a.worktree else a.fork
+    fork = 'working tree' if a.worktree else git('rev-parse', '--short=10', a.fork).strip()
+    up = git('rev-parse', '--short=10', a.upstream).strip()
+    base = git('merge-base', 'HEAD' if a.worktree else a.fork, a.upstream).strip()
+    entries, consts, reviewed = registry(fref)
+    print(f'op-slot-check: fork {"" if a.worktree else a.fork + " "}({fork}) against upstream {a.upstream} ({up}), fork lines since {base[:10]}; '
+          f'registry: {len(entries) if entries is not None else "none"} slots')
+
+    fn2op_f, fn2op_u = fn_to_op(fref), fn_to_op(a.upstream)
+
+    fork_acc = []   # (op, slot, kind, path, line, text, upstream_meaning)
+    fpaths = files_with_op_params(fref)
+    added = added_lines(base, fref, fpaths)
+    for p in fpaths:
+        if not added.get(p):
+            continue
+        text = show(fref, p)
+        if text is None:
+            continue
+        for op, slot, kind, ln, txt, um in scan(Ctx(p, text, fn2op_f, consts), added[p]):
+            fork_acc.append((op, slot, kind, p, ln, txt, um))
+
+    fork_ops = {space(op) for op, slot, kind, *_ in fork_acc if kind == 'w'} | {space(e[0]) for e in (entries or [])}
+    up_acc = []
+    for p in files_with_op_params(a.upstream):
+        text = show(a.upstream, p)
+        if text is None:
+            continue
+        for op, slot, kind, ln, txt, um in scan(Ctx(p, text, fn2op_u, {})):
+            if space(op) in fork_ops:
+                up_acc.append((op, slot, kind, p, ln, txt))
+
+    # the slots the fork gives a meaning: its writes not marked upstream-meaning, and the registry's entries
+    owned = collections.defaultdict(list)   # (space(op), slot) -> fork accesses
+    for acc in fork_acc:
+        op, slot, kind, p, ln, txt, um = acc
+        if kind == 'w' and not um and op != '?':
+            owned[(space(op), slot)].append(acc)
+    for op, slot, width, name in (entries or []):
+        for s in range(slot, slot + width):
+            owned.setdefault((space(op), s), [])
+
+    def slots_hit(slot):
+        return slot == 'all' or slot == '?'
+
+    # an upstream access on a line the fork changed (absent from the fork tree, present at the merge base) was dealt with in the fork
+    lines_cache = {}
+
+    def has_line(ref, path, txt):
+        if (ref, path) not in lines_cache:
+            lines_cache[(ref, path)] = {l.strip() for l in (show(ref, path) or '').split('\n')}
+        return txt in lines_cache[(ref, path)]
+
+    overlaps, reviewed_hits, changed_hits = [], [], []
+    for (sp, slot), facc in sorted(owned.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
+        if slot in ('all', '?'):
+            continue
+        hits = [u for u in up_acc if space(u[0]) == sp and (u[1] == slot or slots_hit(u[1]))]
+        if not hits:
+            continue
+        fops = {f[0] for f in facc} or {e[0] for e in (entries or []) if space(e[0]) == sp and e[1] <= slot < e[1] + e[2]}
+        rest = []
+        for u in hits:
+            if not has_line(fref, u[3], u[5]) and has_line(base, u[3], u[5]):
+                changed_hits.append(u)
+                continue
+            rv = [r for r in reviewed if space(r[0]) == sp and r[1] == slot and r[2] == u[0] and r[0] in fops and r[2] not in fops]
+            (reviewed_hits if rv else rest).append((u, rv[0][3] if rv else None))
+        if rest:
+            overlaps.append(((sp, slot), facc, [u for u, _ in rest]))
+
+    unregistered, unknown = [], []
+    if entries is not None and not a.overlap_only:
+        reg = {(space(op), s) for op, slot, width, _ in entries for s in range(slot, slot + width)}
+        for (sp, slot), facc in sorted(owned.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
+            if facc and (sp, slot) not in reg:
+                unregistered.append(((sp, slot), facc))
+    for acc in fork_acc:
+        if acc[2] == 'w' and not acc[6] and acc[0] == '?':
+            unknown.append(acc)
+        elif acc[2] == 'w' and not acc[6] and acc[1] in ('?', 'all') and not a.overlap_only:
+            unknown.append(acc)
+
+    if a.list:
+        print('\nfork accesses (fork lines):')
+        for op, slot, kind, p, ln, txt, um in sorted(fork_acc, key=lambda x: (x[0], str(x[1]), x[3], x[4])):
+            print(f'  {op:16s} {str(slot):>4s} {kind}{" (upstream meaning)" if um else ""}  {p}:{ln}  {txt[:120]}')
+        print('\nupstream accesses of the same ops:')
+        for op, slot, kind, p, ln, txt in sorted(up_acc, key=lambda x: (x[0], str(x[1]), x[3], x[4])):
+            print(f'  {op:16s} {str(slot):>4s} {kind}  {p}:{ln}  {txt[:120]}')
+
+    for (sp, slot), facc, hits in overlaps:
+        print(f'\nOVERLAP {sp} slot {slot}: the fork gives it a meaning, upstream code reads or writes it')
+        for op, s, kind, p, ln, txt, um in facc or []:
+            print(f'   fork     {"write" if kind == "w" else "read "} {op:12s} {p}:{ln}  {txt[:110]}')
+        if not facc:
+            print(f'   fork     registry  {REGISTRY}')
+        for op, s, kind, p, ln, txt in hits:
+            print(f'   upstream {"write" if kind == "w" else "read "} {op:12s} {p}:{ln}  {txt[:110]}')
+    if reviewed_hits:
+        print('\nreviewed (ggml-op-slots-fork.h op-slot-reviewed), not failed:')
+        for (op, s, kind, p, ln, txt), why in reviewed_hits:
+            print(f'   {op} slot {s} {"write" if kind == "w" else "read"} {p}:{ln}  ({why[:100]})')
+    if changed_hits:
+        print('\nchanged in the fork (the upstream line is not in the fork tree), not failed:')
+        for op, s, kind, p, ln, txt in changed_hits:
+            print(f'   {op} slot {s} {"write" if kind == "w" else "read"} {p}:{ln}  {txt[:100]}')
+    for (sp, slot), facc in unregistered:
+        print(f'\nUNREGISTERED {sp} slot {slot}: the fork writes it, {REGISTRY} does not list it')
+        for op, s, kind, p, ln, txt, um in facc:
+            print(f'   fork     write {op:12s} {p}:{ln}  {txt[:110]}')
+    for op, slot, kind, p, ln, txt, um in unknown:
+        print(f'\nUNRESOLVED fork write ({op}, slot {slot}) {p}:{ln}: name the op or the slot (op-slot: OP / a GGML_FORK_SLOT_ constant)  {txt[:100]}')
+
+    bad = len(overlaps) + len(unregistered) + (len(unknown) if not a.overlap_only else 0)
+    n_owned = len([k for k, v in owned.items() if k[1] not in ('all', '?')])
+    print(f'\n{"FAIL" if bad else "OK"}: {n_owned} fork slots, {len(fork_acc)} fork accesses, {len(up_acc)} upstream accesses of the same ops; '
+          f'{len(overlaps)} overlap(s), {len(reviewed_hits)} reviewed, {len(changed_hits)} changed in the fork, {len(unregistered)} unregistered, {len(unknown)} unresolved')
+    return 1 if bad else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
