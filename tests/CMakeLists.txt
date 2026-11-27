@@ -197,6 +197,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-draft-ubatch-fork.cpp)   # the draft context's ubatch, shared by the runtime and fit (common/draft-ubatch-fork.h), no GPU
     llama_build_and_test(test-vk-staging-split-fork.cpp) # Vulkan host copies land in a staging buffer of at most 32 MiB (ggml/src/ggml-vulkan/vk-staging-split-fork.h), no GPU
     llama_build_and_test(test-rows-copy-fork.cpp)       # the CUDA rows copy pitch of a single-row view (ggml/src/ggml-cuda/rows-copy-fork.h), no GPU
+    llama_build_and_test(test-fuse-deps-fork.cpp)       # fork fusions that read inputs of skipped nodes: what graph_optimize keeps alive (ggml/src/ggml-cuda/mix-match-fork.h), no GPU
     llama_build_and_test(test-opoffload-fork.cpp)       # op offload off when the graph's fixed part does not fit, the micro-batch without it (src/llama-opoffload-fork.h), no GPU
     llama_build_and_test(test-room-fork.cpp)            # CUDA's room grows before a lend's scratch plan loads kernels (src/llama-room-fork.h), no GPU
     llama_build_and_test(test-bellsize-fork.cpp)        # the decode bell's pool size beside a spinning decode team (src/llama-bellsize-fork.h), no GPU

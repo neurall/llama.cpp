@@ -3486,6 +3486,40 @@ void ggml_cuda_fusion_add_alloc_deps(ggml_backend_cuda_context * cuda_ctx, ggml_
             }
         }
     }
+
+    // fork: the fusions that read inputs of the nodes they skip (Inkling 2's depth mix and loop controller, the conv step): those inputs stay alive
+    // until the group's last node, so the allocator never lays an output of the group over bytes its kernel still reads. In the unfused order they
+    // die at the skipped node (the concat): with experts on the CPU the layer state is the scheduler's copy of the CPU split's output, whose only reader
+    // in the split is that concat, and the mix's output sat on it (decode PPL 1.60-1.63, different every run, 2026-11-27; mix-match-fork.h)
+    for (int i = 0; i < cgraph->n_nodes; ++i) {
+        ggml_mix_match_fork mm;
+        if (ggml_cuda_mix_fuse_on_fork() && ggml_mix_match_fork_at(cgraph, i, mm)) {
+            const ggml_tensor * keep[3];
+            for (int k = 0, n = ggml_mix_keep_fork(mm, keep); k < n; ++k) {
+                params->add_alloc_dep(params->user_data, const_cast<ggml_tensor *>(keep[k]), cgraph->nodes[mm.last]);
+            }
+            i = mm.last;
+            continue;
+        }
+        ggml_ctrl_match_fork cm;
+        if (ggml_cuda_ctrl_fuse_on_fork() && ggml_ctrl_match_fork_at(cgraph, i, cm)) {
+            const ggml_tensor * keep[2];
+            for (int k = 0, n = ggml_ctrl_keep_fork(cm, keep); k < n; ++k) {
+                params->add_alloc_dep(params->user_data, const_cast<ggml_tensor *>(keep[k]), cgraph->nodes[cm.last]);
+            }
+            i = cm.last;
+            continue;
+        }
+        const ggml_tensor * keep[3];
+        int n_keep = 0;
+        const int last = ggml_cuda_conv_step_keep_fork(cgraph, i, keep, n_keep);
+        if (last >= 0) {
+            for (int k = 0; k < n_keep; ++k) {
+                params->add_alloc_dep(params->user_data, const_cast<ggml_tensor *>(keep[k]), cgraph->nodes[last]);
+            }
+            i = last;
+        }
+    }
 }
 
 // try and fuse nodes and return the number of nodes to skip

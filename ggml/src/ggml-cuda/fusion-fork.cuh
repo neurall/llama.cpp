@@ -3,6 +3,8 @@
 
 #include "common.cuh"
 #include "q8reuse-fork.h"
+#include "mix-match-fork.h"
+#include "ctrl-match-fork.h"
 
 #include <atomic>
 #include <cstdint>
@@ -28,3 +30,8 @@ void * ggml_cuda_q8_reuse_fork(int device, int lane, const void * src, const int
 void ggml_cuda_q8_written_fork(int device, const ggml_tensor * t);
 struct ggml_cuda_q8_revive_fork_t { int device = -1, lane = 0; q8_reuse_key k; uintptr_t lo = 0, hi = 0; };
 extern ggml_cuda_q8_revive_fork_t g_q8r_revive;
+
+// the fork fusions that read inputs of the nodes they skip, and what graph_optimize keeps alive for them (ggml_cuda_fusion_add_alloc_deps, fusion.cu)
+bool ggml_cuda_mix_fuse_on_fork();    // GGML_CUDA_MIX_FUSE, mix-fork.cu
+bool ggml_cuda_ctrl_fuse_on_fork();   // GGML_CUDA_CTRL_FUSE, ctrl-fork.cu
+int  ggml_cuda_conv_step_keep_fork(const ggml_cgraph * cgraph, int i, const ggml_tensor ** keep, int & n_keep);   // conv-step-fork.cu: the group's last node or -1
