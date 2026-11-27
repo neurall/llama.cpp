@@ -53,6 +53,7 @@ static size_t tm_unit_fork(ggml_type t) { return ggml_is_quantized(t) ? std::lcm
 // layers marked in `mask` (in host memory) take no room in the row; 0: the types cannot hold a layer's rows. All layers out: one unit (the record keeps a row)
 bool llama_moe_cache_kv_any_host_fork();   // llama-moecache-fork.cpp: a layer's KV lies in host memory (the RAM tier): its attention may run off the card, on kernels with whole masks
 void llama_moe_cache_mask_tail_fork();     // llama-moecache-fork.cpp: masks cover the pass's own cells: a pass's lend no longer grows with the cells (need_at_cells)
+bool llama_rel_fa_bias_opt_fork();         // llama-graph.cpp: --moe ink-fa-bias=1, a relative bias goes to flash attention as its indexed bias
 // fork: --moe attn-split: the attention of some layer runs on several cards now (the dense split stays out, llm_graph_context::ds_plan)
 static std::atomic<bool> g_kv_parts_on_fork { false };
 void llama_kv_parts_on_set_fork(bool on) { g_kv_parts_on_fork.store(on); }
@@ -2429,7 +2430,8 @@ static void set_input_attn_mask_impl(const args_set_input_attn_mask & args, T * 
 uint32_t llama_kv_cache::kq_mask_k0(const slot_info & sinfo, uint32_t n_kv) const {
     static const bool on = [] { const char * e = llama_moe_get_opt("mask-tail"); return !e || atoi(e) != 0; }();
     if (!on || !kv_tail_on || kv_rev || v_cells.size() != 1 || n_seq_max != 1 || swa_type != LLAMA_SWA_TYPE_NONE ||
-            hparams.f_max_alibi_bias != 0.0f || hparams.indexer_top_k > 0 || hparams.indexer_head_size > 0 || llama_moe_cache_kv_any_host_fork()) {
+            hparams.f_max_alibi_bias != 0.0f || hparams.indexer_top_k > 0 || hparams.indexer_head_size > 0 || llama_moe_cache_kv_any_host_fork() ||
+            !llama_kq_mask_trim_ok_fork(hparams.n_relative_extent > 0, llama_rel_fa_bias_opt_fork())) {
         return 0;
     }
     if (sinfo.idxs.empty() || sinfo.idxs[0].empty()) {
