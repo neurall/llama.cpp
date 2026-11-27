@@ -65,6 +65,7 @@ static std::vector<float> run(ggml_backend_t be, ggml_backend_dev_t dev, const c
         id = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T);
         out = ggml_get_rows(ctx, ggml_view_2d(ctx, w, K, N, w->nb[1], 0), id);
     }
+    if (t == GGML_TYPE_NVFP4 && strcmp(op, "get_rows")) { ggml_prec_set_acc(out, GGML_PREC_BF16); }   // as llama-graph's build_lora_mm(_id) asks for NVFP4 weights
     std::vector<float> res;
     if (!ggml_backend_dev_supports_op(dev, out)) { ggml_free(ctx); return res; }
     ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, be);
@@ -98,18 +99,25 @@ int main(int argc, char ** argv) {
 
     const ggml_type types[] = { GGML_TYPE_F16, GGML_TYPE_BF16, GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0,
         GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_IQ1_S, GGML_TYPE_IQ1_M, GGML_TYPE_IQ2_XXS,
-        GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_NL, GGML_TYPE_IQ4_XS, GGML_TYPE_MXFP4 };
-    const int64_t K = 2304, N = 64, E = 8, U = 4;   // Inkling 2's width (9 x 256: every block size divides it)
-
+        GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_NL, GGML_TYPE_IQ4_XS, GGML_TYPE_MXFP4, GGML_TYPE_NVFP4 };
+    const int64_t N = getenv("TQR_N") ? atoll(getenv("TQR_N")) : 64, E = getenv("TQR_E") ? atoll(getenv("TQR_E")) : 8, U = getenv("TQR_U") ? atoll(getenv("TQR_U")) : 4;   // TQR_N/E/U: a model's own shape (Inkling 2 down: 2304, 128, 8)
     std::vector<result> results;
+    for (int64_t K : { (int64_t) 2304, (int64_t) 1152 }) {   // Inkling 2's width (9 x 256) and its experts' (gate_up's rows, down's K: 1152 = 4.5 x 256)
     for (size_t di = 0; di < ggml_backend_dev_count(); ++di) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(di);
         const auto dt = ggml_backend_dev_type(dev);
         if (dt != GGML_BACKEND_DEVICE_TYPE_CPU && dt != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
         ggml_backend_t be = ggml_backend_dev_init(dev, nullptr);
         if (!be) { continue; }
+        if (dt == GGML_BACKEND_DEVICE_TYPE_CPU) {   // the thread count of a real run (its row split and chunking), not the backend's default 4
+            ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+            auto set_n = (void (*)(ggml_backend_t, int)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_set_n_threads");
+            const char * e = getenv("TQR_THREADS");
+            if (set_n) { set_n(be, e ? atoi(e) : 32); }
+        }
         rng.seed(42);
         for (ggml_type t : types) {
+            if (K % ggml_blck_size(t) != 0) { continue; }
             const auto w_f = randv((size_t) K * N * E, 0.02f);
             std::vector<uint8_t> wq; std::vector<float> wd;
             quant(t, w_f, K, wq, wd);
@@ -142,7 +150,7 @@ int main(int argc, char ** argv) {
                     const auto out = run(be, dev, op, t, K, N, E, T, U, wq, act, ids);
                     if (out.empty()) { continue; }
                     char key[256];
-                    snprintf(key, sizeof(key), "%s/%s/%s/T%lld", ggml_backend_dev_name(dev), ggml_type_name(t), op, (long long) T);
+                    snprintf(key, sizeof(key), "%s/%s/%s/K%lld/T%lld", ggml_backend_dev_name(dev), ggml_type_name(t), op, (long long) K, (long long) T);
                     const double e = nmse(out, ref);
                     const auto it = base.find(key);
                     const double bound = it != base.end() ? 3.0 * it->second + 1e-7 : 1e-3;
@@ -153,6 +161,7 @@ int main(int argc, char ** argv) {
             }
         }
         ggml_backend_free(be);
+    }
     }
     if (write && base_path) {
         FILE * f = fopen(base_path, "w");
