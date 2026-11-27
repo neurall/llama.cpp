@@ -2,6 +2,7 @@
 // build: cmake --build <dir> --target test-opoffload-fork;  run: ctest -R test-opoffload-fork
 #include "../src/llama-opoffload-fork.h"
 
+#include <algorithm>
 #include <cstdio>
 
 static int g_fail = 0;
@@ -15,7 +16,7 @@ int main() {
     CHECK(p.off);
     CHECK(p.fixed / MiB > 6560 && p.fixed / MiB < 6570);
     CHECK(p.per_tok / MiB > 0.43 && p.per_tok / MiB < 0.44);
-    CHECK(p.need / MiB > 8700 && p.need / MiB < 8760);
+    CHECK(p.need / MiB > 8940 && p.need / MiB < 9010);   // + the KV of 8192 cells beside the 512-token pass
     // without op offload the pass takes at most half of what the margins leave: at 8192 tokens the KV got 10240 cells and the 18642-token prompt failed
     CHECK(p.ubatch >= 512 && p.ubatch < 8192 && p.ubatch % 32 == 0);
     CHECK((double) p.ubatch * p.per_tok <= p.left / 2 + p.per_tok * 32);
@@ -46,6 +47,23 @@ int main() {
     CHECK(half >= 512 && half < full);
     CHECK((5950.0 - 3212) * MiB - half * g >= 12846.0 * 32768);   // the KV holds the 12846-token prompt beside that pass
     CHECK(ub_cut_fork(3000 * MiB, 3212 * MiB, g, 32768, 16384, true) == 0);
+    // card sweep 16 / 12 / 11 / 8 GB (user 2026-11-27), Inkling 2 Mini on W10's measured shape: graph 10147 MiB at 8192 tokens, 8356 at 4096 with op
+    // offload (6566 MiB fixed + 0.437 a token), 0.44 a token without; free = card - 2238 MiB (the 4060: 8188 total, 5950 free); margin 484, KV fixed
+    // 1440, 32768 B a cell. Each card either exits at start (default: op offload kept no room) or runs a pass of 512+ tokens whose KV holds a prompt
+    // of the configured micro-batch beside it. The old cut (graph bytes / tokens) gave 12 GB a 6368-token pass and the KV nothing (PC1 sim, KV 0 MiB).
+    for (int gb : { 16, 12, 11, 8 }) {
+        const double free_m = gb * 1024.0 - 4 - 2238, margin_m = 484 + 1440, cell_m = 32768.0 / MiB;
+        for (bool noop : { false, true }) {
+            const opoff_plan_fork pl = opoff_plan_fork_calc(10147 * MiB, 8356 * MiB, 8192, (size_t) (free_m * MiB), 484 * MiB, 0, 1440 * MiB, 32768);
+            if (!noop && pl.off) { printf("  %2d GB default: exits at start (op offload's copies leave no room)\n", gb); continue; }
+            const double fixed_m = noop ? 0 : pl.fixed / MiB, tok_m = noop ? 0.44 : pl.per_tok / MiB;
+            uint32_t u = noop ? ub_cut_fork((size_t) (free_m * MiB), (size_t) (margin_m * MiB), tok_m * MiB, 32768, 8192, true) : pl.ubatch_on;
+            u = std::min<uint32_t>(u, 8192);
+            const double kv_cells = (free_m - margin_m - (fixed_m + tok_m * u)) / cell_m;
+            printf("  %2d GB %s: pass %u tokens, KV %.0f cells\n", gb, noop ? "--no-op-offload" : "default", u, kv_cells);
+            CHECK(u >= 512 && kv_cells >= 8192);
+        }
+    }
     if (g_fail) { fprintf(stderr, "test-opoffload-fork: %d failed\n", g_fail); return 1; }
     printf("test-opoffload-fork: ok\n");
     return 0;

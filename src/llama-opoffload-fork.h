@@ -16,7 +16,8 @@ struct opoff_plan_fork {
     double   fixed   = 0.0;     // bytes of the graph that do not grow with tokens
     double   per_tok = 0.0;     // bytes a token
     double   need    = 0.0;     // what a 512-token pass with op offload needs beside the margins
-    double   left    = 0.0;     // bytes left beside the margins without op offload
+    double   left    = 0.0;     // bytes left beside the margins (and the KV's fixed part)
+    uint32_t ubatch_on = 0;     // op offload kept: the largest pass beside its copies and the KV of n_tokens cells
 };
 
 // the op offload fit check also runs for passes of 128 to 512 tokens on a GPU run: common.cpp retries a failed context at smaller micro-batches, and a check
@@ -43,10 +44,17 @@ static inline opoff_plan_fork opoff_plan_fork_calc(size_t lt, size_t lt2, uint32
     p.per_tok = (double) (lt - lt2) / (n_tokens - n_tokens / 2);
     p.fixed   = std::max(0.0, (double) lt - p.per_tok * n_tokens);
     const uint32_t n_min = std::min<uint32_t>(512, n_tokens);   // a pass smaller than 512 tokens asks for its own size
-    p.need    = p.fixed + std::max(margin, kv_margin) + kv_fixed + n_min * (p.per_tok + kv_row);
-    if ((double) free_b >= p.need) { return p; }
+    // beside the copies: a pass of n_min tokens and the KV of a prompt as long as the configured micro-batch (the 12 GB check passed with 616 MiB left for
+    // both: the cut then gave the pass all of it and the KV 0 MiB, every request "Compute error", Inkling 2 Mini, 2026-11-28)
+    p.need    = p.fixed + std::max(margin, kv_margin) + kv_fixed + n_min * p.per_tok + (double) n_tokens * kv_row;
+    p.left    = (double) free_b - (std::max(margin, kv_margin) + kv_fixed);
+    if ((double) free_b >= p.need) {
+        // op offload stays: the pass beside the copies and that KV (the cut through the origin left the fixed part out)
+        const double u = (p.left - p.fixed - (double) n_tokens * kv_row) / p.per_tok;
+        p.ubatch_on = (uint32_t) std::min<double>(n_tokens, u) / 32 * 32;
+        return p;
+    }
     p.off  = true;
-    p.left = (double) free_b - (p.need - n_min * (p.per_tok + kv_row) - p.fixed);
     const uint32_t u_off = p.left > 0 ? (uint32_t) std::min<double>(n_tokens, p.left / 2 / p.per_tok) / 32 * 32 : 512;
     if (u_off < n_tokens) { p.ubatch = std::max<uint32_t>(512, u_off); }
     return p;
