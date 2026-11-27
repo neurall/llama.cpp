@@ -1576,7 +1576,7 @@ vk_fa_pipeline_state get_fa_pipeline_state(const vk_device& device, const vk_fa_
                      (params.q_in_regs  ? 32 : 0) |
                      (params.flip       ? 64 : 0) |
                      (params.flip_direct ? 128 : 0) |
-                     (use_idx64         ? 256 : 0);   // fork: K/V index math in 64 bits (flash_attn_base.glsl FA_IDX64), only on a 64-bit indexing pipeline
+                     (use_idx64         ? 512 : 0);   // fork: K/V index math in 64 bits (flash_attn_base.glsl FA_IDX64), only on a 64-bit indexing pipeline; 256 is upstream's FA_FLAG_BIAS_STAGE
 
     const uint32_t subgroup_size = params.disable_subgroups ? 0 : params.subgroup_size;
 
@@ -2718,7 +2718,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested, const std::u
 
         const bool bf16_kv = fa.first.k_type == GGML_TYPE_BF16;
         const bool use_mmq = ggml_vk_fa_scalar_uses_mmq(device, fa.first.k_type, fa.first.v_type);
-        const bool idx64 = (fa.first.flags & 256) != 0;   // fork: the FA_IDX64 build (K/V indices in 64 bits) for a call past one binding's range
+        const bool idx64 = (fa.first.flags & 512) != 0;   // fork: the FA_IDX64 build (K/V indices in 64 bits) for a call past one binding's range
 #define FA_SPV(s) do { spv_data = idx64 ? s##_idx64_data : s##_data; spv_size = idx64 ? s##_idx64_len : s##_len; } while (0)
         const void * spv_data = nullptr;
         size_t spv_size = 0;
