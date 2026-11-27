@@ -25,6 +25,16 @@ static inline bool opoff_check_due_fork(bool op_offload, int n_gpu_layers, uint3
     return n_tokens > 512 || (op_offload && n_gpu_layers > 0 && n_tokens >= 128);
 }
 
+// the micro-batch cut from free VRAM: room = free - margins; graph_tok = graph bytes a token. kv_half (op offload off): the graph takes at most half of the
+// room and the KV the other half, as the op offload off plan does; otherwise the pass takes all of it with one KV cell a token. With --no-op-offload on an
+// 8 GB 4060 the full cut gave the KV 4608 cells and a 12k prompt failed with "Context size has been exceeded" (Inkling 2 Mini, 2026-11-27)
+static inline uint32_t ub_cut_fork(size_t free_b, size_t margin, double graph_tok, size_t kv_row, uint32_t n_tokens, bool kv_half) {
+    if (free_b <= margin || graph_tok <= 0) { return 0; }
+    const double room = (double) (free_b - margin);
+    const double u = kv_half ? room / 2 / graph_tok : room / (graph_tok + kv_row);
+    return (uint32_t) std::min<double>(n_tokens, u) / 32 * 32;
+}
+
 // lt / lt2: the graph's bytes on the card at n_tokens and n_tokens / 2; margin: the card's VRAM margin; kv_margin, kv_fixed, kv_row: the KV arena's margin,
 // fixed part and bytes a cell (llama_moe_cache_kv_arena_shape_fork)
 static inline opoff_plan_fork opoff_plan_fork_calc(size_t lt, size_t lt2, uint32_t n_tokens, size_t free_b, size_t margin, size_t kv_margin, size_t kv_fixed, size_t kv_row) {

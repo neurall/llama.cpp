@@ -2082,8 +2082,7 @@ void llama_context::sched_reserve() {
             size_t kv_margin = 0, kv_fixed = 0, kv_row = 0;
             llama_moe_cache_kv_arena_shape_fork(d, &kv_margin, &kv_fixed, &kv_row);
             const size_t margin = std::max(llama_moe_cache_vram_margin_fork(d), kv_margin) + kv_fixed;
-            const double per_tok = (double) lt[i] / n_tokens + (double) kv_row;
-            const uint32_t cap = free_b > margin ? (uint32_t) std::min<uint64_t>(n_tokens, (uint64_t) ((free_b - margin) / per_tok) / 32 * 32) : 0;
+            const uint32_t cap = ub_cut_fork(free_b, margin, (double) lt[i] / n_tokens, kv_row, n_tokens, !cparams.op_offload);
             why += format("%s%s free %.0f MiB, margin %.0f (KV fixed %.0f, %.3f MiB a cell), graph %.0f MiB at %u -> %u", why.empty() ? "" : "; ", ggml_backend_dev_name(d),
                           free_b / 1048576.0, margin / 1048576.0, kv_fixed / 1048576.0, kv_row / 1048576.0, lt[i] / 1048576.0, n_tokens, cap);
             u = std::min(u, cap);
