@@ -2863,6 +2863,12 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     }
 
     common_fit_apply(params, mparams, cparams);
+    // fork (user 2026-11-27: "no silent fallback to cpu when started as gpu run, exit with error"): a GPU is there but the fit left it no layer (the device
+    // is out of memory for even one): an error, not a run on the CPU. Experts the placement keeps in RAM are no such fallback. -ngl 0 runs on the CPU.
+    if (params.n_gpu_layers == -1 && mparams.n_gpu_layers == 0 && common_gpus_in_use_fork(params)) {
+        LOG_ERR("%s: the GPU holds no layer of this model after fitting it to device memory (out of memory on the device): not running on the CPU instead (-ngl 0 does that)\n", __func__);
+        return;
+    }
 
     const size_t swap0 = params.load_pinned_auto ? common_swap_out_bytes() : 0;
     llama_model * model = common_model_load(params.model.get_paths(), mparams);
@@ -3027,10 +3033,11 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     }
     // still no room: offloading host-weight ops to the GPU needs a staging buffer the size of a weight tensor on top of the compute buffers, which
     // a card near its limit does not have; without it the same graph needs less (and ran faster at low VRAM share in our tests)
-    if (lctx == NULL && cparams.op_offload && !params.no_op_offload) {
+    if (lctx == NULL && cparams.op_offload && !params.no_op_offload && !common_gpus_in_use_fork(params)) {   // no GPU in use (none found, -ngl 0, -dev none): as before
         cparams.op_offload = false;
-        LOG_WRN("%s: context creation failed, retrying without op offload\n", __func__);
         lctx = llama_init_from_model(model, cparams);
+    } else if (lctx == NULL && cparams.op_offload && !params.no_op_offload) {   // fork (user 2026-11-27): no silent move of the host-weight ops to the CPU
+        LOG_ERR("%s: context creation failed on the GPU (out of memory): not retrying with the host-weight ops on the CPU (--no-op-offload does that)\n", __func__);
     }
     if (lctx && params.cpuparams.auto_threads && common_autotune_on(params)) {
         llama_set_thread_autotune(lctx, true); // the count came from the default, not from the user: tune it on measured decode time

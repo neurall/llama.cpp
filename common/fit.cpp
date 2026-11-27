@@ -795,17 +795,6 @@ static void common_params_fit_impl(
     std::vector<ngl_t> ngl_per_device(nd);
     std::vector<int64_t> mem = get_memory_for_layers(__func__, ngl_per_device, overflow_bufts);
 
-    // fork: op offload copies the host weights a prompt pass multiplies into the compute buffer (Inkling 2 Mini with the experts on the CPU: 7246 MiB with
-    // no layer on the card). When that alone overflows a device, no layer fits and the fit put all of them on the CPU; without op offload the dense layers fit.
-    if (cparams->op_offload) {
-        bool over = false;
-        for (size_t id = 0; id < nd; id++) { over = over || mem[id] > targets[id]; }
-        if (over) {
-            cparams->op_offload = false;
-            mem = get_memory_for_layers(__func__, ngl_per_device, overflow_bufts);
-            LOG_WRN("%s: the compute buffer with op offload does not fit even with no layer on the device: op offload off (host weights stay on the CPU)\n", __func__);
-        }
-    }
 
     // optimize the number of layers per device using the method of false position:
     //   - ngl_per_device has 0 layers for each device, lower bound

@@ -2089,7 +2089,12 @@ void llama_context::sched_reserve() {
                 if (pl.off) {
                     const std::string w = format("%s: graph %.0f MiB at %u tokens, %.0f at %u: %.0f MiB fixed (op offload's weight copies) + %.3f MiB a token; free %.0f MiB < %.0f MiB for a 512-token pass",
                                                  ggml_backend_dev_name(d), lt[i] / 1048576.0, n_tokens, lt2[i] / 1048576.0, n_tokens / 2, pl.fixed / 1048576.0, pl.per_tok / 1048576.0, free_b / 1048576.0, pl.need / 1048576.0);
-                    LLAMA_LOG_WARN("%s: op offload off for this context (%s)\n", __func__, w.c_str());
+                    // fork (user 2026-11-27: "exit with error if gpu was requested or autodetected and started and failed for oom"): the copies do not fit,
+                    // so every expert matmul of a prompt pass would run on the CPU (Inkling 2 Mini, 8 GB 4060: the card idle, 30 t/s). An error, not that run.
+                    if (model.n_gpu_layers() > 0) {   // a GPU run (layers on the card); -ngl 0 asked for the CPU and keeps the old way
+                    LLAMA_LOG_ERROR("%s: out of GPU memory for op offload (%s): not moving the prompt's expert matmuls to the CPU (--no-op-offload does that)\n", __func__, w.c_str());
+                    throw std::runtime_error("out of GPU memory for op offload's weight copies");
+                    }
                     llama_moe_decision_fork("op offload", "off", w.c_str());
                     cparams.op_offload = false;
                     // the pass without the copies: its graph takes at most half of what the margins leave, the KV the other half (opoff_plan_fork_calc)
