@@ -1,0 +1,46 @@
+run 36667 | rel_ernie | pf12k | ERNIE-5.5-Flash-IQ3XXS-IQ4XS-00001-of-00003.gguf | decode 20.18 o/s | prompt 453.7 i/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-27 13:30:22
+
+### Code Review: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`
+
+Overall, the code is well-structured and handles complex JSON schema conversion to GBNF grammar. Below are specific findings, focusing on correctness, safety, and maintainability.
+
+---
+
+#### 1. Potential Stack Overflow in Recursive Grammar Generation
+*   **Location:** `common_chat_schema_converter::_pattern_to_rule` (and `build_min_max_int`).
+*   **Issue:** While `_pattern_to_rule` tracks `paren_depth` (max 100), the recursive `transform()` calls for nested groups or the recursive calls in `build_min_max_int` (which recurses per digit of an integer, up to 19 levels for `int64_t`) could theoretically be deep, but are generally bounded. However, `_resolve_ref` and `visit` can recurse deeply if a schema has deeply nested objects/arrays without a depth limit check at the schema level (only pattern depth is checked).
+*   **Recommendation:** Consider adding a general recursion depth guard in `visit()` to prevent stack overflow on maliciously deep JSON schemas.
+
+#### 2. Unchecked `std::stoi` / `std::stoll` Exceptions
+*   **Location:** `_pattern_to_rule` (curly bracket parsing).
+*   **Issue:** `std::stoi` is wrapped in a `try/catch (const std::logic_error &)`, which correctly catches `std::invalid_argument` and `std::out_of_range` (both derive from `logic_error`). This is good.
+*   **Location:** `build_min_max_int`.
+*   **Issue:** `std::stoll(min_s.substr(1))` is called without a try/catch. If `min_s` is very large (though bounded by `int64_t` string length), it is safe, but if logic changes, it could throw.
+*   **Recommendation:** No immediate action required given `int64_t` bounds, but be aware.
+
+#### 3. `format_literal` and Escaping Consistency
+*   **Location:** `format_literal` vs `_pattern_to_rule`.
+*   **Issue:** `format_literal` escapes `\r`, `\n`, `"`, `-`, `]`, `\`. In `_pattern_to_rule`, when handling literals inside patterns, it manually handles `"` -> `\\\"` but relies on `gbnf_escape_length` for others. Ensure that the literal characters constructed in `_pattern_to_rule` (which are wrapped in `"..."` via `to_rule`) are consistently escaped. Specifically, `to_rule` wraps the string in quotes directly: `"\"" + s + "\""`. If `s` contains a literal `"`, it was already escaped to `\\\"` in the parsing loop, which is correct.
+*   **Recommendation:** Verify that `to_rule` is never passed unescaped strings from other paths.
+
+#### 4. `build_repetition` Edge Cases
+*   **Location:** `build_repetition`.
+*   **Issue:** If `min_items > max_items` (invalid schema), the function generates `{min,max}` which is invalid grammar.
+*   **Recommendation:** Add a validation check `if (min_items > max_items) throw ...` at the start of `build_repetition`.
+
+#### 5. `common/arg.cpp` - `parse_tensor_buffer_overrides` Memory Management
+*   **Location:** `parse_tensor_buffer_overrides`.
+*   **Issue:** Uses a `static std::list<std::string>` to keep strings alive for `c_str()` pointers stored in `overrides`. This grows indefinitely if called multiple times with different values (though typically called once).
+*   **Recommendation:** Acceptable for CLI parsing lifecycle, but be aware of the static state.
+
+#### 6. `common/arg.cpp` - `to_string()` Formatting Logic
+*   **Location:** `common_arg::to_string()`.
+*   **Issue:** `ss.tellp()` returns `-1` on failure (e.g., if stream is in a bad state), though unlikely here. The logic `std::string(leading_spaces.size() - ss.tellp(), ' ')` assumes `tellp()` is non-negative and less than `leading_spaces.size()`.
+*   **Recommendation:** Cast to `size_t` carefully or check `tellp() > 0` to avoid underflow if `tellp()` returns `-1`.
+
+#### 7. Missing Error Handling in `json_schema_to_grammar`
+*   **Location:** `json_schema_to_grammar(const common_json & schema, bool force_gbnf)`.
+*   **Issue:** Catches `std::runtime_error` and rethrows as `std::invalid_argument`. This loses the original error type hierarchy if specific handling is needed upstream, but is generally fine for CLI usage.
+
+### Summary
+The code is robust. The main actionable item is adding a check in `build_repetition` for `min_items > max

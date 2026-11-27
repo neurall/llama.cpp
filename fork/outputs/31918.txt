@@ -1,0 +1,25 @@
+run 31918 | rel_pool_copy_own_card | pf13k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 2.41 t/s | prompt 67.9 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-20 13:06:27
+
+I need respond to user code review of following source file. User pasted huge file common/json-schema-to-grammar.cpp then common/arg.cpp truncated at static bool spec_types_is_default. Should review likely focus source file? User says following source file singular but includes two file markers and arg.cpp partial. Should identify bugs, correctness, security, performance, style. Should be rigorous, not invent. Should inspect deeply. I have lots token budget. Should analyze code thoroughly, find concrete issues with line references perhaps snippets. Should decide output format: findings prioritized, bugs with fixes, tests. Should not overdo generic. Should note arg.cpp truncated cannot full review. Should review json-schema-to-grammar.cpp primarily and visible arg.cpp issues.
+
+I'll parse code carefully.
+
+Includes: uses std::function but not <functional>; std::runtime_error, invalid_argument but <stdexcept> not included; int64_t perhaps <cstdint>; common headers may include. std::regex etc. Could mention missing direct includes but likely transitive. PRIMITIVE_RULES static unordered_map non-const mutable global, regex static etc. build_min_max_int complex potential bugs.
+
+Should understand grammar conversion semantics. I'll inspect functions.
+
+build_repetition(item_rule,min,max,separator):
+has_max = max != INT_MAX.
+if max==0 return "";
+if min==0 && max==1 return item+"?";
+if separator empty:
+ if min==1 && !has_max item+
+ if min==0 && !has_max item*
+ return item + "{" + min + "," + (has_max?max:"") + "}";
+with separator:
+result = item + " " + build_repetition("(" + separator + " " + item + ")", min==0?0:min-1, has_max?max-1:max);
+if min==0 result="("+result+")?";
+return result.
+Potential invalid min > max or negative min not checked. For array min_items perhaps int nonnegative. max=0 min>0 returns "" leading array rule `"[" space  space "]"` allowing empty despite min>0. Schema validation likely handles. For separated repetition min=0 max=unbounded: recursive call with min=0 max=INT_MAX separator nonempty. item + " " + build_repetition(...,0,INT_MAX) => item + " " + (sep item)* ; then whole optional. Correct zero or more. min=1 max=unbounded: item + (sep item)*. min=0 max=1: initial top if returns item? without separator! For array with min=0,max=1, separator nonempty, top early returns item_rule + "?" and ignores separator, correct one optional item no sep. min=0 max=0 returns "" correct. min=1 max=1 with separator: item + repetition(...,0,0) => item + " " + "" => trailing space in string grammar harmless. min=2 max=2: item + repetition(...,1,1) => item + "(" sep item ")" + "{1,1}"? I'll compute recursive separator nonempty, min=1 max=1: result = inneritem + " " + build_repetition("("sep inneritem")",0,0) = inneritem + " " ; no min0 wrapper. So returns "(sep item)" (no repetition suffix) then outer item + " " + that. Correct exactly 2. min=2 max=3: recursive min=1 max=2 => inner + repetition(...,0,1) => inner + "(sep inner)?" ; outer item + that. Correct. min=0 max=2: outer item + recursive min=0 max=1 => item + "(sep item)?" then whole optional. Allows 0,1,2. Good. But formatting perhaps extra spaces harmless.
+
+build_min_max_int: Should inspect for numeric bounds and overflow. has_min = min != INT64_MIN, has_max = max != INT64_MAX. This treats actual bound equal to sentinel as no bound. If user schema minimum INT64_MIN and maximum finite, has_min false, has_max true -> only max constraint, but min bound INT64_MIN effectively all negative int64 representable? Grammar number integral part max 16 digits, so int64 min 19 digits not relevant? decimals_left 16 limits. But semantics perhaps. If min=INT64_MIN and max=INT64_MAX both no bounds but function called only if not both primitive. If one equals sentinel, okay as unbounded. Negative handling -min_value overflow if min_value == INT64_MIN but has_min false so not. -max_value overflow if max_value==INT64_MIN? has_max true because INT64_MIN != INT64_MAX, max<0 branch build_min_max_int(-max_value,...): -INT64_MIN overflow. Can JSON schema maximum be INT64_MIN? Then valid integers <= -9223372036854775808, grammar decimal limit 16 means none? But still UB

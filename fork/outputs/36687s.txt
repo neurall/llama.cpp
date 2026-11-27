@@ -1,0 +1,61 @@
+run 36687 | stock-pr31925-ernie | pf12k | ERNIE-5.5-Flash-IQ3XXS-IQ4XS-00001-of-00003.gguf | decode 18.05 o/s | prompt 116.3 i/s | 1024 tokens | args: -np 1 -c 32768 -b 512 | power 280+280 W | 2026-11-27 14:38:41
+
+Here is a code review of the provided source files (`json-schema-to-grammar.cpp` and `arg.cpp`).
+
+### General Assessment
+The code is well-structured and generally follows modern C++ practices (RAII, smart pointers, standard algorithms). The grammar generation logic is complex but readable. However, there are a few areas regarding **performance (unnecessary copies)**, **potential logic bugs in recursion**, and **missing header includes** that should be addressed.
+
+---
+
+### Specific Issues & Suggestions
+
+#### 1. Performance: Unnecessary Vector Copies in Recursion
+**Location:** `json-schema-to-grammar.cpp`, `_build_object_rule` (around line 380).
+```cpp
+get_recursive_refs(std::vector<std::string>(ks.begin() + 1, ks.end()), true)
+```
+**Issue:** This creates a new `std::vector` on every recursive step of `get_recursive_refs`. For schemas with many optional properties, this is $O(N^2)$ memory allocation and copying.
+**Suggestion:** Pass a start index or iterator pair instead of creating a sub-vector.
+
+#### 2. Logic: Unreachable Code / Redundant Check
+**Location:** `json-schema-to-grammar.cpp`, `build_min_max_int` (around line 80).
+```cpp
+if (from[i] < to[i] - 1) {
+```
+**Issue:** `from[i]` and `to[i]` are `char`. If `from[i]` is `0` (null character, though unlikely in digits) or if `to[i]` is `0`, `to[i] - 1` underflows. More practically, if `from[i]` is `'0'` and `to[i]` is `'1'`, `'0' < '0'` is false. The logic relies on `from < to` which is guaranteed by the loop invariant `from[i] == to[i]` breaking, but the subtraction `to[i] - 1` is safe only because `to[i] >= '1'` is implicitly assumed. It works for ASCII digits, but static analysis tools might flag the arithmetic on `char`.
+
+#### 3. Missing Include: `<functional>`
+**Location:** `json-schema-to-grammar.cpp`.
+**Issue:** `std::function` is used extensively (e.g., `std::function<void(const std::string_view &, ...)>`, `replacePattern`), but `<functional>` is not explicitly included.
+**Suggestion:** Add `#include <functional>` to be strictly correct, even if it compiles currently due to transitive includes.
+
+#### 4. Potential Bug: `min_items` Overflow
+**Location:** `json-schema-to-grammar.cpp`, `build_repetition` (line 18).
+```cpp
+if (min_items == 0 && max_items == 1) {
+```
+**Issue:** If `max_items` is passed as `-1` (representing unlimited in some contexts, though `INT_MAX` is used here), or if `min_items` is negative due to bad schema input, this logic might behave unexpectedly. The code relies on the caller converting `-1` to `INT_MAX`, which is done in `KIND_ARRAY`, but `build_repetition` is a static utility that could be misused later.
+
+#### 5. Style: `static` Initialization Order
+**Location:** `json-schema-to-grammar.cpp`, `PRIMITIVE_RULES` and `is_reserved_name`.
+**Issue:** `is_reserved_name` uses a static local `RESERVED_NAMES` initialized by iterating `PRIMITIVE_RULES`. This is safe because `PRIMITIVE_RULES` is a namespace-scope static initialized before `is_reserved_name` is ever called. However, relying on initialization order across translation units can be fragile if refactored.
+
+#### 6. `arg.cpp`: `read_file` Resource Management
+**Location:** `arg.cpp`, line 70.
+```cpp
+std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+file.close();
+```
+**Suggestion:** `file.close()` is redundant as the destructor will handle it, but explicit is fine. However, checking `file.bad()` after reading is good practice to ensure the read succeeded completely, not just the open.
+
+#### 7. `arg.cpp`: `parse_tensor_buffer_overrides` Memory Management
+**Location:** `arg.cpp`, line 240.
+```cpp
+static std::list<std::string> buft_overrides;
+buft_overrides.push_back(tensor_name);
+```
+**Comment:** The comment says "avoid leaking memory by storing them in a static vector". This is a common pattern to keep `c_str()` valid, but `std::list` is used. This is fine, just noting the comment says "vector" while using a `list` (which is actually better for pointer stability).
+
+### Summary of Required Changes
+1.  **Add `#include <functional>`** to `json-schema-to-grammar.cpp`.
+2. 
