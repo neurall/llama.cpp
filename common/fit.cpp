@@ -795,6 +795,7 @@ static void common_params_fit_impl(
     std::vector<ngl_t> ngl_per_device(nd);
     std::vector<int64_t> mem = get_memory_for_layers(__func__, ngl_per_device, overflow_bufts);
 
+
     // optimize the number of layers per device using the method of false position:
     //   - ngl_per_device has 0 layers for each device, lower bound
     //   - try a "high" configuration where a device is given all unassigned layers

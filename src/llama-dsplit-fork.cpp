@@ -1344,7 +1344,8 @@ static void dsplit_att_bench(const llama_model & model, ggml_backend_dev_t d, gg
     for (uint32_t i = 0; i < hp.n_layer(); ++i) { if (!hp.is_recr(i) && !hp.is_swa(i)) { il = (int) i; break; } }
     if (il < 0) { for (uint32_t i = 0; i < hp.n_layer(); ++i) { if (!hp.is_recr(i)) { il = (int) i; break; } } }
     if (il < 0) { return; }   // no attention layer (all recurrent): nothing grows with the context
-    const bool mla = hp.is_mla();
+    // MLA by its cache rows too: [kv latent | rope], V the latent (ERNIE 5.5 is no is_mla() model but its full layers read V from K that way)
+    const bool mla = hp.is_mla() || (hp.n_lora_kv > 0 && hp.n_embd_head_k(il) == hp.n_lora_kv + hp.n_rot());
     const int64_t hsk = mla ? (int64_t) (hp.n_lora_kv + hp.n_rot()) : (int64_t) hp.n_embd_head_k(il);
     const int64_t hsv = mla ? (int64_t) hp.n_lora_kv : (int64_t) hp.n_embd_head_v(il);
     const int64_t nh = hp.n_head(il), nkv = mla ? 1 : std::max<int64_t>(1, hp.n_head_kv(il));
@@ -1360,7 +1361,13 @@ static void dsplit_att_bench(const llama_model & model, ggml_backend_dev_t d, gg
                                : ggml_new_tensor_4d(ctx, GGML_TYPE_F16, hsv, C[k], nkv, 1);
         ggml_tensor * m  = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, C[k], ATT_T, 1, 1);   // all zero: every cell visible
         g[k] = ggml_new_graph(ctx);
-        ggml_build_forward_expand(g[k], ggml_flash_attn_ext(ctx, q, kt, vt, m, 1.0f / sqrtf((float) hsk), 0.0f, 0.0f));
+        ggml_tensor * fa = ggml_flash_attn_ext(ctx, q, kt, vt, m, 1.0f / sqrtf((float) hsk), 0.0f, 0.0f);
+        if (!ggml_backend_dev_supports_op(d, fa)) {   // a shape the backend has no kernel for: no timing, not an abort at load (ERNIE 5.5, 2026-11-27)
+            BENCH_LOG("split planner: attention probe skipped: %s has no flash attention for K %lld, V %lld\n", ggml_backend_dev_name(d), (long long) hsk, (long long) hsv);
+            ggml_free(ctx);
+            return;
+        }
+        ggml_build_forward_expand(g[k], fa);
     }
     ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, be);
     double t[3] = { 1e30, 1e30, 1e30 };

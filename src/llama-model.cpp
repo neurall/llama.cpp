@@ -246,6 +246,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_deepseek4(params);
         case LLM_ARCH_DEEPSEEK41:
             return new llama_model_deepseek41(params);
+        case LLM_ARCH_ERNIE5_5:
+            return new llama_model_ernie5_5(params);
         case LLM_ARCH_XING4_0:
             return new llama_model_xing4_0(params);
         case LLM_ARCH_GLM_DSA:
@@ -3843,6 +3845,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             nullptr);
                 }
             } break;
+        case LLM_ARCH_ERNIE5_5:
         case LLM_ARCH_DEEPSEEK41:
         case LLM_ARCH_DEEPSEEK4:
             {
@@ -4288,7 +4291,7 @@ int32_t llama_model_n_head_kv(const llama_model * model) {
 int32_t llama_model_n_swa(const llama_model * model) {
     // dsv4 kv-cache has SWA but it cannot be used as a rollback because of
     // other compression ratios, so we return 0 here
-    if (model->arch == LLM_ARCH_DEEPSEEK4 || model->arch == LLM_ARCH_DEEPSEEK41) {
+    if (model->arch == LLM_ARCH_DEEPSEEK4 || model->arch == LLM_ARCH_DEEPSEEK41 || model->arch == LLM_ARCH_ERNIE5_5) {
         return 0;
     }
     return model->hparams.n_swa;
@@ -4369,6 +4372,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_DEEPSEEK32:
         case LLM_ARCH_DEEPSEEK4:
         case LLM_ARCH_DEEPSEEK41:
+        case LLM_ARCH_ERNIE5_5:
         case LLM_ARCH_MUSE_GLIMMER:
         case LLM_ARCH_XING4_0:
         case LLM_ARCH_MUSE_SPARK:
