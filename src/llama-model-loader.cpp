@@ -39,6 +39,7 @@
 LLAMA_API void llama_moe_host_pending_fork(const void * base, bool pending);   // fork: llama-moecache-fork.cpp (no shared header)
 #include <regex>
 #include <unordered_set>
+#include "llama-gguf-compat-fork.h"   // fork: other tools' names for our architectures
 
 static const size_t kiB = 1024;
 static const size_t MiB = 1024*kiB;
@@ -605,6 +606,7 @@ llama_model_loader::llama_model_loader(
     this->use_mmap      = load_mode == LLAMA_LOAD_MODE_MMAP || load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK || load_mode == LLAMA_LOAD_MODE_AUTO;
     this->use_direct_io = load_mode == LLAMA_LOAD_MODE_DIRECT_IO;
 
+    std::string compat_arch;   // fork: the file's own architecture name when it is another tool's (llama-gguf-compat-fork.h)
     if (!fname.empty()) {
         // Load the main GGUF
         struct ggml_context * ctx = NULL;
@@ -620,6 +622,12 @@ llama_model_loader::llama_model_loader(
         }
 
         get_key(llm_kv(LLM_KV_GENERAL_ARCHITECTURE), arch_name, false);
+        if (const char * ours = gguf_compat_arch_fork(arch_name)) {   // fork: another tool's names for an architecture we have (llama-gguf-compat-fork.h)
+            LLAMA_LOG_WARN("%s: architecture '%s' read as '%s' (keys and tensor names mapped in memory)\n", __func__, arch_name.c_str(), ours);
+            compat_arch = arch_name;
+            gguf_compat_kv_fork(metadata_ptr.get(), arch_name, ours);
+            arch_name = ours;
+        }
         llm_kv = LLM_KV(llm_arch_from_string(arch_name));
 
         files.emplace_back(new llama_file(fname.c_str(), "rb", use_direct_io));
@@ -636,7 +644,9 @@ llama_model_loader::llama_model_loader(
             }
             n_elements += ggml_nelements(cur);
             n_bytes    += ggml_nbytes(cur);
-            weights_map.emplace(tensor_name, llama_tensor_weight(files.back().get(), 0, metadata, cur));
+            llama_tensor_weight w(files.back().get(), 0, metadata, cur);   // fork: found in the file by its own name, kept under ours
+            if (!compat_arch.empty()) { ggml_set_name(cur, gguf_compat_tensor_fork(compat_arch, tensor_name).c_str()); tensor_name = cur->name; }
+            weights_map.emplace(tensor_name, w);
         }
         auto paths = splits;
         uint16_t n_split = 0;
@@ -775,7 +785,9 @@ llama_model_loader::llama_model_loader(
                 }
                 n_elements += ggml_nelements(cur);
                 n_bytes    += ggml_nbytes(cur);
-                weights_map.emplace(tensor_name, llama_tensor_weight(files.back().get(), file_idx, ctx_gguf.get(), cur));
+                llama_tensor_weight w(files.back().get(), file_idx, ctx_gguf.get(), cur);   // fork: as in the main file
+                if (!compat_arch.empty()) { ggml_set_name(cur, gguf_compat_tensor_fork(compat_arch, cur->name).c_str()); }
+                weights_map.emplace(std::string(cur->name), w);
             }
         }
 

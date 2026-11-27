@@ -6,6 +6,10 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <unordered_map>
+
+std::unordered_map<const ggml_tensor *, ggml_tensor *> g_head_mix_v_fork;   // fork: a head mix kept as factors: U (the layer's attn_vha) -> V
+static bool ernie_has_multimax_fork = true;
 
 // ERNIE 5.5 (Ernie5_5_MoeForCausalLM): a DeepSeek-V4 hybrid.
 //
@@ -59,7 +63,8 @@ void llama_model_ernie5_5::load_arch_hparams(llama_model_loader & ml) {
     }
     ml.get_arr(LLM_KV_ATTENTION_COMPRESS_RATIOS, hparams.dsv4_compress_ratios);
 
-    ml.get_arr(LLM_KV_LOGIT_MULTIMAX, hparams.ernie_multimax);
+    // fork: optional (another converter's file has no key; shortcut: without it the logits stay as the head gives them, find where that file keeps the ranges)
+    ernie_has_multimax_fork = ml.get_arr(LLM_KV_LOGIT_MULTIMAX, hparams.ernie_multimax, false);
 
     // the MTP hidden state is the 4-stream residual before the mHC head
     hparams.n_embd_out_impl = hparams.dsv4_hc_mult * hparams.n_embd;
@@ -134,7 +139,14 @@ void llama_model_ernie5_5::load_arch_tensors(llama_model_loader & ml) {
         layer.hc_ffn_scale  = create_tensor(tn(LLM_TENSOR_HC_FFN_SCALE,  "weight", i), {3}, flags);
 
         layer.attn_sinks    = create_tensor(tn(LLM_TENSOR_ATTN_SINKS,    "weight", i), {n_head}, flags);
-        layer.attn_vha      = create_tensor(tn(LLM_TENSOR_ATTN_VHA,      "weight", i), {n_head, n_head}, flags);
+        layer.attn_vha      = create_tensor(tn(LLM_TENSOR_ATTN_VHA,      "weight", i), {n_head, n_head}, flags | TENSOR_NOT_REQUIRED);
+        if (!layer.attn_vha) {   // fork: another converter keeps the mix as its factors U, V (src/llama-gguf-compat-fork.h); build_head_mix runs them
+            const ggml_tensor * um = ml.get_tensor_meta(tn(LLM_TENSOR_ATTN_VHA, "u", i).str().c_str());
+            const int64_t r = um ? um->ne[0] : 0;
+            layer.attn_vha = create_tensor(tn(LLM_TENSOR_ATTN_VHA, "u", i), {r, n_head}, flags);
+            ggml_tensor * vf = create_tensor(tn(LLM_TENSOR_ATTN_VHA, "v", i), {r, n_head}, flags);
+            if (layer.attn_vha && vf) { g_head_mix_v_fork[layer.attn_vha] = vf; }
+        }
         layer.wq_a          = create_tensor(tn(LLM_TENSOR_ATTN_Q_A,      "weight", i), {n_embd, q_lora_rank}, flags);
         layer.attn_q_a_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_A_NORM, "weight", i), {q_lora_rank}, flags);
 
@@ -606,7 +618,7 @@ llama_model_ernie5_5::graph::graph(const llm_graph_params & params) :
     cur = ggml_mul_mat(ctx0, model.output, cur);
     cb(cur, "result_output_raw", -1);
 
-    cur = build_multimax(cur);
+    if (ernie_has_multimax_fork) { cur = build_multimax(cur); }
     cb(cur, "result_output", -1);
     res->t_logits = cur;
 }
@@ -721,7 +733,7 @@ llama_model_ernie5_5::graph_mtp::graph_mtp(const llm_graph_params & params) :
     cur = ggml_mul_mat(ctx0, model.output, cur);
     cb(cur, "result_output_raw", -1);
 
-    cur = build_multimax(cur);
+    if (ernie_has_multimax_fork) { cur = build_multimax(cur); }
     cb(cur, "result_output", -1);
     res->t_logits = cur;
 }

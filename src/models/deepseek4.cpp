@@ -1,5 +1,7 @@
 #include "llama-hparams.h"
 #include "models.h"
+#include <unordered_map>
+extern std::unordered_map<const ggml_tensor *, ggml_tensor *> g_head_mix_v_fork;   // fork: src/models/ernie5-5.cpp
 #include "../llama-dsplit-fork.h"
 
 #include <algorithm>
@@ -284,11 +286,18 @@ ggml_tensor * llama_model_deepseek4::graph::build_head_mix(
     const int64_t n_head_x    = x->ne[1];
     const int64_t nt          = x->ne[2];
 
-    GGML_ASSERT(mix->ne[0] == n_head_x && mix->ne[1] == n_head_x);
-
     ggml_tensor * xt = ggml_cont(ctx0, ggml_permute(ctx0, x, 1, 0, 2, 3)); // [n_head, n_embd_head, n_tokens]
     xt = ggml_reshape_2d(ctx0, xt, n_head_x, n_embd_head*nt);
-    xt = ggml_mul_mat(ctx0, mix, xt);
+    const auto vf = g_head_mix_v_fork.find(mix);
+    if (vf != g_head_mix_v_fork.end()) {
+        // fork: the mix kept as its factors (src/llama-gguf-compat-fork.h): mix = I + V U^T, so out = x + V (U^T x); U, V: [rank, n_head]
+        GGML_ASSERT(mix->ne[1] == n_head_x && vf->second->ne[0] == mix->ne[0] && vf->second->ne[1] == n_head_x);
+        ggml_tensor * z = ggml_mul_mat(ctx0, ggml_cont(ctx0, ggml_transpose(ctx0, mix)), xt);   // [rank, n_embd_head*nt]
+        xt = ggml_add(ctx0, xt, ggml_mul_mat(ctx0, vf->second, z));
+    } else {
+        GGML_ASSERT(mix->ne[0] == n_head_x && mix->ne[1] == n_head_x);
+        xt = ggml_mul_mat(ctx0, mix, xt);
+    }
     xt = ggml_reshape_3d(ctx0, xt, n_head_x, n_embd_head, nt);
     xt = ggml_cont(ctx0, ggml_permute(ctx0, xt, 1, 0, 2, 3));
     cb(xt, "attn_head_mix", il);
