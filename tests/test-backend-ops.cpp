@@ -4219,14 +4219,14 @@ struct test_ew_chain : public test_case {
 };
 
 // fork: the depth mix of Inkling 2 (llama_model_inkling2::graph::mix), fused into one kernel on CUDA
-struct test_depth_mix : public test_case {
+struct test_depth_mix_fork : public test_case {
     const int64_t E, S, Q, T;   // embd, states (S - 1 stacked blocks + cur; S = 1: cur alone), queries, tokens
 
     std::string op_desc(ggml_tensor * t) override { GGML_UNUSED(t); return "DEPTH_MIX"; }
     bool run_whole_graph() override { return true; }
     std::string vars() override { return VARS_TO_STR4(E, S, Q, T); }
 
-    test_depth_mix(int64_t E = 256, int64_t S = 5, int64_t Q = 1, int64_t T = 1) : E(E), S(S), Q(Q), T(T) {}
+    test_depth_mix_fork(int64_t E = 256, int64_t S = 5, int64_t Q = 1, int64_t T = 1) : E(E), S(S), Q(Q), T(T) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         ggml_tensor * cur   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, E, T);
@@ -4289,14 +4289,14 @@ struct test_conv_step : public test_case {
 };
 
 // fork: Inkling 2 loop controller (two rms_norms, concat, down, tanh gain and forget, combine), message a strided view
-struct test_loop_ctrl : public test_case {
+struct test_loop_ctrl_fork : public test_case {
     const int64_t E, R, T;
 
     std::string op_desc(ggml_tensor * t) override { GGML_UNUSED(t); return "LOOP_CTRL"; }
     bool run_whole_graph() override { return true; }
     std::string vars() override { return VARS_TO_STR3(E, R, T); }
 
-    test_loop_ctrl(int64_t E = 256, int64_t R = 64, int64_t T = 1) : E(E), R(R), T(T) {}
+    test_loop_ctrl_fork(int64_t E = 256, int64_t R = 64, int64_t T = 1) : E(E), R(R), T(T) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         ggml_tensor * cur  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, E, T);
@@ -13809,11 +13809,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (int64_t S : {1, 2, 7, 33}) {
         for (int64_t Q : {1, 3}) {
             for (int64_t T : {1, 4, 40}) {
-                test_cases.emplace_back(new test_depth_mix(2048, S, Q, T));
+                test_cases.emplace_back(new test_depth_mix_fork(2048, S, Q, T));
             }
         }
     }
-    test_cases.emplace_back(new test_depth_mix(100, 5, 2, 1));
+    test_cases.emplace_back(new test_depth_mix_fork(100, 5, 2, 1));
     for (int64_t S : {1, 3}) {
         test_cases.emplace_back(new test_conv_step(4, 2048, S));
     }
@@ -13824,9 +13824,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
     for (int64_t T : {1, 3}) {
-        test_cases.emplace_back(new test_loop_ctrl(2304, 64, T));
+        test_cases.emplace_back(new test_loop_ctrl_fork(2304, 64, T));
     }
-    test_cases.emplace_back(new test_loop_ctrl(100, 40, 2));
+    test_cases.emplace_back(new test_loop_ctrl_fork(100, 40, 2));
     for (ggml_type t : {GGML_TYPE_Q8_0, GGML_TYPE_Q4_K, GGML_TYPE_IQ4_XS}) {
         for (int64_t T : {1, 3}) {
             test_cases.emplace_back(new test_norm_q8(t, 2304, 512, T));
