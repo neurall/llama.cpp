@@ -276,6 +276,53 @@ void ggml_print_backtrace(void) {
         waitpid(child_pid, NULL, 0);
     }
 }
+#elif defined(_WIN32)
+#include <dbghelp.h>
+// fork: Windows printed no stack at all ("uncaught exception: bad allocation" and nothing else, W10 2026-11-26): the frames as module+offset, with names
+// (and lines when a .pdb sits beside the DLL) from dbghelp, loaded at run time. The terminate handler runs before any unwind, so the throw site is on the stack.
+void ggml_print_backtrace(void) {
+    if (getenv("GGML_NO_BACKTRACE")) {
+        return;
+    }
+    void * trace[64];
+    const USHORT n = CaptureStackBackTrace(1, 64, trace, NULL);
+    HANDLE proc = GetCurrentProcess();
+    typedef BOOL  (WINAPI * init_t)(HANDLE, PCSTR, BOOL);
+    typedef DWORD (WINAPI * opt_t)(DWORD);
+    typedef BOOL  (WINAPI * sym_t)(HANDLE, DWORD64, PDWORD64, PSYMBOL_INFO);
+    typedef BOOL  (WINAPI * line_t)(HANDLE, DWORD64, PDWORD, PIMAGEHLP_LINE64);
+    HMODULE dh = LoadLibraryA("dbghelp.dll");
+    init_t sym_init = dh ? (init_t) (void *) GetProcAddress(dh, "SymInitialize")          : NULL;
+    opt_t  sym_opt  = dh ? (opt_t)  (void *) GetProcAddress(dh, "SymSetOptions")          : NULL;
+    sym_t  sym_from = dh ? (sym_t)  (void *) GetProcAddress(dh, "SymFromAddr")            : NULL;
+    line_t sym_line = dh ? (line_t) (void *) GetProcAddress(dh, "SymGetLineFromAddr64")   : NULL;
+    if (sym_opt) { sym_opt(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES); }
+    const bool syms = sym_init && sym_from && sym_init(proc, NULL, TRUE);
+    for (USHORT i = 0; i < n; ++i) {
+        const DWORD64 a = (DWORD64) (uintptr_t) trace[i];
+        HMODULE mod = NULL;
+        char mname[MAX_PATH] = "?";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR) trace[i], &mod) && mod) {
+            GetModuleFileNameA(mod, mname, sizeof(mname));
+        }
+        const char * base = strrchr(mname, '\\') ? strrchr(mname, '\\') + 1 : mname;
+        char sbuf[sizeof(SYMBOL_INFO) + 512];
+        PSYMBOL_INFO si = (PSYMBOL_INFO) sbuf;
+        memset(sbuf, 0, sizeof(sbuf));
+        si->SizeOfStruct = sizeof(SYMBOL_INFO);
+        si->MaxNameLen   = 511;
+        DWORD64 disp = 0;
+        const bool has_sym = syms && sym_from(proc, a, &disp, si);
+        IMAGEHLP_LINE64 ln;
+        memset(&ln, 0, sizeof(ln));
+        ln.SizeOfStruct = sizeof(ln);
+        DWORD ldisp = 0;
+        const bool has_line = syms && sym_line && sym_line(proc, a, &ldisp, &ln);
+        fprintf(stderr, "%2u: %s+0x%llx %s+0x%llx %s:%lu\n", (unsigned) i, base, (unsigned long long) (a - (DWORD64) (uintptr_t) mod),
+                has_sym ? si->Name : "?", (unsigned long long) disp, has_line ? ln.FileName : "", has_line ? (unsigned long) ln.LineNumber : 0ul);
+    }
+    fflush(stderr);
+}
 #else
 void ggml_print_backtrace(void) {
     // platform not supported

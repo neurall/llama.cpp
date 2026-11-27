@@ -8,6 +8,7 @@
 #include "../src/llama-sidefile-fork.h"
 #include "../src/llama-estimate-fork.h"
 #include "../src/llama-place-fork.h"
+#include "../src/llama-hostroom-fork.h"
 #include "cpu-topo-fork.h"
 
 #include "../src/llama-ext.h"
@@ -1398,9 +1399,9 @@ static size_t common_ram_total() {
 static size_t common_ram_available(bool with_pool = false) {
 #if defined(_WIN32)
     GGML_UNUSED(with_pool);
-    MEMORYSTATUSEX st = {};
-    st.dwLength = sizeof(st);
-    const size_t a = GlobalMemoryStatusEx(&st) ? (size_t) st.ullAvailPhys : 0;
+    // fork: the commit left (RAM + page file) and a job's limit count too: the pinned weights are committed, and a free-RAM reading pinned them beside too little
+    // commit for the rest (Inkling 2 Mini on W10 with the page file unable to grow: "bad allocation" at the first decode, 2026-11-26)
+    const size_t a = host_room_fork();
     return a - std::min(a, common_sim_ram_held());
 #elif defined(__linux__)
     size_t cma_kb = 0;   // free CMA pages are in MemAvailable but take no pinned page (PC1: 9.4 GiB with CmaTotal 0): never counted
@@ -2066,6 +2067,15 @@ static void common_hog(void) {
         LOG_WRN("hog: %s holds %.0f MiB\n", ggml_backend_dev_name(dev), ggml_backend_buffer_get_size(buf) / 1048576.0);
     }
     hog_done = true;
+#if defined(_WIN32)
+    static bool cap_done = false;
+    if (const char * cc = llama_moe_get_opt("commit-cap"); cc && !cap_done) {   // --moe commit-cap=MiB (tests): the low-commit state, nothing held (llama-hostroom-fork.h)
+        cap_done = true;
+        const size_t cap = (size_t) strtoull(cc, nullptr, 10) << 20;
+        if (host_commit_cap_fork(cap)) { LOG_WRN("commit-cap: this process may commit at most %.2f GiB (job object)\n", cap / 1073741824.0); }
+        else                           { LOG_WRN("commit-cap: could not set a job limit of %.2f GiB (error %lu)\n", cap / 1073741824.0, (unsigned long) GetLastError()); }
+    }
+#endif
     if (hr && !sim_done) {   // every reader of the RAM (total and available) takes the gap off: nothing is held (it swapped PC1: user 2026-11-11 "no need to allocate them")
         const size_t keep = (size_t) (atof(hr) * 1048576.0), avail = common_ram_available();
         if (avail > keep) {
@@ -2130,7 +2140,28 @@ static void common_auto_pin(common_params & params) {
         return;
     }
     if (params.auto_pin && params.load_mode == LLAMA_LOAD_MODE_AUTO) {
-        const size_t avail = std::min(common_ram_available(true), common_cgroup_room());
+        size_t avail = std::min(common_ram_available(true), common_cgroup_room());
+#if defined(_WIN32)
+        {   // fork: the devices' allocations still to come are committed too (WDDM): the pin leaves them their share of the commit, free VRAM as their ceiling.
+            // W10 2026-11-26: 21.8 GiB of commit left, 14.7 GiB pinned, 6.3 GiB left for a 3.3 GiB KV arena, the graphs and CUDA: "bad allocation" at the first decode
+            size_t vram = 0;
+            for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+                ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+                if (!ggml_backend_dev_is_gpu(dev)) { continue; }
+                size_t fr = 0, tot = 0;
+                ggml_backend_dev_memory(dev, &fr, &tot);
+                vram += fr;
+            }
+            size_t phys = 0, commit = 0;
+            host_room_fork(&phys, &commit);
+            const size_t room = host_room_fork_calc(phys, commit, host_job_room_fork(), vram);
+            if (room < avail) {
+                LOG_INF("%s: %.1f GiB of host memory for the pin: %.1f GiB of commit left less %.1f GiB of free VRAM the devices commit too (RAM %.1f GiB free)\n", __func__,
+                        room / 1073741824.0, commit / 1073741824.0, vram / 1073741824.0, phys / 1073741824.0);
+                avail = room;
+            }
+        }
+#endif
         // RAM kept for the system, the KV cache in RAM and the page cache of the mapped rest: a tenth of the machine, at least 4 GiB (user 2026-11-02: a share, not 12 GiB on any machine; was 0 when
         // the model fitted and 4 GiB when it did not until 2026-10-21), plus the largest prompt pass's pinned host buffer (user 2026-10-22: a full-size pass comes before how much of the model is pinned)
         const size_t pass_buf = common_pass_buffer_reserve(params);

@@ -147,7 +147,10 @@ static inline bool sr_pread(int fd, char * buf, size_t beg, size_t total, size_t
             if (r < 0 && errno == EINTR) { continue; }
             if (r <= 0) { break; }
             g += (size_t) r;
-            if (g < p.n && ((p.off + g) & 4095) && (beg & 4095) == 0) { return false; }   // a short read off the block grid: the next one would fail with O_DIRECT
+            if (g < p.n && ((p.off + g) & 4095) && (beg & 4095) == 0) {   // a short read off the block grid: the next one would fail with O_DIRECT
+                if (p.off + g >= need) { break; }   // ... unless it reached the end of the file with every byte needed (the W10 loader's last chunk, 2026-11-27)
+                return false;
+            }
         }
         if (g < p.n && p.off + g < need) { return false; }
     }

@@ -210,10 +210,29 @@ static void test_files(const char * dirs) {
 }
 #endif
 
+#if defined(__linux__)
+// a read that reaches the end of the file returns fewer bytes than asked, off the 4096 grid: complete when it holds every byte needed (W10, 2026-11-27:
+// the Windows loader's chunk at the file's end, 37472 of 40960 bytes, counted as failed and the model did not load)
+static void test_tail_read() {
+    printf("Testing a read up to the end of the file:\n");
+    char path[] = "/tmp/test-read-tail-XXXXXX";
+    const int fd = mkstemp(path);
+    std::vector<char> data(4096 + 904);
+    for (size_t i = 0; i < data.size(); ++i) { data[i] = (char) (i * 7 + 3); }
+    const bool wrote = fd >= 0 && write(fd, data.data(), data.size()) == (ssize_t) data.size();
+    std::vector<char> buf(8192, 0);
+    const bool ok = wrote && sr_pread(fd, buf.data(), 4096, 8192, 904) && memcmp(buf.data(), data.data() + 4096, 904) == 0;
+    report("the file's last 904 bytes asked as an aligned 8192-byte read: done, bytes right", ok);
+    report("more needed than the file holds: failed", wrote && !sr_pread(fd, buf.data(), 4096, 8192, 1000));
+    if (fd >= 0) { close(fd); unlink(path); }
+}
+#endif
+
 int main() {
     test_holds_pick_parse();
     test_schedule();
 #if defined(__linux__)
+    test_tail_read();
     if (const char * t = getenv("SR_TEST_DIRS")) { test_files(t); }
 #endif
     if (n_failed > 0) { printf("%d tests failed\n", n_failed); return 1; }
