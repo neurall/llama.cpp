@@ -628,6 +628,9 @@ llama_model_loader::llama_model_loader(
             gguf_compat_kv_fork(metadata_ptr.get(), arch_name, ours);
             arch_name = ours;
         }
+        if (gguf_compat_sidecar_fork(metadata_ptr.get(), fname)) {   // fork: no tokenizer in the file: tokenizer.gguf beside it
+            LLAMA_LOG_WARN("%s: tokenizer and chat template read from tokenizer.gguf beside the model\n", __func__);
+        }
         llm_kv = LLM_KV(llm_arch_from_string(arch_name));
 
         files.emplace_back(new llama_file(fname.c_str(), "rb", use_direct_io));
@@ -644,6 +647,7 @@ llama_model_loader::llama_model_loader(
             }
             n_elements += ggml_nelements(cur);
             n_bytes    += ggml_nbytes(cur);
+            if (!compat_arch.empty() && gguf_compat_skip_tensor_fork(compat_arch, tensor_name)) { n_elements -= ggml_nelements(cur); n_bytes -= ggml_nbytes(cur); continue; }
             llama_tensor_weight w(files.back().get(), 0, metadata, cur);   // fork: found in the file by its own name, kept under ours
             if (!compat_arch.empty()) { ggml_set_name(cur, gguf_compat_tensor_fork(compat_arch, tensor_name).c_str()); tensor_name = cur->name; }
             weights_map.emplace(tensor_name, w);
@@ -785,6 +789,7 @@ llama_model_loader::llama_model_loader(
                 }
                 n_elements += ggml_nelements(cur);
                 n_bytes    += ggml_nbytes(cur);
+                if (!compat_arch.empty() && gguf_compat_skip_tensor_fork(compat_arch, tensor_name)) { n_elements -= ggml_nelements(cur); n_bytes -= ggml_nbytes(cur); continue; }
                 llama_tensor_weight w(files.back().get(), file_idx, ctx_gguf.get(), cur);   // fork: as in the main file
                 if (!compat_arch.empty()) { ggml_set_name(cur, gguf_compat_tensor_fork(compat_arch, cur->name).c_str()); }
                 weights_map.emplace(std::string(cur->name), w);

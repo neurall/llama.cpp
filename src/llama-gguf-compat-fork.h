@@ -108,3 +108,23 @@ static inline void gguf_compat_kv_fork(gguf_context * g, const std::string & fro
         }
     }
 }
+
+// tensors of such a file that hold metadata, not weights (read into keys by fork/ernie55_sidecar.py): left out of the model's tensors
+static inline bool gguf_compat_skip_tensor_fork(const std::string & arch, const std::string & name) {
+    return arch == "ernie55" && name.compare(0, 16, "output.multimax_") == 0;
+}
+
+// a file without a tokenizer: the keys of tokenizer.gguf beside it (fork/ernie55_sidecar.py makes it from the release's tokenizer.json) added to its keys
+static inline bool gguf_compat_sidecar_fork(gguf_context * g, const std::string & model_path) {
+    if (gguf_find_key(g, "tokenizer.ggml.model") >= 0) { return false; }
+    const size_t sl = model_path.find_last_of("/\\");
+    const std::string side = (sl == std::string::npos ? std::string() : model_path.substr(0, sl + 1)) + "tokenizer.gguf";
+    gguf_init_params p = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
+    gguf_context * s = gguf_init_from_file(side.c_str(), p);
+    if (!s) { return false; }
+    const std::string arch_keep = gguf_get_val_str(g, gguf_find_key(g, "general.architecture"));
+    gguf_set_kv(g, s);
+    gguf_set_val_str(g, "general.architecture", arch_keep.c_str());
+    gguf_free(s);
+    return true;
+}
