@@ -2102,17 +2102,28 @@ void llama_context::sched_reserve() {
                 size_t kv_margin = 0, kv_fixed = 0, kv_row = 0;
                 llama_moe_cache_kv_arena_shape_fork(d, &kv_margin, &kv_fixed, &kv_row);
                 const opoff_plan_fork pl = opoff_plan_fork_calc(lt[i], lt2[i], n_tokens, free_b, llama_moe_cache_vram_margin_fork(d), kv_margin, kv_fixed, kv_row);
-                if (!pl.off && pl.ubatch_on < u) {   // op offload stays: the cut counts its copies
+                bool off = pl.off;
+                std::string meas;
+                if (!off && pl.ubatch_on < u) {   // op offload stays: the cut counts its copies
                     why += format("; %s with op offload: %.0f MiB fixed + %.3f MiB a token, KV of %u cells -> %u", ggml_backend_dev_name(d), pl.fixed / 1048576.0, pl.per_tok / 1048576.0, n_tokens, pl.ubatch_on);
                     u = pl.ubatch_on;
+                    // the two-point line misses at small passes (fixed part 6.4-7.1 GiB by where it is measured; 12 GB: the 800-token pass left the KV 108 MiB
+                    // short, 2026-11-28): the pass is measured at its size, and when it does not fit beside the KV the copies do not fit
+                    std::vector<size_t> lu(backend_ptrs.size(), 0);
+                    graph_reserve(u, n_seqs, std::min(n_outputs_pp, u), mctx.get(), true, lu.data());
+                    const double need_u = (double) lu[i] + std::max(llama_moe_cache_vram_margin_fork(d), kv_margin) + kv_fixed + (double) n_tokens * kv_row;
+                    if ((double) free_b < need_u) {
+                        off = true;
+                        meas = format("; measured: graph %.0f MiB at %u tokens, %.0f MiB needed beside the KV, %.0f free", lu[i] / 1048576.0, u, need_u / 1048576.0, free_b / 1048576.0);
+                    }
                 }
-                if (pl.off) {
+                if (off) {
                     const std::string w = format("%s: graph %.0f MiB at %u tokens, %.0f at %u: %.0f MiB fixed (op offload's weight copies) + %.3f MiB a token; free %.0f MiB < %.0f MiB for a 512-token pass and the KV of a micro-batch",
                                                  ggml_backend_dev_name(d), lt[i] / 1048576.0, n_tokens, lt2[i] / 1048576.0, n_tokens / 2, pl.fixed / 1048576.0, pl.per_tok / 1048576.0, free_b / 1048576.0, pl.need / 1048576.0);
                     // fork (user 2026-11-27: "exit with error if gpu was requested or autodetected and started and failed for oom"): the copies do not fit,
                     // so every expert matmul of a prompt pass would run on the CPU (Inkling 2 Mini, 8 GB 4060: the card idle, 30 t/s). An error, not that run.
                     if (model.n_gpu_layers() > 0) {   // a GPU run (layers on the card); -ngl 0 asked for the CPU and keeps the old way
-                    LLAMA_LOG_ERROR("%s: out of GPU memory for op offload (%s): not moving the prompt's expert matmuls to the CPU (--no-op-offload does that)\n", __func__, w.c_str());
+                    LLAMA_LOG_ERROR("%s: out of GPU memory for op offload (%s%s): not moving the prompt's expert matmuls to the CPU (--no-op-offload does that)\n", __func__, w.c_str(), meas.c_str());
                     throw std::runtime_error("out of GPU memory for op offload's weight copies");
                     }
                     llama_moe_decision_fork("op offload", "off", w.c_str());
