@@ -64,7 +64,6 @@ Every `--moe` key and its default: [fork/docs/fork-knobs.md](fork/docs/fork-knob
 
 - **Measured hardware:** two machines with 2x RTX 3090, a rented RTX 5090, an RTX 4060 laptop (8 GB) and a Radeon 780M (Vulkan, HIP). 3+ GPUs and mixed vendors are untested.
 - **The first runs of a model are slower:** the hot-expert map is learned from use and kept in `moe-state.ini`; the release ships pre-learned maps in `hotmaps/`.
-- **Models larger than free RAM load lazily:** the server answers while the experts are still being pinned, so the first big prompt after a start can be slower.
 - **Output can differ between runs** even at temperature 0: a cached expert runs on the GPU, a missed one on the CPU, and they round slightly differently (`--moe fixed=1` fixes the placement). Perplexity matches stock within noise ([table](fork/docs/perf-history.md#quality)).
 
 ## Credits and thanks
