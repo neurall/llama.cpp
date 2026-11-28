@@ -1,5 +1,8 @@
 # Rocket LLama
 
+<img width="1894" height="621" alt="image" src="https://github.com/user-attachments/assets/d85bf61f-fda9-4bed-9865-d8c07e71b9e7" />
+
+
 A fork of llama.cpp for MoE models larger than your VRAM. The free VRAM of every GPU becomes a cache of the experts that are in use, the CPU computes the rest in parallel, and long prompts stream the missing experts to the GPUs in large passes. On the same machine with the same request: up to **45x the prompt speed** and **7.8x the decode speed** of stock llama.cpp.
 
 ```sh
