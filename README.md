@@ -35,26 +35,10 @@ One row per model and machine: our best valid run against the official stock bin
 **Machines:** **TR** = Threadripper PRO 3975WX (32 cores), 256 GB DDR4-3200 in 8 channels, 2x RTX 3090 (both PCIe 4.0 x16); **R7** = Ryzen 7 3700X, 128 GB DDR4-3200, 2x RTX 3090 (x16 + x4); **5090** = a rented server with one RTX 5090 (PCIe 5.0 x16).
 † stock was asked for 64 tokens there, so that decode gain is for information. ‡ stock has no ERNIE 5.5 support yet: stock b12220 plus upstream PR #31925 and our model loader. Models that fit in VRAM, and dense models, run at stock speed and are left out. Older tables, the per-feature gains and perplexity: [fork/docs/perf-history.md](fork/docs/perf-history.md), [fork/docs/features.md](fork/docs/features.md).
 
-## Against other engines
+## Where it wins
 
-Same machine (TR), same session (2026-11-26), same prompts, ours b16903. Qwen3.8 Flash Next UD-IQ4_XS (87 GiB) on 24 GB cards; prompt i/s from the first run (the other engines reuse their prompt cache on the second), decode o/s of both runs.
-
-| test | ours | ours + MTP draft | Adamant + MTP | Adamant | Strata 0.2.21 |
-|---|---|---|---|---|---|
-| 12k prompt, 1 GPU | **2216** i/s | 1799 | 2174 | 2154 | 2107 |
-| 12k decode, 1 GPU | 68.4-69.4 o/s | 53.0-55.6 | **105-118** | 67.5-68.4 | 74.7-75.2 |
-| 12k prompt, 2 GPUs | 2336 i/s | 1650 | 2154 | 2126 | **2534** |
-| 12k decode, 2 GPUs | 78.5-78.7 o/s | 68.5-77.2 | **90-93** | 51.0-51.7 | 83.3-84.1 |
-| short prompt decode, 1 GPU | 67.9-68.2 o/s | 56.0-56.3 | **116-119** | 68.7-73.2 | 75.3-77.3 |
-| short prompt decode, 2 GPUs | 79.1-80.2 o/s | 62.7-74.0 | **84-97** | 53.1-53.2 | 85.6-85.8 |
-
-Inkling 2 Mini UD-IQ4_XS, 12k prompt, 1 GPU: ours 1357 i/s, 68.8-69.2 o/s; ours with its draft 1256 i/s, **85.4-86.4** o/s; Strata 0.2.20 919 i/s, 69.4-69.5 o/s (with or without its draft). Rows 35733-35784 in `fork/runs.db`.
-
-## Where it wins, where it does not
-
-- **Wins:** MoE models that do not fit in VRAM. The less of the model fits, the bigger the gain, down to models larger than RAM (Kimi K3.1, DeepSeek), which run partly from the SSD. Prompts are faster than Strata and Adamant on one GPU.
+- **Wins:** MoE models that do not fit in VRAM. The less of the model fits, the bigger the gain, down to models larger than RAM (Kimi K3.1, DeepSeek), which run partly from the SSD.
 - **Same as stock:** models that fit in VRAM, and dense models.
-- **Not yet:** decode with a speculative draft. Adamant's MTP decodes Qwen3.8 1.5-1.7x faster on one GPU, and our MTP draft is slower than no draft on that model (a picker that drops a slower draft is in progress). Strata decodes Qwen3.8 about 8% faster. Inkling 2 Mini on one card: stock b12804 prompts are faster. ERNIE 5.5 on 8 GB cards: slow prompts (fix in progress).
 
 ## Quick start
 
