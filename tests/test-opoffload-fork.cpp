@@ -64,6 +64,12 @@ int main() {
             CHECK(u >= 512 && kv_cells >= 8192);
         }
     }
+    // the retry at a smaller micro-batch keeps the KV room of the first ask: PC1 sim 12 GB, "graph 12935 MiB at 14336 tokens, 9650 at 7168", free 10074
+    // MiB, margin 484, KV fixed 2408: at 5376 tokens the plan with its own KV (5376 cells) kept op offload, with the first ask's 14336 cells it may not
+    const opoff_plan_fork own  = opoff_plan_fork_calc(8926 * MiB, 7740 * MiB, 5376, 10066 * MiB, 484 * MiB, 0, 2408 * MiB, 32768);
+    const opoff_plan_fork kept = opoff_plan_fork_calc(8926 * MiB, 7740 * MiB, 5376, 10066 * MiB, 484 * MiB, 0, 2408 * MiB, 32768, 14336);
+    CHECK(kept.need > own.need + 8000.0 * 32768);
+    CHECK(kept.off || kept.ubatch_on < own.ubatch_on);
     if (g_fail) { fprintf(stderr, "test-opoffload-fork: %d failed\n", g_fail); return 1; }
     printf("test-opoffload-fork: ok\n");
     return 0;
