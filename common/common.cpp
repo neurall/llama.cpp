@@ -1668,6 +1668,8 @@ static void moe_auto_write(const std::string & path, const moe_auto_rec & st, co
 
 // the process could not start with the placement it was measuring (out of memory): record it with the free VRAM it saw, the other placement is used from the next start
 // on (until that much more VRAM is free than at the failure, e.g. another program that held it has gone)
+static bool g_opoff_oom_fork = false;   // a GPU run stopped because op offload's weight copies do not fit (common_init_result)
+
 static void moe_auto_mark_failed() {
     // No stored "this placement failed" verdicts (2026-10-17): a PIN_STALL exit, an assert from a bug under test or a killed run counted as "the cache could not start with this much
     // free VRAM", and the next start of MiMo silently took stock placement. Every start decides from what is true now (the static rule); nothing is written, nothing is read back.
@@ -3038,6 +3040,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         lctx = llama_init_from_model(model, cparams);
     } else if (lctx == NULL && cparams.op_offload && !params.no_op_offload) {   // fork (user 2026-11-27): no silent move of the host-weight ops to the CPU
         LOG_ERR("%s: context creation failed on the GPU (out of memory): not retrying with the host-weight ops on the CPU (--no-op-offload does that)\n", __func__);
+        g_opoff_oom_fork = true;   // the error above is the answer: no start-over with the fork off (it ended in "the GPU holds no layer", 2026-11-28)
     }
     if (lctx && params.cpuparams.auto_threads && common_autotune_on(params)) {
         llama_set_thread_autotune(lctx, true); // the count came from the default, not from the user: tune it on measured decode time
@@ -3140,7 +3143,7 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
 
     // last resort: the fork could not even load or create a context (out of memory) where upstream stock would run. Free everything and start over
     // with the fork off exactly as --moe cache=0 does (cache off, autotune off, the placement of upstream); not when the user forced a placement
-    if ((res->model() == NULL || (!model_only && res->context() == NULL)) && !llama_moe_get_opt("mode") &&
+    if ((res->model() == NULL || (!model_only && res->context() == NULL)) && !llama_moe_get_opt("mode") && !g_opoff_oom_fork &&
         orig.n_moe_cache_slots != 0 && (orig.n_moe_cache_slots != -2 || common_autotune_on(orig))) {
         moe_auto_mark_failed();
         LOG_WRN("%s: initialisation failed, starting over with the fork off (as --moe cache=0)\n", __func__);
