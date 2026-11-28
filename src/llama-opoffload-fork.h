@@ -38,9 +38,7 @@ static inline uint32_t ub_cut_fork(size_t free_b, size_t margin, double graph_to
 
 // lt / lt2: the graph's bytes on the card at n_tokens and n_tokens / 2; margin: the card's VRAM margin; kv_margin, kv_fixed, kv_row: the KV arena's margin,
 // fixed part and bytes a cell (llama_moe_cache_kv_arena_shape_fork)
-// kv_cells: the KV the check keeps room for (0: n_tokens)
-static inline opoff_plan_fork opoff_plan_fork_calc(size_t lt, size_t lt2, uint32_t n_tokens, size_t free_b, size_t margin, size_t kv_margin, size_t kv_fixed, size_t kv_row, uint32_t kv_cells = 0) {
-    if (kv_cells == 0) { kv_cells = n_tokens; }
+static inline opoff_plan_fork opoff_plan_fork_calc(size_t lt, size_t lt2, uint32_t n_tokens, size_t free_b, size_t margin, size_t kv_margin, size_t kv_fixed, size_t kv_row) {
     opoff_plan_fork p;
     if (lt == 0 || lt2 >= lt || n_tokens < 2) { return p; }
     p.per_tok = (double) (lt - lt2) / (n_tokens - n_tokens / 2);
@@ -48,11 +46,11 @@ static inline opoff_plan_fork opoff_plan_fork_calc(size_t lt, size_t lt2, uint32
     const uint32_t n_min = std::min<uint32_t>(512, n_tokens);   // a pass smaller than 512 tokens asks for its own size
     // beside the copies: a pass of n_min tokens and the KV of a prompt as long as the configured micro-batch (the 12 GB check passed with 616 MiB left for
     // both: the cut then gave the pass all of it and the KV 0 MiB, every request "Compute error", Inkling 2 Mini, 2026-11-28)
-    p.need    = p.fixed + std::max(margin, kv_margin) + kv_fixed + n_min * p.per_tok + (double) kv_cells * kv_row;
+    p.need    = p.fixed + std::max(margin, kv_margin) + kv_fixed + n_min * p.per_tok + (double) n_tokens * kv_row;
     p.left    = (double) free_b - (std::max(margin, kv_margin) + kv_fixed);
     if ((double) free_b >= p.need) {
         // op offload stays: the pass beside the copies and that KV (the cut through the origin left the fixed part out)
-        const double u = (p.left - p.fixed - (double) kv_cells * kv_row) / p.per_tok;
+        const double u = (p.left - p.fixed - (double) n_tokens * kv_row) / p.per_tok;
         p.ubatch_on = (uint32_t) std::min<double>(n_tokens, u) / 32 * 32;
         return p;
     }

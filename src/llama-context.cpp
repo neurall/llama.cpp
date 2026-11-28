@@ -2101,12 +2101,7 @@ void llama_context::sched_reserve() {
                 ggml_backend_dev_memory(d, &free_b, &total_b);
                 size_t kv_margin = 0, kv_fixed = 0, kv_row = 0;
                 llama_moe_cache_kv_arena_shape_fork(d, &kv_margin, &kv_fixed, &kv_row);
-                // the KV room the check keeps: the largest micro-batch this model's contexts asked for. common.cpp retries a refused context at smaller
-                // micro-batches, and a promise that shrank with them let a 5248-token try through whose KV held 5376 cells: the 12k prompt then failed
-                // with "Context size has been exceeded" (Inkling 2 Mini, 12 GB, 2026-11-28)
-                static std::map<const llama_model *, uint32_t> kv_asked;
-                const uint32_t kv_cells = kv_asked[&model] = std::max(kv_asked[&model], n_tokens);
-                const opoff_plan_fork pl = opoff_plan_fork_calc(lt[i], lt2[i], n_tokens, free_b, llama_moe_cache_vram_margin_fork(d), kv_margin, kv_fixed, kv_row, kv_cells);
+                const opoff_plan_fork pl = opoff_plan_fork_calc(lt[i], lt2[i], n_tokens, free_b, llama_moe_cache_vram_margin_fork(d), kv_margin, kv_fixed, kv_row);
                 bool off = pl.off;
                 std::string meas;
                 if (!off && pl.ubatch_on < u) {   // op offload stays: the cut counts its copies
@@ -2116,7 +2111,7 @@ void llama_context::sched_reserve() {
                     // short, 2026-11-28): the pass is measured at its size, and when it does not fit beside the KV the copies do not fit
                     std::vector<size_t> lu(backend_ptrs.size(), 0);
                     graph_reserve(u, n_seqs, std::min(n_outputs_pp, u), mctx.get(), true, lu.data());
-                    const double need_u = (double) lu[i] + std::max(llama_moe_cache_vram_margin_fork(d), kv_margin) + kv_fixed + (double) kv_cells * kv_row;
+                    const double need_u = (double) lu[i] + std::max(llama_moe_cache_vram_margin_fork(d), kv_margin) + kv_fixed + (double) n_tokens * kv_row;
                     if ((double) free_b < need_u) {
                         off = true;
                         meas = format("; measured: graph %.0f MiB at %u tokens, %.0f MiB needed beside the KV, %.0f free", lu[i] / 1048576.0, u, need_u / 1048576.0, free_b / 1048576.0);
