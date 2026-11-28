@@ -84,7 +84,7 @@ Our builds in the table: b14965 (this release, no-mmap), b14939-b14954 (its cand
 
 To our knowledge no other engine splits the dense layers and the experts of a model over several GPUs when the model does not fit in their memory: upstream llama.cpp splits only the layers that fit, and vLLM and SGLang expect the model in VRAM.
 
-<img src="fork/docs/img/vram-layout.svg" alt="One VRAM buffer per GPU: compute graph, KV and expert cache share it" width="100%">
+<img src="img/vram-layout.svg" alt="One VRAM buffer per GPU: compute graph, KV and expert cache share it" width="100%">
 
 Older measurements and the per-feature A/B details: [fork/docs/features.md](fork/docs/features.md), [fork/docs/perf-history.md](fork/docs/perf-history.md).
 
@@ -433,7 +433,7 @@ Our builds in the table: b14965 (this release, no-mmap), b14939-b14954 (its cand
 
 To our knowledge no other engine splits the dense layers and the experts of a model over several GPUs when the model does not fit in their memory: upstream llama.cpp splits only the layers that fit, and vLLM and SGLang expect the model in VRAM.
 
-<img src="fork/docs/img/vram-layout.svg" alt="One VRAM buffer per GPU: compute graph, KV and expert cache share it" width="100%">
+<img src="img/vram-layout.svg" alt="One VRAM buffer per GPU: compute graph, KV and expert cache share it" width="100%">
 
 Older measurements and the per-feature A/B details: [fork/docs/features.md](fork/docs/features.md), [fork/docs/perf-history.md](fork/docs/perf-history.md).
 

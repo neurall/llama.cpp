@@ -40,6 +40,8 @@ One row per model and machine: our best valid run against the official stock bin
 - **Wins:** MoE models that do not fit in VRAM. The less of the model fits, the bigger the gain, down to models larger than RAM (Kimi K3.1, DeepSeek), which run partly from the SSD.
 - **Same as stock:** models that fit in VRAM, and dense models.
 
+<img src="fork/docs/img/vram-layout.svg" alt="One VRAM buffer per GPU: compute graph, KV and expert cache share it" width="100%">
+
 ## Quick start
 
 ```sh
